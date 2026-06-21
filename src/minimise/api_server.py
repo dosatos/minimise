@@ -80,6 +80,10 @@ class APIServer:
         self.server_thread: Optional[threading.Thread] = None
         self._running = False
 
+        # Set up broadcast callbacks on JobManager
+        self.job_manager.on_job_update = self.broadcast_job_update
+        self.job_manager.on_task_update = self.broadcast_task_update
+
         # Register routes
         self._register_routes()
 
@@ -169,6 +173,8 @@ class APIServer:
         def handle_subscribe_job(data):
             """Subscribe to job status updates."""
             try:
+                from flask_socketio import join_room
+
                 job_id = data.get("job_id")
                 if not job_id:
                     emit("error", {"message": "job_id required"})
@@ -179,10 +185,29 @@ class APIServer:
                     emit("error", {"message": "Job not found"})
                     return
 
+                # Join room for this job
+                join_room(f"job_{job_id}")
+
                 tasks = self.db.list_tasks_for_job(job_id)
                 job.tasks = tasks
 
                 emit("job_update", job_to_dict(job))
+            except Exception as e:
+                emit("error", {"message": str(e)})
+
+        @self.socketio.on("unsubscribe_job")
+        def handle_unsubscribe_job(data):
+            """Unsubscribe from job status updates."""
+            try:
+                from flask_socketio import leave_room
+
+                job_id = data.get("job_id")
+                if not job_id:
+                    emit("error", {"message": "job_id required"})
+                    return
+
+                leave_room(f"job_{job_id}")
+                emit("unsubscribed", {"job_id": job_id})
             except Exception as e:
                 emit("error", {"message": str(e)})
 
@@ -217,3 +242,39 @@ class APIServer:
             except RuntimeError:
                 # Ignore "Working outside of request context" errors when stopping
                 pass
+
+    def broadcast_job_update(self, job_id: str):
+        """Broadcast job status update to all subscribers."""
+        try:
+            job = self.db.get_job(job_id)
+            if job:
+                tasks = self.db.list_tasks_for_job(job_id)
+                job.tasks = tasks
+                self.socketio.emit(
+                    "job_update",
+                    job_to_dict(job),
+                    room=f"job_{job_id}",
+                )
+        except Exception as e:
+            self.socketio.emit(
+                "error",
+                {"message": f"Failed to broadcast job update: {str(e)}"},
+                room=f"job_{job_id}",
+            )
+
+    def broadcast_task_update(self, job_id: str, task_id: str):
+        """Broadcast task status update to job subscribers."""
+        try:
+            task = self.db.get_task(task_id)
+            if task:
+                self.socketio.emit(
+                    "task_update",
+                    task_to_dict(task),
+                    room=f"job_{job_id}",
+                )
+        except Exception as e:
+            self.socketio.emit(
+                "error",
+                {"message": f"Failed to broadcast task update: {str(e)}"},
+                room=f"job_{job_id}",
+            )

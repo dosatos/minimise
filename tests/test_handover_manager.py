@@ -116,3 +116,32 @@ def test_build_handover_prompt_includes_next_task_context():
 
     assert "Build Authentication System" in prompt
     assert "Implement OAuth2 with JWT tokens and refresh mechanism" in prompt
+
+
+def test_build_handover_prompt_excludes_diff_metadata():
+    """Test that diff metadata lines (+++ and ---) are not counted as changes."""
+    task_output = "Made code changes"
+    # Real unified diff format with metadata lines
+    diff = """diff --git a/file.py b/file.py
+--- a/file.py
++++ b/file.py
+-old line 1
+-old line 2
++new line 1
++new line 2
++new line 3"""
+
+    next_task = Task(
+        id=str(uuid.uuid4()),
+        job_id=str(uuid.uuid4()),
+        name="Next Task",
+        description="Continue work",
+        status=TaskStatus.PENDING,
+    )
+
+    prompt = HandoverManager.build_handover_prompt(task_output, diff, next_task)
+
+    # The +++ and --- metadata lines should NOT be counted
+    # Should only count: 3 added lines and 2 removed lines
+    assert "Lines added: 3" in prompt
+    assert "Lines removed: 2" in prompt

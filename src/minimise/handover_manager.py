@@ -23,8 +23,9 @@ class HandoverManager:
         """
         # Extract file and line change summary from diff
         file_count = diff.count("diff --git")
-        lines_added = len([l for l in diff.split("\n") if l.startswith("+")])
-        lines_removed = len([l for l in diff.split("\n") if l.startswith("-")])
+        # Count actual code changes, excluding diff metadata lines (+++, ---)
+        lines_added = len([l for l in diff.split("\n") if l.startswith("+") and not l.startswith("+++")])
+        lines_removed = len([l for l in diff.split("\n") if l.startswith("-") and not l.startswith("---")])
 
         # Truncate diff to 2000 characters for token efficiency
         truncated_diff = diff[:2000]

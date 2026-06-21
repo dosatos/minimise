@@ -139,13 +139,13 @@ class Database:
         conn.commit()
         conn.close()
 
-    def update_task_status(self, task_id: str, status: TaskStatus, output: Optional[str] = None, retries: int = 0, completed_at: Optional[datetime] = None) -> None:
+    def update_task_status(self, task_id: str, status: TaskStatus, output: Optional[str] = None, retries: int = 0, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None) -> None:
         """Update task status."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
-            UPDATE tasks SET status = ?, output = ?, retries = ?, completed_at = ? WHERE id = ?
-        """, (status.value, output, retries, completed_at.isoformat() if completed_at else None, task_id))
+            UPDATE tasks SET status = ?, output = ?, retries = ?, started_at = ?, completed_at = ? WHERE id = ?
+        """, (status.value, output, retries, started_at.isoformat() if started_at else None, completed_at.isoformat() if completed_at else None, task_id))
         conn.commit()
         conn.close()
 
@@ -201,8 +201,18 @@ class Database:
             for row in rows
         ]
 
-    def delete_job(self, job_id: str) -> bool:
-        """Delete a job and all its associated tasks."""
+    def delete_job(self, job_id: str, jobs_dir: Path = None) -> bool:
+        """Delete a job and all its associated tasks, including disk artifacts.
+
+        Args:
+            job_id: ID of the job to delete
+            jobs_dir: Directory where job artifacts are stored (optional)
+
+        Returns:
+            True if deletion was successful, False otherwise
+        """
+        import shutil
+
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
@@ -212,6 +222,12 @@ class Database:
         conn.commit()
         rows_deleted = cursor.rowcount
         conn.close()
+
+        # Remove job directory from disk if it exists
+        if jobs_dir:
+            job_dir = jobs_dir / job_id
+            if job_dir.exists():
+                shutil.rmtree(job_dir)
 
         return rows_deleted > 0
 

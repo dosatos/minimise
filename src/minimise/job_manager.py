@@ -17,7 +17,7 @@ from minimise.utils import ensure_directory
 class JobManager:
     """Orchestrates plan execution, task sequencing, and handover between tasks."""
 
-    def __init__(self, db: Database, git_tracker: GitTracker, jobs_dir: Path, repo_path: Path):
+    def __init__(self, db: Database, git_tracker: GitTracker, jobs_dir: Path, repo_path: Path, on_job_update=None, on_task_update=None):
         """
         Initialize JobManager.
 
@@ -26,12 +26,16 @@ class JobManager:
             git_tracker: GitTracker instance for managing git state
             jobs_dir: Directory to store job artifacts
             repo_path: Path to the git repository
+            on_job_update: Optional callback for job status updates (job_id)
+            on_task_update: Optional callback for task status updates (job_id, task_id)
         """
         self.db = db
         self.git_tracker = git_tracker
         self.jobs_dir = ensure_directory(jobs_dir)
         self.repo_path = Path(repo_path)
         self.task_executor = TaskExecutor(db, git_tracker, jobs_dir)
+        self.on_job_update = on_job_update
+        self.on_task_update = on_task_update
 
     def create_job(self, plan_path: Path) -> Optional[Job]:
         """
@@ -154,6 +158,8 @@ class JobManager:
 
         # Update job status to RUNNING
         self.db.update_job_status(job_id, JobStatus.RUNNING, started_at=datetime.utcnow())
+        if self.on_job_update:
+            self.on_job_update(job_id)
 
         # Load hooks from disk
         pre_plan_hook = (job_dir / "pre_plan_hook.txt").read_text() if (job_dir / "pre_plan_hook.txt").exists() else ""
@@ -166,6 +172,8 @@ class JobManager:
             if not success:
                 print(f"Pre-plan hook failed: {output}")
                 self.db.update_job_status(job_id, JobStatus.FAILED, completed_at=datetime.utcnow())
+                if self.on_job_update:
+                    self.on_job_update(job_id)
                 return False
 
         # Load all tasks for this job from database
@@ -193,6 +201,8 @@ class JobManager:
             if not success:
                 print(f"Task {task.name} failed: {output}")
                 self.db.update_job_status(job_id, JobStatus.FAILED, completed_at=datetime.utcnow())
+                if self.on_job_update:
+                    self.on_job_update(job_id)
                 return False
 
             # Build handover context for next task
@@ -213,10 +223,14 @@ class JobManager:
             if not success:
                 print(f"Post-plan hook failed: {output}")
                 self.db.update_job_status(job_id, JobStatus.FAILED, completed_at=datetime.utcnow())
+                if self.on_job_update:
+                    self.on_job_update(job_id)
                 return False
 
         # Mark job as COMPLETED
         self.db.update_job_status(job_id, JobStatus.COMPLETED, completed_at=datetime.utcnow())
+        if self.on_job_update:
+            self.on_job_update(job_id)
 
         return True
 
@@ -238,12 +252,16 @@ class JobManager:
 
         # Update job status to CANCELLED
         self.db.update_job_status(job_id, JobStatus.CANCELLED, completed_at=datetime.utcnow())
+        if self.on_job_update:
+            self.on_job_update(job_id)
 
         # Cancel all tasks that are not already completed/failed
         tasks = self.db.list_tasks_for_job(job_id)
         for task in tasks:
             if task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
                 self.db.update_task_status(task.id, TaskStatus.CANCELLED, completed_at=datetime.utcnow())
+                if self.on_task_update:
+                    self.on_task_update(job_id, task.id)
 
         return True
 

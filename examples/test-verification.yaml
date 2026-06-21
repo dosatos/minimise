@@ -1,0 +1,15 @@
+name: System Verification Test
+briefing: |
+  Verify that mini jobs can execute Claude Code with permissions enabled.
+  This tests the fix for --dangerously-skip-permissions.
+
+pre_plan_hook: ""
+post_plan_hook: ""
+
+tasks:
+  - name: Test Claude Code Execution
+    description: |
+      Ask Claude to create a simple verification file that proves execution works.
+      Create a file at /tmp/minimise-test-success.txt with success message.
+    pre_task_hook: ""
+    post_task_hook: ""

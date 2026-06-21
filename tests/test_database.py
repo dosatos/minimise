@@ -89,3 +89,34 @@ def test_list_tasks_for_job(db):
     tasks = db.list_tasks_for_job(job.id)
     assert len(tasks) == 2
     assert {t.name for t in tasks} == {"Task 1", "Task 2"}
+
+def test_delete_job_removes_disk_files(db, temp_db_dir):
+    """Test that delete_job removes both database records and disk files."""
+    from pathlib import Path
+
+    # Create a job
+    job = Job(id=str(uuid.uuid4()), name="Test Job", status=JobStatus.PENDING)
+    db.create_job(job)
+
+    # Create a jobs directory structure
+    jobs_dir = temp_db_dir / "jobs"
+    job_dir = jobs_dir / job.id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    (job_dir / "plan.yaml").write_text("test: plan")
+    (job_dir / "base_commit.txt").write_text("abc123")
+
+    # Verify job directory exists
+    assert job_dir.exists()
+    assert (job_dir / "plan.yaml").exists()
+
+    # Delete job with jobs_dir parameter
+    success = db.delete_job(job.id, jobs_dir=jobs_dir)
+
+    # Verify deletion succeeded
+    assert success
+
+    # Verify job record is deleted from database
+    assert db.get_job(job.id) is None
+
+    # Verify job directory is removed from disk
+    assert not job_dir.exists()

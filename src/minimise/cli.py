@@ -230,7 +230,7 @@ def job_status(job_id: str):
         # Display task progress with Gantt chart
         if job_obj.tasks:
             console.print(f"\n[bold]Task Progress[/bold]")
-            table = render_task_table_with_gantt(job_obj, job_obj.tasks)
+            table = render_task_table_with_gantt(job_obj, job_obj.tasks, now=datetime.utcnow())
             console.print(table)
             console.print(f"\n[dim]View full output with: mini job logs {job_id[:8]}[/dim]")
         else:

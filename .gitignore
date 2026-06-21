@@ -55,3 +55,4 @@ htmlcov/
 *.log
 worklogs/
 .worktrees/
+__pycache__/
