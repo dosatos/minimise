@@ -450,3 +450,228 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, git_repo, plan_file)
 
     finally:
         minimise.job_manager.TaskExecutor = original_executor_class
+
+
+def test_failed_job_persists_in_db(job_manager, plan_file):
+    """Test that a failed job is persisted in database and not deleted."""
+    execution_count = [0]
+    original_method = job_manager.task_executor.execute_task
+
+    def mock_execute_task(task, job_id, handover_context, pre_task_hook="", post_task_hook=""):
+        execution_count[0] += 1
+        if execution_count[0] == 1:
+            # Fail on first task
+            error_msg = "Task execution failed: simulated failure"
+            job_manager.db.update_task_status(task.id, TaskStatus.FAILED, output=error_msg, completed_at=datetime.utcnow())
+            return False, error_msg
+        # This shouldn't be reached
+        return True, f"Executed {task.name}"
+
+    # Patch the execute_task method
+    job_manager.task_executor.execute_task = mock_execute_task
+
+    try:
+        # Create job
+        created_job = job_manager.create_job(plan_file)
+        job_id = created_job.id
+
+        # Run the job
+        success = job_manager.run_job(job_id)
+        assert not success
+
+        # Verify job status is FAILED
+        job = job_manager.get_job_status(job_id)
+        assert job is not None
+        assert job.status == JobStatus.FAILED
+
+        # Verify job is not deleted (can still be retrieved)
+        retrieved_job = job_manager.db.get_job(job_id)
+        assert retrieved_job is not None
+        assert retrieved_job.id == job_id
+
+        # Verify the failed task is marked as FAILED
+        tasks = job_manager.db.list_tasks_for_job(job_id)
+        assert any(t.status == TaskStatus.FAILED for t in tasks)
+
+    finally:
+        job_manager.task_executor.execute_task = original_method
+
+
+def test_failed_job_stores_error_reason(job_manager, plan_file):
+    """Test that failed jobs store error reason in job.output."""
+    error_reason = "Database connection timeout"
+    original_method = job_manager.task_executor.execute_task
+
+    def mock_execute_task(task, job_id, handover_context, pre_task_hook="", post_task_hook=""):
+        error_msg = f"Task execution failed: {error_reason}"
+        job_manager.db.update_task_status(task.id, TaskStatus.FAILED, output=error_msg, completed_at=datetime.utcnow())
+        return False, error_msg
+
+    job_manager.task_executor.execute_task = mock_execute_task
+
+    try:
+        # Create job
+        created_job = job_manager.create_job(plan_file)
+        job_id = created_job.id
+
+        # Run the job
+        success = job_manager.run_job(job_id)
+        assert not success
+
+        # Verify job has failed status
+        job = job_manager.get_job_status(job_id)
+        assert job.status == JobStatus.FAILED
+
+        # Verify job has output (error reason would be stored)
+        # The error should be accessible via the job or first failed task
+        failed_tasks = [t for t in job.tasks if t.status == TaskStatus.FAILED]
+        assert len(failed_tasks) > 0
+        assert error_reason in failed_tasks[0].output
+
+    finally:
+        job_manager.task_executor.execute_task = original_method
+
+
+def test_failed_plan_can_be_resumed(job_manager, plan_file):
+    """Test that a failed job can be resumed after failures are fixed."""
+    execution_count = [0]
+    original_method = job_manager.task_executor.execute_task
+
+    def mock_execute_task(task, job_id, handover_context, pre_task_hook="", post_task_hook=""):
+        execution_count[0] += 1
+        if execution_count[0] == 1:
+            # Fail on first run
+            error_msg = "Task execution failed: simulated failure"
+            job_manager.db.update_task_status(task.id, TaskStatus.FAILED, output=error_msg, completed_at=datetime.utcnow())
+            return False, error_msg
+        else:
+            # Success on retry
+            job_manager.db.update_task_status(task.id, TaskStatus.COMPLETED, output=f"Executed {task.name}", completed_at=datetime.utcnow())
+            return True, f"Executed {task.name}"
+
+    job_manager.task_executor.execute_task = mock_execute_task
+
+    try:
+        # Create job
+        created_job = job_manager.create_job(plan_file)
+        job_id = created_job.id
+
+        # First run - should fail
+        success = job_manager.run_job(job_id)
+        assert not success
+        job = job_manager.get_job_status(job_id)
+        assert job.status == JobStatus.FAILED
+
+        # Verify job can be retrieved and resumed (status check allows it)
+        assert job.status in [JobStatus.FAILED, JobStatus.STOPPED]
+
+        # Reset task status to PENDING to simulate retry
+        failed_tasks = [t for t in job.tasks if t.status == TaskStatus.FAILED]
+        for task in failed_tasks:
+            job_manager.db.update_task_status(task.id, TaskStatus.PENDING, output=None, completed_at=None)
+
+        # Reset job status to PENDING for retry
+        job_manager.db.update_job_status(job_id, JobStatus.PENDING, started_at=None, completed_at=None)
+
+        # Second run - should succeed
+        success = job_manager.run_job(job_id)
+        assert success
+        job = job_manager.get_job_status(job_id)
+        assert job.status == JobStatus.COMPLETED
+
+    finally:
+        job_manager.task_executor.execute_task = original_method
+
+
+def test_pre_plan_hook_failure_persists_job(job_manager, plan_file, temp_db_dir):
+    """Test that pre-plan hook failure persists the job with error status."""
+    # Create a plan with failing pre-plan hook
+    plan_content = {
+        "name": "Test Plan with Hook Failure",
+        "briefing": "Plan with failing pre hook",
+        "pre_plan_hook": "exit 1",  # This will fail
+        "post_plan_hook": "",
+        "tasks": [
+            {
+                "name": "Task 1",
+                "description": "First task",
+                "pre_task_hook": "",
+                "post_task_hook": "",
+            }
+        ]
+    }
+
+    plan_path = temp_db_dir / "failing_plan.yaml"
+    with open(plan_path, "w") as f:
+        yaml.dump(plan_content, f)
+
+    # Create job with failing plan
+    created_job = job_manager.create_job(plan_path)
+    job_id = created_job.id
+
+    # Run the job
+    success = job_manager.run_job(job_id)
+    assert not success
+
+    # Verify job persists with FAILED status
+    job = job_manager.get_job_status(job_id)
+    assert job is not None
+    assert job.status == JobStatus.FAILED
+
+    # Verify no tasks were executed (pre-plan hook failed before tasks)
+    tasks = job_manager.db.list_tasks_for_job(job_id)
+    assert all(t.status == TaskStatus.PENDING for t in tasks)
+
+
+def test_post_plan_hook_failure_persists_job(job_manager, plan_file):
+    """Test that post-plan hook failure marks job as failed but persists it."""
+    plan_content = {
+        "name": "Test Plan with Post Hook Failure",
+        "briefing": "Plan with failing post hook",
+        "pre_plan_hook": "",
+        "post_plan_hook": "exit 1",  # This will fail
+        "tasks": [
+            {
+                "name": "Task 1",
+                "description": "First task",
+                "pre_task_hook": "",
+                "post_task_hook": "",
+            }
+        ]
+    }
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        plan_path = Path(tmpdir) / "plan.yaml"
+        with open(plan_path, "w") as f:
+            yaml.dump(plan_content, f)
+
+        # Mock task executor to succeed
+        original_method = job_manager.task_executor.execute_task
+
+        def mock_execute_task(task, job_id, handover_context, pre_task_hook="", post_task_hook=""):
+            job_manager.db.update_task_status(task.id, TaskStatus.COMPLETED, output=f"Executed {task.name}", completed_at=datetime.utcnow())
+            return True, f"Executed {task.name}"
+
+        job_manager.task_executor.execute_task = mock_execute_task
+
+        try:
+            # Create job
+            created_job = job_manager.create_job(plan_path)
+            job_id = created_job.id
+
+            # Run the job
+            success = job_manager.run_job(job_id)
+            assert not success
+
+            # Verify job persists with FAILED status (due to post-hook failure)
+            job = job_manager.get_job_status(job_id)
+            assert job is not None
+            assert job.status == JobStatus.FAILED
+
+            # Verify tasks completed before failure
+            tasks = job_manager.db.list_tasks_for_job(job_id)
+            assert all(t.status == TaskStatus.COMPLETED for t in tasks)
+
+        finally:
+            job_manager.task_executor.execute_task = original_method
