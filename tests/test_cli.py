@@ -216,3 +216,17 @@ def test_mini_job_list_shows_most_recent_jobs(db):
     assert all_jobs[2].name == "Order Test 2"
     assert all_jobs[3].name == "Order Test 1"
     assert all_jobs[4].name == "Order Test 0"
+
+
+def test_job_show_help(runner):
+    """Test that job show command exists and has help."""
+    result = runner.invoke(mini, ["job", "show", "--help"])
+    assert result.exit_code == 0
+    assert "Show job plan structure" in result.output or "show" in result.output
+
+
+def test_job_show_with_invalid_job_id(runner):
+    """Test that job show fails gracefully with invalid job ID."""
+    result = runner.invoke(mini, ["job", "show", "invalid-job-id"])
+    assert result.exit_code == 1
+    assert "Error" in result.output or "not found" in result.output
