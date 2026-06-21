@@ -56,3 +56,4 @@ htmlcov/
 worklogs/
 .worktrees/
 __pycache__/
+.agent-native/
