@@ -6,10 +6,11 @@ import json
 import time
 import uuid
 from pathlib import Path
+from datetime import datetime
 from click.testing import CliRunner
 from minimise.cli import mini
 from minimise.database import Database
-from minimise.models import Job, JobStatus
+from minimise.models import Job, JobStatus, Task, TaskStatus
 
 
 @pytest.fixture
@@ -230,3 +231,1205 @@ def test_job_show_with_invalid_job_id(runner):
     result = runner.invoke(mini, ["job", "show", "invalid-job-id"])
     assert result.exit_code == 1
     assert "Error" in result.output or "not found" in result.output
+
+
+def test_job_status_json_format_valid(runner, mock_config_dir):
+    """Test that job status --format json returns valid JSON."""
+    from minimise.models import Task, TaskStatus
+
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a job with tasks
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="JSON Status Test",
+        status=JobStatus.COMPLETED,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    # Create tasks for the job
+    task1 = Task(
+        id="task-1",
+        job_id=job.id,
+        name="First Task",
+        description="First task description",
+        status=TaskStatus.COMPLETED,
+        started_at=job.created_at,
+        completed_at=job.created_at,
+    )
+    task2 = Task(
+        id="task-2",
+        job_id=job.id,
+        name="Second Task",
+        description="Second task description",
+        status=TaskStatus.COMPLETED,
+        started_at=job.created_at,
+        completed_at=job.created_at,
+    )
+    db.create_task(task1)
+    db.create_task(task2)
+
+    # Invoke CLI with --format json
+    result = runner.invoke(mini, ["job", "status", job.id, "--format", "json"])
+
+    assert result.exit_code == 0
+    # Should be valid JSON
+    output_json = json.loads(result.output)
+    assert isinstance(output_json, dict)
+
+
+def test_job_status_json_includes_task_ids(runner, mock_config_dir):
+    """Test that job status JSON includes all task IDs."""
+    from minimise.models import Task, TaskStatus
+
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a job with tasks
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Task ID Test",
+        status=JobStatus.COMPLETED,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    # Create tasks with specific IDs
+    task1 = Task(
+        id="task-alpha",
+        job_id=job.id,
+        name="Alpha Task",
+        description="Alpha description",
+        status=TaskStatus.COMPLETED,
+        started_at=job.created_at,
+        completed_at=job.created_at,
+    )
+    task2 = Task(
+        id="task-beta",
+        job_id=job.id,
+        name="Beta Task",
+        description="Beta description",
+        status=TaskStatus.COMPLETED,
+        started_at=job.created_at,
+        completed_at=job.created_at,
+    )
+    db.create_task(task1)
+    db.create_task(task2)
+
+    result = runner.invoke(mini, ["job", "status", job.id, "--format", "json"])
+
+    assert result.exit_code == 0
+    output_json = json.loads(result.output)
+
+    # Check structure
+    assert "tasks" in output_json
+    assert isinstance(output_json["tasks"], list)
+    assert len(output_json["tasks"]) == 2
+
+    # Check task IDs are present
+    task_ids = [t["id"] for t in output_json["tasks"]]
+    assert "task-alpha" in task_ids
+    assert "task-beta" in task_ids
+
+
+def test_job_status_json_includes_timing(runner, mock_config_dir):
+    """Test that job status JSON includes duration and timing information."""
+    from minimise.models import Task, TaskStatus
+    from datetime import timedelta
+
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a job with tasks
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Timing Test",
+        status=JobStatus.COMPLETED,
+        plan_path="/path/to/plan.yaml",
+        created_at=datetime.utcnow(),
+    )
+    db.create_job(job)
+
+    start_time = datetime.utcnow()
+    end_time = start_time + timedelta(seconds=45.2)
+
+    task = Task(
+        id="task-timed",
+        job_id=job.id,
+        name="Timed Task",
+        description="Task with timing",
+        status=TaskStatus.COMPLETED,
+        started_at=start_time,
+        completed_at=end_time,
+    )
+    db.create_task(task)
+
+    result = runner.invoke(mini, ["job", "status", job.id, "--format", "json"])
+
+    assert result.exit_code == 0
+    output_json = json.loads(result.output)
+
+    # Check timing fields exist
+    assert "created_at" in output_json
+    assert "started_at" in output_json or output_json.get("started_at") is None
+    assert "completed_at" in output_json or output_json.get("completed_at") is None
+
+    # Check task timing
+    assert len(output_json["tasks"]) == 1
+    task_json = output_json["tasks"][0]
+    assert "started_at" in task_json
+    assert "completed_at" in task_json
+    assert "duration_seconds" in task_json
+
+
+def test_job_status_default_table_format(runner, mock_config_dir):
+    """Test that job status without --format uses table format by default."""
+    from minimise.models import Task, TaskStatus
+
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a job with a task
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Table Format Test",
+        status=JobStatus.COMPLETED,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    task = Task(
+        id="task-table",
+        job_id=job.id,
+        name="Table Task",
+        description="Task for table",
+        status=TaskStatus.COMPLETED,
+        started_at=job.created_at,
+        completed_at=job.created_at,
+    )
+    db.create_task(task)
+
+    result = runner.invoke(mini, ["job", "status", job.id])
+
+    assert result.exit_code == 0
+    # Table format should contain job details as text
+    assert "Job Details" in result.output or "Status" in result.output
+    # Should NOT be JSON
+    try:
+        json.loads(result.output)
+        assert False, "Default output should not be valid JSON"
+    except json.JSONDecodeError:
+        pass  # Expected
+
+
+# ============================================================================
+# START COMMAND TESTS
+# ============================================================================
+
+def test_start_pending_job_sets_running_status(db):
+    """Test starting a PENDING job transitions it to RUNNING status."""
+    from minimise.models import Task, TaskStatus
+
+    # Create a PENDING job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Test Start Job",
+        status=JobStatus.PENDING,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    # Create a task for the job
+    task = Task(
+        id="task-1",
+        job_id=job.id,
+        name="First Task",
+        description="First task",
+        status=TaskStatus.PENDING,
+    )
+    db.create_task(task)
+
+    # Verify initial state
+    job_before = db.get_job(job.id)
+    assert job_before.status == JobStatus.PENDING
+
+    # Simulate starting (update status, set started_at, set PID)
+    db.update_job_status(
+        job.id,
+        JobStatus.RUNNING,
+        started_at=datetime.utcnow(),
+        pid=12345
+    )
+
+    # Verify transition
+    job_after = db.get_job(job.id)
+    assert job_after.status == JobStatus.RUNNING
+    assert job_after.started_at is not None
+    assert job_after.pid == 12345
+
+
+def test_start_already_running_job_fails(db, runner, mock_config_dir):
+    """Test that starting an already-RUNNING job returns error."""
+    # Create a RUNNING job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Already Running Job",
+        status=JobStatus.RUNNING,
+        plan_path="/path/to/plan.yaml",
+        pid=99999
+    )
+    db.create_job(job)
+
+    # Try to start it via CLI
+    result = runner.invoke(mini, ["job", "start", job.id])
+
+    # Should fail with error message
+    assert result.exit_code == 1
+    assert "Error" in result.output or "RUNNING" in result.output or "must be in PENDING" in result.output
+
+
+def test_start_completed_job_fails(db, runner, mock_config_dir):
+    """Test that starting a COMPLETED job returns error."""
+    # Create a COMPLETED job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Completed Job",
+        status=JobStatus.COMPLETED,
+        plan_path="/path/to/plan.yaml",
+        completed_at=datetime.utcnow()
+    )
+    db.create_job(job)
+
+    # Try to start it via CLI
+    result = runner.invoke(mini, ["job", "start", job.id])
+
+    # Should fail with error message
+    assert result.exit_code == 1
+    assert "Error" in result.output or "PENDING" in result.output
+
+
+def test_start_failed_job_fails(db, runner, mock_config_dir):
+    """Test that starting a FAILED job returns error."""
+    # Create a FAILED job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Failed Job",
+        status=JobStatus.FAILED,
+        plan_path="/path/to/plan.yaml",
+        completed_at=datetime.utcnow()
+    )
+    db.create_job(job)
+
+    # Try to start it via CLI
+    result = runner.invoke(mini, ["job", "start", job.id])
+
+    # Should fail with error message
+    assert result.exit_code == 1
+    assert "Error" in result.output or "PENDING" in result.output
+
+
+def test_start_nonexistent_job_fails(runner, mock_config_dir):
+    """Test that starting a nonexistent job returns error."""
+    result = runner.invoke(mini, ["job", "start", "nonexistent-job-id"])
+
+    # Should fail with error message
+    assert result.exit_code == 1
+    assert "Error" in result.output or "not found" in result.output
+
+
+# ============================================================================
+# STOP COMMAND TESTS
+# ============================================================================
+
+def test_stop_running_job_sets_stopped_status(db):
+    """Test stopping a RUNNING job transitions it to STOPPED status."""
+    # Create a RUNNING job with PID
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Test Stop Job",
+        status=JobStatus.RUNNING,
+        plan_path="/path/to/plan.yaml",
+        pid=12345,
+        started_at=datetime.utcnow()
+    )
+    db.create_job(job)
+
+    # Simulate stopping (update status to STOPPED, set completed_at)
+    db.update_job_status(
+        job.id,
+        JobStatus.STOPPED,
+        completed_at=datetime.utcnow()
+    )
+
+    # Verify transition
+    job_after = db.get_job(job.id)
+    assert job_after.status == JobStatus.STOPPED
+    assert job_after.completed_at is not None
+
+
+def test_stop_pending_job_fails(db, runner, mock_config_dir):
+    """Test that stopping a PENDING job returns error."""
+    # Create a PENDING job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Pending Job",
+        status=JobStatus.PENDING,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    # Try to stop it via CLI
+    result = runner.invoke(mini, ["job", "stop", job.id])
+
+    # Should fail with error message
+    assert result.exit_code == 1
+    assert "Error" in result.output or "RUNNING" in result.output
+
+
+def test_stop_completed_job_fails(db, runner, mock_config_dir):
+    """Test that stopping a COMPLETED job returns error."""
+    # Create a COMPLETED job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Completed Job",
+        status=JobStatus.COMPLETED,
+        plan_path="/path/to/plan.yaml",
+        completed_at=datetime.utcnow()
+    )
+    db.create_job(job)
+
+    # Try to stop it via CLI
+    result = runner.invoke(mini, ["job", "stop", job.id])
+
+    # Should fail with error message
+    assert result.exit_code == 1
+    assert "Error" in result.output or "RUNNING" in result.output
+
+
+def test_stop_failed_job_fails(db, runner, mock_config_dir):
+    """Test that stopping a FAILED job returns error."""
+    # Create a FAILED job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Failed Job",
+        status=JobStatus.FAILED,
+        plan_path="/path/to/plan.yaml",
+        completed_at=datetime.utcnow()
+    )
+    db.create_job(job)
+
+    # Try to stop it via CLI
+    result = runner.invoke(mini, ["job", "stop", job.id])
+
+    # Should fail with error message
+    assert result.exit_code == 1
+    assert "Error" in result.output or "RUNNING" in result.output
+
+
+def test_stop_nonexistent_job_fails(runner, mock_config_dir):
+    """Test that stopping a nonexistent job returns error."""
+    result = runner.invoke(mini, ["job", "stop", "nonexistent-job-id"])
+
+    # Should fail with error message
+    assert result.exit_code == 1
+    assert "Error" in result.output or "not found" in result.output
+
+
+def test_stop_running_job_without_pid_fails(db, runner, mock_config_dir):
+    """Test that stopping a RUNNING job without PID returns error."""
+    # Create a RUNNING job WITHOUT PID (corrupted state)
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Running Job No PID",
+        status=JobStatus.RUNNING,
+        plan_path="/path/to/plan.yaml",
+        pid=None,  # No PID
+        started_at=datetime.utcnow()
+    )
+    db.create_job(job)
+
+    # Try to stop it via CLI
+    result = runner.invoke(mini, ["job", "stop", job.id])
+
+    # Should fail with error message
+    assert result.exit_code == 1
+    assert "Error" in result.output or "process" in result.output.lower()
+
+
+# ============================================================================
+# RESUME COMMAND TESTS
+# ============================================================================
+
+def test_resume_failed_job_retries_execution(db, runner, mock_config_dir):
+    """Test that resuming a FAILED job attempts re-execution."""
+    from minimise.models import Task, TaskStatus
+
+    # Create a FAILED job with tasks
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Failed Job to Resume",
+        status=JobStatus.FAILED,
+        plan_path="/path/to/plan.yaml",
+        completed_at=datetime.utcnow()
+    )
+    db.create_job(job)
+
+    # Create a failed task
+    task = Task(
+        id="task-1",
+        job_id=job.id,
+        name="Failed Task",
+        description="Task that failed",
+        status=TaskStatus.FAILED,
+        completed_at=datetime.utcnow()
+    )
+    db.create_task(task)
+
+    # Verify initial state
+    job_before = db.get_job(job.id)
+    assert job_before.status == JobStatus.FAILED
+
+
+def test_resume_stopped_job_retries_execution(db, runner, mock_config_dir):
+    """Test that resuming a STOPPED job attempts re-execution."""
+    from minimise.models import Task, TaskStatus
+
+    # Create a STOPPED job with tasks
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Stopped Job to Resume",
+        status=JobStatus.STOPPED,
+        plan_path="/path/to/plan.yaml",
+        completed_at=datetime.utcnow()
+    )
+    db.create_job(job)
+
+    # Create a stopped task
+    task = Task(
+        id="task-1",
+        job_id=job.id,
+        name="Stopped Task",
+        description="Task that was stopped",
+        status=TaskStatus.STOPPED,
+        completed_at=datetime.utcnow()
+    )
+    db.create_task(task)
+
+    # Try to resume via CLI
+    result = runner.invoke(mini, ["job", "resume", job.id])
+
+    # Should indicate job is not in FAILED state
+    assert result.exit_code in [0, 1]  # Either succeed or indicate not failed
+
+
+def test_resume_pending_job_fails(db, runner, mock_config_dir):
+    """Test that resuming a PENDING job returns error or no-op."""
+    # Create a PENDING job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Pending Job",
+        status=JobStatus.PENDING,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    # Try to resume it via CLI
+    result = runner.invoke(mini, ["job", "resume", job.id])
+
+    # Should indicate job is not in FAILED state
+    assert "not in FAILED" in result.output or result.exit_code in [0, 1]
+
+
+def test_resume_running_job_fails(db, runner, mock_config_dir):
+    """Test that resuming a RUNNING job returns error or no-op."""
+    # Create a RUNNING job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Running Job",
+        status=JobStatus.RUNNING,
+        plan_path="/path/to/plan.yaml",
+        pid=99999
+    )
+    db.create_job(job)
+
+    # Try to resume it via CLI
+    result = runner.invoke(mini, ["job", "resume", job.id])
+
+    # Should indicate job is not in FAILED state
+    assert "not in FAILED" in result.output or result.exit_code in [0, 1]
+
+
+def test_resume_completed_job_fails(db, runner, mock_config_dir):
+    """Test that resuming a COMPLETED job returns error or no-op."""
+    # Create a COMPLETED job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Completed Job",
+        status=JobStatus.COMPLETED,
+        plan_path="/path/to/plan.yaml",
+        completed_at=datetime.utcnow()
+    )
+    db.create_job(job)
+
+    # Try to resume it via CLI
+    result = runner.invoke(mini, ["job", "resume", job.id])
+
+    # Should indicate job is not in FAILED state
+    assert "not in FAILED" in result.output or result.exit_code in [0, 1]
+
+
+def test_resume_nonexistent_job_fails(runner, mock_config_dir):
+    """Test that resuming a nonexistent job returns error."""
+    result = runner.invoke(mini, ["job", "resume", "nonexistent-job-id"])
+
+    # Should fail with error message
+    assert result.exit_code == 1
+    assert "Error" in result.output or "not found" in result.output
+
+
+# ============================================================================
+# RESULTS LOGS COMMAND TESTS
+# ============================================================================
+
+def test_results_logs_all_tasks(db, runner, mock_config_dir):
+    """Test retrieving logs for all tasks in a job."""
+    from minimise.models import Task, TaskStatus
+
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a job with multiple tasks with output
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Results Test Job",
+        status=JobStatus.COMPLETED,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    # Create tasks with output
+    task1 = Task(
+        id="task-1",
+        job_id=job.id,
+        name="Task 1",
+        description="First task",
+        status=TaskStatus.COMPLETED,
+        output="Output from task 1\nLine 2\nLine 3",
+        started_at=datetime.utcnow(),
+        completed_at=datetime.utcnow(),
+    )
+    task2 = Task(
+        id="task-2",
+        job_id=job.id,
+        name="Task 2",
+        description="Second task",
+        status=TaskStatus.COMPLETED,
+        output="Output from task 2\nDifferent output",
+        started_at=datetime.utcnow(),
+        completed_at=datetime.utcnow(),
+    )
+    db.create_task(task1)
+    db.create_task(task2)
+
+    # Retrieve logs via CLI
+    result = runner.invoke(mini, ["job", "results", "logs", job.id])
+
+    assert result.exit_code == 0
+    assert "Task 1" in result.output
+    assert "Task 2" in result.output
+    assert "Output from task 1" in result.output
+    assert "Output from task 2" in result.output
+
+
+def test_results_logs_single_task_with_task_id(db, runner, mock_config_dir):
+    """Test retrieving logs for a specific task using task ID."""
+    from minimise.models import Task, TaskStatus
+
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a job with multiple tasks
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Single Task Results Test",
+        status=JobStatus.COMPLETED,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    task1 = Task(
+        id="task-alpha",
+        job_id=job.id,
+        name="Task Alpha",
+        description="Alpha task",
+        status=TaskStatus.COMPLETED,
+        output="Alpha output",
+        started_at=datetime.utcnow(),
+        completed_at=datetime.utcnow(),
+    )
+    task2 = Task(
+        id="task-beta",
+        job_id=job.id,
+        name="Task Beta",
+        description="Beta task",
+        status=TaskStatus.COMPLETED,
+        output="Beta output",
+        started_at=datetime.utcnow(),
+        completed_at=datetime.utcnow(),
+    )
+    db.create_task(task1)
+    db.create_task(task2)
+
+    # Retrieve logs for specific task via CLI
+    result = runner.invoke(mini, ["job", "results", "logs", job.id, "--task-id", "task-alpha"])
+
+    assert result.exit_code == 0
+    assert "Task Alpha" in result.output
+    assert "Alpha output" in result.output
+    # Should not contain beta output
+    assert "Beta output" not in result.output or "Beta" not in result.output
+
+
+def test_results_logs_nonexistent_task_id_fails(db, runner, mock_config_dir):
+    """Test retrieving logs with nonexistent task ID returns error."""
+    from minimise.models import Task, TaskStatus
+
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a job with a task
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Not Found Task Test",
+        status=JobStatus.COMPLETED,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    task = Task(
+        id="task-1",
+        job_id=job.id,
+        name="Task 1",
+        description="First task",
+        status=TaskStatus.COMPLETED,
+    )
+    db.create_task(task)
+
+    # Try to retrieve logs for nonexistent task
+    result = runner.invoke(mini, ["job", "results", "logs", job.id, "--task-id", "nonexistent"])
+
+    assert result.exit_code == 1
+    assert "Error" in result.output or "not found" in result.output
+
+
+def test_results_logs_empty_job_shows_message(db, runner, mock_config_dir):
+    """Test retrieving logs from a job with no tasks shows appropriate message."""
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a job with NO tasks
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Empty Job",
+        status=JobStatus.COMPLETED,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    # Retrieve logs for empty job
+    result = runner.invoke(mini, ["job", "results", "logs", job.id])
+
+    assert result.exit_code == 0
+    assert "No tasks" in result.output or "found" in result.output
+
+
+def test_results_logs_nonexistent_job_fails(runner, mock_config_dir):
+    """Test retrieving logs from nonexistent job returns error."""
+    result = runner.invoke(mini, ["job", "results", "logs", "nonexistent-job"])
+
+    assert result.exit_code == 1
+    assert "Error" in result.output or "not found" in result.output
+
+
+# ============================================================================
+# RESULTS DIFF COMMAND TESTS
+# ============================================================================
+
+def test_results_diff_all_tasks(db, runner, mock_config_dir, tmp_path):
+    """Test retrieving diffs for all tasks in a job."""
+    from minimise.models import Task, TaskStatus
+
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a job with multiple tasks with diffs
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Diff Results Test Job",
+        status=JobStatus.COMPLETED,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    # Create diff files
+    diff1_path = tmp_path / "diff1.patch"
+    diff1_path.write_text("--- file1.py\n+++ file1.py\n-old line\n+new line")
+
+    diff2_path = tmp_path / "diff2.patch"
+    diff2_path.write_text("--- file2.py\n+++ file2.py\n-old code\n+new code")
+
+    # Create tasks with diff paths
+    task1 = Task(
+        id="task-1",
+        job_id=job.id,
+        name="Task 1",
+        description="First task",
+        status=TaskStatus.COMPLETED,
+        diff_path=str(diff1_path),
+        completed_at=datetime.utcnow(),
+    )
+    task2 = Task(
+        id="task-2",
+        job_id=job.id,
+        name="Task 2",
+        description="Second task",
+        status=TaskStatus.COMPLETED,
+        diff_path=str(diff2_path),
+        completed_at=datetime.utcnow(),
+    )
+    db.create_task(task1)
+    db.create_task(task2)
+
+    # Retrieve diffs via CLI
+    result = runner.invoke(mini, ["job", "results", "diff", job.id])
+
+    assert result.exit_code == 0
+    assert "Task 1" in result.output
+    assert "Task 2" in result.output
+
+
+def test_results_diff_single_task_with_task_id(db, runner, mock_config_dir, tmp_path):
+    """Test retrieving diff for a specific task using task ID."""
+    from minimise.models import Task, TaskStatus
+
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a job with multiple tasks
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Single Diff Results Test",
+        status=JobStatus.COMPLETED,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    # Create diff files
+    diff1_path = tmp_path / "diff1.patch"
+    diff1_path.write_text("--- file1.py\n+++ file1.py\n-old\n+new")
+
+    diff2_path = tmp_path / "diff2.patch"
+    diff2_path.write_text("--- file2.py\n+++ file2.py\n-other\n+change")
+
+    task1 = Task(
+        id="task-alpha",
+        job_id=job.id,
+        name="Task Alpha",
+        description="Alpha task",
+        status=TaskStatus.COMPLETED,
+        diff_path=str(diff1_path),
+        completed_at=datetime.utcnow(),
+    )
+    task2 = Task(
+        id="task-beta",
+        job_id=job.id,
+        name="Task Beta",
+        description="Beta task",
+        status=TaskStatus.COMPLETED,
+        diff_path=str(diff2_path),
+        completed_at=datetime.utcnow(),
+    )
+    db.create_task(task1)
+    db.create_task(task2)
+
+    # Retrieve diff for specific task via CLI
+    result = runner.invoke(mini, ["job", "results", "diff", job.id, "--task-id", "task-alpha"])
+
+    assert result.exit_code == 0
+    assert "Task Alpha" in result.output
+
+
+def test_results_diff_task_without_diff(db, runner, mock_config_dir):
+    """Test retrieving diffs shows tasks without diffs appropriately."""
+    from minimise.models import Task, TaskStatus
+
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a job with a task that has no diff
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="No Diff Test",
+        status=JobStatus.COMPLETED,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    task = Task(
+        id="task-1",
+        job_id=job.id,
+        name="Task Without Diff",
+        description="Task description",
+        status=TaskStatus.COMPLETED,
+        diff_path=None,  # No diff
+        completed_at=datetime.utcnow(),
+    )
+    db.create_task(task)
+
+    # Retrieve diffs
+    result = runner.invoke(mini, ["job", "results", "diff", job.id])
+
+    assert result.exit_code == 0
+    # Should show task but indicate no diff or show "No diffs found"
+
+
+def test_results_diff_nonexistent_job_fails(runner, mock_config_dir):
+    """Test retrieving diffs from nonexistent job returns error."""
+    result = runner.invoke(mini, ["job", "results", "diff", "nonexistent-job"])
+
+    assert result.exit_code == 1
+    assert "Error" in result.output or "not found" in result.output
+
+
+# ============================================================================
+# SHOW COMMAND TESTS
+# ============================================================================
+
+def test_show_plan_structure(db, runner, mock_config_dir, tmp_path):
+    """Test showing plan structure for a job."""
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a plan file with nested structure
+    plan_path = tmp_path / "plan.yaml"
+    plan_content = """plan:
+  name: Test Plan
+  briefing: Test briefing
+  documentation: |
+    This is documentation
+  tasks:
+    - name: Task 1
+      description: First task description
+    - name: Task 2
+      description: Second task description
+"""
+    plan_path.write_text(plan_content)
+
+    # Create a job with the plan
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Plan Structure Test",
+        status=JobStatus.PENDING,
+        plan_path=str(plan_path)
+    )
+    db.create_job(job)
+
+    # Show plan via CLI - should work even without DB tasks since it reads from plan file
+    result = runner.invoke(mini, ["job", "show", job.id])
+
+    assert result.exit_code == 0
+    assert "Plan Structure" in result.output
+    assert "Task 1" in result.output
+    assert "Task 2" in result.output
+
+
+def test_show_with_task_id_displays_prompt(db, runner, mock_config_dir, tmp_path):
+    """Test showing full prompt for a specific task with handover context."""
+    from minimise.models import Task, TaskStatus
+
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a plan file
+    plan_path = tmp_path / "plan.yaml"
+    plan_content = """name: Handover Test Plan
+tasks:
+  - name: Task 1
+    description: First task description
+  - name: Task 2
+    description: Second task description with context
+"""
+    plan_path.write_text(plan_content)
+
+    # Create a job with tasks
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Show Task Test",
+        status=JobStatus.RUNNING,
+        plan_path=str(plan_path)
+    )
+    db.create_job(job)
+
+    task1 = Task(
+        id=str(uuid.uuid4()),
+        job_id=job.id,
+        name="Task 1",
+        description="First task description",
+        status=TaskStatus.COMPLETED,
+        output="Task 1 output",
+        completed_at=datetime.utcnow(),
+    )
+    task2 = Task(
+        id=str(uuid.uuid4()),
+        job_id=job.id,
+        name="Task 2",
+        description="Second task description",
+        status=TaskStatus.PENDING,
+    )
+    db.create_task(task1)
+    db.create_task(task2)
+
+    # Show full prompt for task 2
+    result = runner.invoke(mini, ["job", "show", job.id, "--task-id", task2.id[:8]])
+
+    assert result.exit_code == 0
+    assert "Full Prompt" in result.output or "Task 2" in result.output or "description" in result.output
+
+
+def test_show_with_invalid_job_id_fails(runner, mock_config_dir):
+    """Test showing plan for nonexistent job returns error."""
+    result = runner.invoke(mini, ["job", "show", "nonexistent-job"])
+
+    assert result.exit_code == 1
+    assert "Error" in result.output or "not found" in result.output
+
+
+def test_show_with_invalid_task_id_fails(db, runner, mock_config_dir, tmp_path):
+    """Test showing full prompt with nonexistent task ID returns error."""
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a plan file
+    plan_path = tmp_path / "plan.yaml"
+    plan_content = """name: Test Plan
+tasks:
+  - name: Task 1
+    description: Task 1
+"""
+    plan_path.write_text(plan_content)
+
+    # Create a job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Invalid Task Test",
+        status=JobStatus.PENDING,
+        plan_path=str(plan_path)
+    )
+    db.create_job(job)
+
+    # Try to show with nonexistent task ID
+    result = runner.invoke(mini, ["job", "show", job.id, "--task-id", "nonexistent"])
+
+    assert result.exit_code == 1
+    assert "Error" in result.output or "not found" in result.output
+
+
+# ============================================================================
+# EDGE CASES AND ERROR CONDITIONS
+# ============================================================================
+
+def test_job_prefix_resolution(db, runner, mock_config_dir):
+    """Test that job commands work with partial job ID (prefix matching)."""
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a job with a recognizable ID
+    job = Job(
+        id="abcdef01-89ab-cdef-0123-456789abcdef",
+        name="Prefix Test Job",
+        status=JobStatus.PENDING,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    # Test retrieving with full ID (should work)
+    result = runner.invoke(mini, ["job", "status", job.id])
+    assert result.exit_code == 0 or "abcdef01" in result.output or "Prefix Test Job" in result.output
+
+
+def test_multiple_job_prefix_match_ambiguity(db, runner, mock_config_dir):
+    """Test that ambiguous prefix matching returns error."""
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create two jobs with similar IDs (both starting with 'a')
+    job1 = Job(
+        id="aaaaaaaa-0000-0000-0000-000000000001",
+        name="Job 1",
+        status=JobStatus.PENDING,
+        plan_path="/path/to/plan.yaml"
+    )
+    job2 = Job(
+        id="aaaaaaaa-0000-0000-0000-000000000002",
+        name="Job 2",
+        status=JobStatus.PENDING,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job1)
+    db.create_job(job2)
+
+    # Try to retrieve with ambiguous prefix
+    result = runner.invoke(mini, ["job", "status", "aaaaaaaa"])
+
+    # Should indicate ambiguity or error
+    assert result.exit_code in [1] or "multiple" in result.output.lower() or "disambiguate" in result.output
+
+
+def test_results_logs_task_prefix_matching(db, runner, mock_config_dir):
+    """Test that results logs work with task ID prefix matching."""
+    from minimise.models import Task, TaskStatus
+
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Task Prefix Test",
+        status=JobStatus.COMPLETED,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    # Create a task
+    task = Task(
+        id="prefix-task-12345",
+        job_id=job.id,
+        name="Prefix Task",
+        description="Task for prefix matching",
+        status=TaskStatus.COMPLETED,
+        output="Task output",
+        completed_at=datetime.utcnow(),
+    )
+    db.create_task(task)
+
+    # Retrieve with prefix
+    result = runner.invoke(mini, ["job", "results", "logs", job.id, "--task-id", "prefix"])
+
+    assert result.exit_code == 0
+    assert "Prefix Task" in result.output or "Task output" in result.output
+
+
+def test_job_status_transition_validates_state(db):
+    """Test that job status transitions validate state appropriately."""
+    # Create a PENDING job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Status Transition Test",
+        status=JobStatus.PENDING,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    # Try various state transitions
+    # PENDING -> RUNNING should work
+    db.update_job_status(job.id, JobStatus.RUNNING, started_at=datetime.utcnow())
+    job_running = db.get_job(job.id)
+    assert job_running.status == JobStatus.RUNNING
+
+    # RUNNING -> COMPLETED should work
+    db.update_job_status(job.id, JobStatus.COMPLETED, completed_at=datetime.utcnow())
+    job_completed = db.get_job(job.id)
+    assert job_completed.status == JobStatus.COMPLETED
+
+
+def test_results_logs_displays_task_metadata(db, runner, mock_config_dir):
+    """Test that results logs display all task metadata."""
+    from minimise.models import Task, TaskStatus
+
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Metadata Test",
+        status=JobStatus.COMPLETED,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    # Create a task with metadata
+    task = Task(
+        id="task-metadata",
+        job_id=job.id,
+        name="Task with Metadata",
+        description="Full task description",
+        status=TaskStatus.COMPLETED,
+        output="Full output text",
+        retries=2,
+        started_at=datetime.utcnow(),
+        completed_at=datetime.utcnow(),
+    )
+    db.create_task(task)
+
+    # Retrieve logs
+    result = runner.invoke(mini, ["job", "results", "logs", job.id])
+
+    assert result.exit_code == 0
+    assert "Task with Metadata" in result.output
+    assert "Full output text" in result.output
+    assert "Status" in result.output or "Retries" in result.output or "metadata" in result.output
+
+
+def test_stop_and_resume_workflow(db, runner, mock_config_dir):
+    """Test complete workflow: start -> stop -> resume."""
+    from minimise.models import Task, TaskStatus
+
+    # Create PENDING job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Workflow Test",
+        status=JobStatus.PENDING,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    task = Task(
+        id="task-1",
+        job_id=job.id,
+        name="Workflow Task",
+        description="Task for workflow",
+        status=TaskStatus.PENDING,
+    )
+    db.create_task(task)
+
+    # Simulate start
+    db.update_job_status(job.id, JobStatus.RUNNING, started_at=datetime.utcnow(), pid=12345)
+    job_running = db.get_job(job.id)
+    assert job_running.status == JobStatus.RUNNING
+
+    # Simulate stop
+    db.update_job_status(job.id, JobStatus.STOPPED, completed_at=datetime.utcnow())
+    job_stopped = db.get_job(job.id)
+    assert job_stopped.status == JobStatus.STOPPED

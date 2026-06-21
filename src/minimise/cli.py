@@ -224,7 +224,8 @@ def job_list(format, limit):
 
 @job.command(name="status")
 @click.argument("job_id")
-def job_status(job_id: str):
+@click.option("--format", type=click.Choice(["table", "json"]), default="table", help="Output format")
+def job_status(job_id: str, format: str):
     """Show job details and task progress."""
     try:
         job_id = resolve_job_id(job_id)
@@ -237,33 +238,61 @@ def job_status(job_id: str):
             console.print(f"[red]Error: Job {job_id} not found[/red]")
             raise SystemExit(1)
 
-        # Display job details
-        console.print(f"\n[bold]Job Details[/bold]")
-        console.print(f"[bold]ID:[/bold] {job_obj.id}")
-        console.print(f"[bold]Name:[/bold] {job_obj.name}")
-        console.print(f"[bold]Status:[/bold] {job_obj.status.value}")
-        console.print(f"[bold]Plan Path:[/bold] {job_obj.plan_path}")
-        console.print(f"[bold]Base Commit:[/bold] {job_obj.base_commit or 'N/A'}")
-        console.print(
-            f"[bold]Created:[/bold] {job_obj.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-        if job_obj.started_at:
-            console.print(
-                f"[bold]Started:[/bold] {job_obj.started_at.strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-        if job_obj.completed_at:
-            console.print(
-                f"[bold]Completed:[/bold] {job_obj.completed_at.strftime('%Y-%m-%d %H:%M:%S')}"
-            )
+        if format == "json":
+            # Build JSON output with task metadata
+            tasks_data = []
+            for task in job_obj.tasks:
+                task_data = {
+                    "id": task.id,
+                    "name": task.name,
+                    "status": task.status.value,
+                    "started_at": task.started_at.isoformat() if task.started_at else None,
+                    "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+                }
+                # Add duration_seconds if both start and end times exist
+                if task.started_at and task.completed_at:
+                    duration = (task.completed_at - task.started_at).total_seconds()
+                    task_data["duration_seconds"] = duration
+                tasks_data.append(task_data)
 
-        # Display task progress with Gantt chart
-        if job_obj.tasks:
-            console.print(f"\n[bold]Task Progress[/bold]")
-            table = render_task_table_with_gantt(job_obj, job_obj.tasks, now=datetime.utcnow())
-            console.print(table)
-            console.print(f"\n[dim]View full output with: mini job logs {job_id[:8]}[/dim]")
+            output = {
+                "id": job_obj.id,
+                "name": job_obj.name,
+                "status": job_obj.status.value,
+                "created_at": job_obj.created_at.isoformat() if job_obj.created_at else None,
+                "started_at": job_obj.started_at.isoformat() if job_obj.started_at else None,
+                "completed_at": job_obj.completed_at.isoformat() if job_obj.completed_at else None,
+                "tasks": tasks_data,
+            }
+            console.print(json.dumps(output, indent=2))
         else:
-            console.print("[yellow]No tasks for this job[/yellow]")
+            # Display job details (table format)
+            console.print(f"\n[bold]Job Details[/bold]")
+            console.print(f"[bold]ID:[/bold] {job_obj.id}")
+            console.print(f"[bold]Name:[/bold] {job_obj.name}")
+            console.print(f"[bold]Status:[/bold] {job_obj.status.value}")
+            console.print(f"[bold]Plan Path:[/bold] {job_obj.plan_path}")
+            console.print(f"[bold]Base Commit:[/bold] {job_obj.base_commit or 'N/A'}")
+            console.print(
+                f"[bold]Created:[/bold] {job_obj.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            if job_obj.started_at:
+                console.print(
+                    f"[bold]Started:[/bold] {job_obj.started_at.strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+            if job_obj.completed_at:
+                console.print(
+                    f"[bold]Completed:[/bold] {job_obj.completed_at.strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+
+            # Display task progress with Gantt chart
+            if job_obj.tasks:
+                console.print(f"\n[bold]Task Progress[/bold]")
+                table = render_task_table_with_gantt(job_obj, job_obj.tasks, now=datetime.utcnow())
+                console.print(table)
+                console.print(f"\n[dim]View full output with: mini job logs {job_id[:8]}[/dim]")
+            else:
+                console.print("[yellow]No tasks for this job[/yellow]")
 
     except Exception as e:
         console.print(f"[red]Error: {str(e)}[/red]")

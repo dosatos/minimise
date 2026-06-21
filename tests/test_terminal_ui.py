@@ -4,6 +4,7 @@ import pytest
 from datetime import datetime, timedelta
 from minimise.terminal_ui import (
     format_duration,
+    humanize_duration,
     render_gantt_bar,
     render_task_table_with_gantt,
     get_status_color,
@@ -87,6 +88,100 @@ def sample_tasks(base_time):
     tasks.append(task4)
 
     return tasks
+
+
+class TestHumanizeDuration:
+    """Tests for humanize_duration function."""
+
+    # Milliseconds range
+    def test_humanize_duration_0ms(self):
+        """Test formatting 0 milliseconds."""
+        assert humanize_duration(0) == "0ms"
+
+    def test_humanize_duration_500ms(self):
+        """Test formatting 500 milliseconds."""
+        assert humanize_duration(0.5) == "500ms"
+
+    def test_humanize_duration_999ms(self):
+        """Test formatting 999 milliseconds."""
+        assert humanize_duration(0.999) == "999ms"
+
+    # Seconds range
+    def test_humanize_duration_1_0s(self):
+        """Test formatting 1.0 second."""
+        assert humanize_duration(1.0) == "1.0s"
+
+    def test_humanize_duration_30_0s(self):
+        """Test formatting 30.0 seconds."""
+        assert humanize_duration(30.0) == "30.0s"
+
+    def test_humanize_duration_45_5s(self):
+        """Test formatting 45.5 seconds."""
+        assert humanize_duration(45.5) == "45.5s"
+
+    def test_humanize_duration_59_9s(self):
+        """Test formatting 59.9 seconds."""
+        assert humanize_duration(59.9) == "59.9s"
+
+    # Minutes range
+    def test_humanize_duration_1m_0s(self):
+        """Test formatting 1 minute 0 seconds (60s)."""
+        assert humanize_duration(60) == "1m 0s"
+
+    def test_humanize_duration_1m_30s(self):
+        """Test formatting 1 minute 30 seconds (90s)."""
+        assert humanize_duration(90) == "1m 30s"
+
+    def test_humanize_duration_2m_35s(self):
+        """Test formatting 2 minutes 35 seconds (155s)."""
+        assert humanize_duration(155) == "2m 35s"
+
+    def test_humanize_duration_9m_59s(self):
+        """Test formatting 9 minutes 59 seconds (599s)."""
+        assert humanize_duration(599) == "9m 59s"
+
+    def test_humanize_duration_10m_0s(self):
+        """Test formatting 10 minutes 0 seconds (600s)."""
+        assert humanize_duration(600) == "10m 0s"
+
+    # Hours range
+    def test_humanize_duration_1h_0m(self):
+        """Test formatting 1 hour 0 minutes (3600s)."""
+        assert humanize_duration(3600) == "1h 0m"
+
+    def test_humanize_duration_1h_1m(self):
+        """Test formatting 1 hour 1 minute (3660s)."""
+        assert humanize_duration(3660) == "1h 1m"
+
+    def test_humanize_duration_1h_30m(self):
+        """Test formatting 1 hour 30 minutes (5400s)."""
+        assert humanize_duration(5400) == "1h 30m"
+
+    def test_humanize_duration_23h_59m(self):
+        """Test formatting 23 hours 59 minutes (86340s)."""
+        assert humanize_duration(86340) == "23h 59m"
+
+    # Days range
+    def test_humanize_duration_1d_0h_0m(self):
+        """Test formatting 1 day 0 hours 0 minutes (86400s)."""
+        assert humanize_duration(86400) == "1d 0h 0m"
+
+    def test_humanize_duration_1d_1h_1m(self):
+        """Test formatting 1 day 1 hour 1 minute (90061s)."""
+        assert humanize_duration(90061) == "1d 1h 1m"
+
+    def test_humanize_duration_2d_0h_0m(self):
+        """Test formatting 2 days 0 hours 0 minutes (172800s)."""
+        assert humanize_duration(172800) == "2d 0h 0m"
+
+    def test_humanize_duration_2d_12h_30m(self):
+        """Test formatting 2 days 12 hours 30 minutes (217800s)."""
+        assert humanize_duration(217800) == "2d 12h 30m"
+
+    def test_humanize_duration_10d_5h_23m(self):
+        """Test formatting 10 days 5 hours 23 minutes."""
+        # 10 * 86400 + 5 * 3600 + 23 * 60 = 864000 + 18000 + 1380 = 883380
+        assert humanize_duration(883380) == "10d 5h 23m"
 
 
 class TestFormatDuration:
@@ -187,6 +282,62 @@ class TestRenderGanttBar:
         result = render_gantt_bar(task_start, None, job_start, job_end, is_running=True, now=now)
         # Should have some content (mix of empty and filled)
         assert "█" in result or "░" in result
+        assert len(result) == 28
+
+    def test_gantt_bar_completed_task_in_running_job(self, base_time):
+        """Test Gantt bar for completed task when job is still running.
+
+        This tests the bug fix: a task can be completed while the job is still running
+        (job_completed_at is None). The bar should still render for the completed task.
+        """
+        job_start = base_time
+        task_start = base_time + timedelta(seconds=1)
+        task_end = base_time + timedelta(seconds=3)
+        now = base_time + timedelta(seconds=8)
+        # Job is still running, so job_completed_at is None
+
+        result = render_gantt_bar(
+            task_start, task_end, job_start, None,
+            is_running=False, now=now
+        )
+        # Task is completed, so should render a bar (not "—")
+        assert result != "—"
+        assert "█" in result
+        assert len(result) == 28
+
+    def test_gantt_bar_running_task_in_running_job(self, base_time):
+        """Test Gantt bar for running task when job is still running.
+
+        When both task and job are running, render based on current time.
+        """
+        job_start = base_time
+        task_start = base_time + timedelta(seconds=2)
+        now = base_time + timedelta(seconds=7)
+        # Both job and task are running
+
+        result = render_gantt_bar(
+            task_start, None, job_start, None,
+            is_running=True, now=now
+        )
+        # Should render a bar showing task progress
+        assert result != "—"
+        assert "█" in result
+        assert len(result) == 28
+
+    def test_gantt_bar_completed_job_unchanged(self, base_time):
+        """Test that completed jobs still render bars correctly (no regression).
+
+        When job is completed, bars should render as before.
+        """
+        job_start = base_time
+        job_end = base_time + timedelta(seconds=10)
+        task_start = base_time + timedelta(seconds=2)
+        task_end = base_time + timedelta(seconds=5)
+
+        result = render_gantt_bar(task_start, task_end, job_start, job_end)
+        # Should render normally for completed jobs
+        assert result != "—"
+        assert "█" in result
         assert len(result) == 28
 
 

@@ -7,6 +7,35 @@ from rich.text import Text
 from minimise.models import Job, Task, JobStatus, TaskStatus
 
 
+def humanize_duration(total_seconds: float) -> str:
+    """
+    Format duration as human-readable string with appropriate units.
+
+    Args:
+        total_seconds: Duration in seconds
+
+    Returns:
+        Formatted duration string (e.g., "2m 35s", "1h 30m", "1d 0h 0m")
+    """
+    if total_seconds < 1:
+        return f"{int(total_seconds * 1000)}ms"
+    elif total_seconds < 60:
+        return f"{total_seconds:.1f}s"
+    elif total_seconds < 3600:
+        minutes = int(total_seconds // 60)
+        seconds = int(total_seconds % 60)
+        return f"{minutes}m {seconds}s"
+    elif total_seconds < 86400:
+        hours = int(total_seconds // 3600)
+        minutes = int((total_seconds % 3600) // 60)
+        return f"{hours}h {minutes}m"
+    else:
+        days = int(total_seconds // 86400)
+        hours = int((total_seconds % 86400) // 3600)
+        minutes = int(((total_seconds % 86400) % 3600) // 60)
+        return f"{days}d {hours}h {minutes}m"
+
+
 def get_status_color(status) -> str:
     """Get color for status badge."""
     if isinstance(status, JobStatus) or isinstance(status, TaskStatus):
@@ -49,20 +78,13 @@ def format_duration(
         if now is None:
             now = datetime.utcnow()
         elapsed = (now - started_at).total_seconds()
-        if elapsed < 1:
-            return f"{int(elapsed * 1000)}ms"
-        else:
-            return f"{elapsed:.1f}s"
+        return humanize_duration(elapsed)
 
     if not completed_at:
         return "—"
 
     duration = (completed_at - started_at).total_seconds()
-
-    if duration < 1:
-        return f"{int(duration * 1000)}ms"
-    else:
-        return f"{duration:.1f}s"
+    return humanize_duration(duration)
 
 
 def render_gantt_bar(
@@ -92,19 +114,21 @@ def render_gantt_bar(
     if not started_at or not job_started_at:
         return "—"
 
+    if now is None:
+        now = datetime.utcnow()
+
     if is_running and not completed_at:
-        if now is None:
-            now = datetime.utcnow()
-        if not job_completed_at:
-            job_completed_at = now
         task_end = now
-    elif not completed_at or not job_completed_at:
+    elif not completed_at:
         return "—"
     else:
         task_end = completed_at
 
+    # Use current time as scaling reference if job is still running
+    job_end_for_scaling = job_completed_at if job_completed_at else now
+
     # Calculate total job duration
-    job_duration = (job_completed_at - job_started_at).total_seconds()
+    job_duration = (job_end_for_scaling - job_started_at).total_seconds()
     if job_duration <= 0:
         return "—"
 
