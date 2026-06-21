@@ -557,6 +557,161 @@ def job_results_diff(job_id: str, task_id: Optional[str]):
         raise SystemExit(1)
 
 
+@job.command(name="show")
+@click.argument("job_id")
+@click.option("--task-id", default=None, help="Show full prompt with handover context for a specific task")
+def job_show(job_id: str, task_id: Optional[str]):
+    """Show job plan structure or full prompt for a specific task."""
+    try:
+        from minimise.handover_manager import HandoverManager
+        import yaml
+
+        job_id = resolve_job_id(job_id)
+        db = get_db()
+        job_manager = get_job_manager(db)
+
+        job_obj = db.get_job(job_id)
+
+        if job_obj is None:
+            console.print(f"[red]Error: Job {job_id} not found[/red]")
+            raise SystemExit(1)
+
+        # If task_id is provided, show full prompt with handover context
+        if task_id:
+            tasks = db.list_tasks_for_job(job_id)
+            matching_tasks = [t for t in tasks if t.id == task_id or t.id.startswith(task_id)]
+
+            if not matching_tasks:
+                console.print(f"[red]Error: Task '{task_id}' not found[/red]")
+                raise SystemExit(1)
+
+            if len(matching_tasks) > 1:
+                console.print(f"[red]Error: Multiple tasks match '{task_id}':[/red]")
+                for t in matching_tasks:
+                    console.print(f"  {t.id}")
+                console.print("[yellow]Please provide more characters to disambiguate[/yellow]")
+                raise SystemExit(1)
+
+            task = matching_tasks[0]
+
+            console.print(f"\n[bold]Full Prompt for Task[/bold]")
+            console.print(f"[bold]Job:[/bold] {job_obj.name} ({job_id})")
+            console.print(f"[bold]Task:[/bold] {task.name} ({task.id})")
+            console.print(f"[bold]Status:[/bold] {task.status.value}\n")
+
+            # Display task description
+            console.print(f"[bold cyan]Task Description[/bold cyan]")
+            console.print(task.description)
+            console.print()
+
+            # If task is not the first one, show handover context
+            all_tasks = db.list_tasks_for_job(job_id)
+            task_index = next((i for i, t in enumerate(all_tasks) if t.id == task.id), None)
+
+            if task_index and task_index > 0:
+                previous_task = all_tasks[task_index - 1]
+                console.print(f"[bold cyan]Handover Context[/bold cyan]")
+                console.print(f"[dim]From previous task: {previous_task.name}[/dim]\n")
+
+                # Show previous task output
+                if previous_task.output:
+                    console.print(f"[bold]Previous Task Output:[/bold]")
+                    for line in previous_task.output.split("\n"):
+                        if line:
+                            console.print(f"  {line}")
+                    console.print()
+
+                # Show git diff since job start
+                if job_obj.base_commit:
+                    diff = job_manager.git_tracker.get_diff(job_obj.base_commit)
+                    if diff:
+                        console.print(f"[bold]Git Changes Summary:[/bold]")
+                        file_count = diff.count("diff --git")
+                        lines_added = len([l for l in diff.split("\n") if l.startswith("+") and not l.startswith("+++")])
+                        lines_removed = len([l for l in diff.split("\n") if l.startswith("-") and not l.startswith("---")])
+                        console.print(f"  Files changed: {file_count}")
+                        console.print(f"  Lines added: {lines_added}")
+                        console.print(f"  Lines removed: {lines_removed}\n")
+
+                        # Show truncated diff
+                        console.print(f"[bold]Diff Preview (first 2000 chars):[/bold]")
+                        truncated_diff = diff[:2000]
+                        if len(diff) > 2000:
+                            truncated_diff += "\n..."
+                        for line in truncated_diff.split("\n"):
+                            if line:
+                                if line.startswith("+++") or line.startswith("---"):
+                                    console.print(f"  [cyan]{line}[/cyan]")
+                                elif line.startswith("+"):
+                                    console.print(f"  [green]{line}[/green]")
+                                elif line.startswith("-"):
+                                    console.print(f"  [red]{line}[/red]")
+                                else:
+                                    console.print(f"  {line}")
+        else:
+            # Show plan structure
+            plan_path = Path(job_obj.plan_path)
+
+            if not plan_path.exists():
+                console.print(f"[red]Error: Plan file not found at {plan_path}[/red]")
+                raise SystemExit(1)
+
+            with open(plan_path, 'r') as f:
+                plan_data = yaml.safe_load(f)
+
+            plan = plan_data.get('plan', {})
+
+            console.print(f"\n[bold]Plan Structure[/bold]")
+            console.print(f"[bold]Job:[/bold] {job_obj.name} ({job_id})")
+            console.print(f"[bold]Plan Path:[/bold] {plan_path}")
+            console.print(f"[bold]Status:[/bold] {job_obj.status.value}\n")
+
+            # Display plan metadata
+            if 'name' in plan:
+                console.print(f"[bold]Plan Name:[/bold] {plan['name']}")
+            if 'briefing' in plan:
+                console.print(f"[bold]Briefing:[/bold] {plan['briefing']}")
+            if 'documentation' in plan:
+                console.print(f"[bold]Documentation:[/bold]")
+                for line in plan['documentation'].strip().split("\n"):
+                    console.print(f"  {line}")
+
+            # Display tasks
+            tasks = plan.get('tasks', [])
+            console.print(f"\n[bold]Tasks ({len(tasks)})[/bold]")
+
+            db_tasks = db.list_tasks_for_job(job_id)
+
+            for i, task_plan in enumerate(tasks, 1):
+                task_id = task_plan.get('id', f'task-{i}')
+                task_name = task_plan.get('name', 'Unnamed')
+
+                # Find corresponding db task to get status
+                db_task = next((t for t in db_tasks if t.id == task_id), None)
+                status = db_task.status.value if db_task else "not started"
+                status_color = "green" if status == "completed" else "yellow" if status == "running" else "red" if status == "failed" else "cyan"
+
+                console.print(f"\n  [{i}] [bold {status_color}]{task_name}[/bold {status_color}]")
+                console.print(f"      [dim]ID:[/dim] {task_id}")
+                console.print(f"      [dim]Status:[/dim] {status}")
+
+                description = task_plan.get('description', 'No description')
+                description_lines = description.strip().split("\n")
+                for line in description_lines[:3]:
+                    if line.strip():
+                        console.print(f"      {line[:70]}")
+                if len(description_lines) > 3:
+                    console.print(f"      [dim]...[/dim]")
+
+            console.print(f"\n[dim]View full prompt with: mini job show {job_id[:8]} --task-id <task-id>[/dim]")
+
+    except SystemExit:
+        raise
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
+        raise SystemExit(1)
+
+
 @mini.group(name="view")
 def view():
     """Manage web UI"""
