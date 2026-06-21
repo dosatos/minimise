@@ -358,7 +358,7 @@ def job_delete(job_id: str):
 @job.command(name="resume")
 @click.argument("job_id")
 def job_resume(job_id: str):
-    """Retry failed job from checkpoint."""
+    """Resume a stopped or failed job from checkpoint."""
     try:
         job_id = resolve_job_id(job_id)
         db = get_db()
@@ -370,9 +370,9 @@ def job_resume(job_id: str):
             console.print(f"[red]Error: Job {job_id} not found[/red]")
             raise SystemExit(1)
 
-        if job_obj.status != JobStatus.FAILED:
+        if job_obj.status not in [JobStatus.FAILED, JobStatus.STOPPED]:
             console.print(
-                f"[yellow]Job is not in FAILED state. Current status: {job_obj.status.value}[/yellow]"
+                f"[yellow]Job must be in FAILED or STOPPED state. Current status: {job_obj.status.value}[/yellow]"
             )
             return
 
