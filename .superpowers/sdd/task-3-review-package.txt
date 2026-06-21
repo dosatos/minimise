@@ -1,0 +1,421 @@
+9926473 feat: handover context manager
+c795fab feat: git state validator and diff tracker
+
+--- STAT ---
+
+ src/minimise/git_tracker.py      |  93 ++++++++++++++++++++++++++++++
+ src/minimise/handover_manager.py |  56 +++++++++++++++++++
+ tests/test_git_tracker.py        | 117 ++++++++++++++++++++++++++++++++++++++
+ tests/test_handover_manager.py   | 118 +++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 384 insertions(+)
+
+--- FULL DIFF ---
+
+diff --git a/src/minimise/git_tracker.py b/src/minimise/git_tracker.py
+new file mode 100644
+index 0000000..e17c6ba
+--- /dev/null
++++ b/src/minimise/git_tracker.py
+@@ -0,0 +1,93 @@
++import subprocess
++from pathlib import Path
++from typing import Optional, Tuple
++
++
++class GitTracker:
++    """Tracks git state and manages diff operations."""
++
++    def __init__(self, repo_path: Path):
++        """
++        Initialize GitTracker with a repository path.
++
++        Args:
++            repo_path: Path to the git repository
++        """
++        self.repo_path = Path(repo_path)
++
++    def validate_clean_state(self) -> Tuple[bool, str]:
++        """
++        Validate that the git repository has a clean state (no uncommitted changes).
++
++        Returns:
++            Tuple of (is_clean: bool, message: str)
++        """
++        try:
++            result = subprocess.run(
++                ["git", "status", "--porcelain"],
++                cwd=self.repo_path,
++                capture_output=True,
++                text=True,
++                check=True
++            )
++
++            if result.stdout.strip():
++                # There are uncommitted changes
++                return (False, f"Git repository has uncommitted changes:\n{result.stdout}")
++
++            return (True, "Git repository is clean")
++
++        except FileNotFoundError:
++            return (False, "Git is not installed or not found in PATH")
++        except subprocess.CalledProcessError as e:
++            return (False, f"Git error: {e.stderr}")
++
++    def get_current_commit(self) -> Optional[str]:
++        """
++        Get the current commit hash (SHA).
++
++        Returns:
++            The commit hash (40 hex characters) or None if error
++        """
++        try:
++            result = subprocess.run(
++                ["git", "rev-parse", "HEAD"],
++                cwd=self.repo_path,
++                capture_output=True,
++                text=True,
++                check=True
++            )
++
++            commit_hash = result.stdout.strip()
++            return commit_hash if len(commit_hash) == 40 else None
++
++        except FileNotFoundError:
++            return None
++        except subprocess.CalledProcessError:
++            return None
++
++    def get_diff(self, base_commit: str) -> str:
++        """
++        Get the unified diff from a base commit to HEAD.
++
++        Args:
++            base_commit: The base commit hash to diff from
++
++        Returns:
++            The diff output as a string
++        """
++        try:
++            result = subprocess.run(
++                ["git", "diff", f"{base_commit}..HEAD"],
++                cwd=self.repo_path,
++                capture_output=True,
++                text=True,
++                check=True
++            )
++
++            return result.stdout
++
++        except FileNotFoundError:
++            return ""
++        except subprocess.CalledProcessError:
++            return ""
+diff --git a/src/minimise/handover_manager.py b/src/minimise/handover_manager.py
+new file mode 100644
+index 0000000..47a9944
+--- /dev/null
++++ b/src/minimise/handover_manager.py
+@@ -0,0 +1,56 @@
++"""Handover context manager for passing context between sequential tasks."""
++
++from minimise.models import Task
++
++
++class HandoverManager:
++    """Builds handover context passed from one task to the next."""
++
++    @staticmethod
++    def build_handover_prompt(
++        current_task_output: str, diff: str, next_task: Task
++    ) -> str:
++        """
++        Build a handover prompt combining previous task output, diff, and next task context.
++
++        Args:
++            current_task_output: Output from the completed task
++            diff: Git diff since job start
++            next_task: The next task to execute
++
++        Returns:
++            A formatted prompt for the next agent
++        """
++        # Extract file and line change summary from diff
++        file_count = diff.count("diff --git")
++        lines_added = len([l for l in diff.split("\n") if l.startswith("+")])
++        lines_removed = len([l for l in diff.split("\n") if l.startswith("-")])
++
++        # Truncate diff to 2000 characters for token efficiency
++        truncated_diff = diff[:2000]
++        if len(diff) > 2000:
++            truncated_diff += "..."
++
++        prompt = f"""## Previous Task Summary
++
++**Task Output:**
++{current_task_output}
++
++**Changes Made:**
++- Files changed: {file_count}
++- Lines added: {lines_added}
++- Lines removed: {lines_removed}
++
++**Diff Summary:**
++```diff
++{truncated_diff}
++```
++
++## Next Task
++
++**Name:** {next_task.name}
++**Description:** {next_task.description}
++
++Please continue from where the previous task left off and complete this task."""
++
++        return prompt
+diff --git a/tests/test_git_tracker.py b/tests/test_git_tracker.py
+new file mode 100644
+index 0000000..816813b
+--- /dev/null
++++ b/tests/test_git_tracker.py
+@@ -0,0 +1,117 @@
++import pytest
++import tempfile
++import subprocess
++from pathlib import Path
++from minimise.git_tracker import GitTracker
++
++
++@pytest.fixture
++def git_repo():
++    """Create a temporary git repository for testing."""
++    with tempfile.TemporaryDirectory() as tmpdir:
++        repo_path = Path(tmpdir)
++
++        # Initialize git repository
++        subprocess.run(
++            ["git", "init"],
++            cwd=repo_path,
++            capture_output=True,
++            check=True
++        )
++
++        # Configure git user
++        subprocess.run(
++            ["git", "config", "user.email", "test@example.com"],
++            cwd=repo_path,
++            capture_output=True,
++            check=True
++        )
++        subprocess.run(
++            ["git", "config", "user.name", "Test User"],
++            cwd=repo_path,
++            capture_output=True,
++            check=True
++        )
++
++        # Create initial commit
++        test_file = repo_path / "test.txt"
++        test_file.write_text("initial content")
++
++        subprocess.run(
++            ["git", "add", "test.txt"],
++            cwd=repo_path,
++            capture_output=True,
++            check=True
++        )
++        subprocess.run(
++            ["git", "commit", "-m", "Initial commit"],
++            cwd=repo_path,
++            capture_output=True,
++            check=True
++        )
++
++        yield repo_path
++
++
++def test_validate_clean_state_clean(git_repo):
++    """Test that validate_clean_state detects a clean repository."""
++    tracker = GitTracker(git_repo)
++    is_clean, message = tracker.validate_clean_state()
++
++    assert is_clean is True
++    assert isinstance(message, str)
++
++
++def test_validate_clean_state_dirty(git_repo):
++    """Test that validate_clean_state detects uncommitted changes."""
++    # Modify a file
++    test_file = git_repo / "test.txt"
++    test_file.write_text("modified content")
++
++    tracker = GitTracker(git_repo)
++    is_clean, message = tracker.validate_clean_state()
++
++    assert is_clean is False
++    assert isinstance(message, str)
++
++
++def test_get_current_commit(git_repo):
++    """Test that get_current_commit returns a valid commit hash."""
++    tracker = GitTracker(git_repo)
++    commit = tracker.get_current_commit()
++
++    assert commit is not None
++    assert len(commit) == 40
++    assert all(c in "0123456789abcdef" for c in commit)
++
++
++def test_get_diff(git_repo):
++    """Test that get_diff returns unified diff between commits."""
++    tracker = GitTracker(git_repo)
++
++    # Get initial commit hash
++    base_commit = tracker.get_current_commit()
++
++    # Create a new file
++    new_file = git_repo / "new_file.txt"
++    new_file.write_text("new content")
++
++    subprocess.run(
++        ["git", "add", "new_file.txt"],
++        cwd=git_repo,
++        capture_output=True,
++        check=True
++    )
++    subprocess.run(
++        ["git", "commit", "-m", "Add new file"],
++        cwd=git_repo,
++        capture_output=True,
++        check=True
++    )
++
++    # Get diff
++    diff = tracker.get_diff(base_commit)
++
++    assert isinstance(diff, str)
++    assert len(diff) > 0
++    assert "new_file.txt" in diff
+diff --git a/tests/test_handover_manager.py b/tests/test_handover_manager.py
+new file mode 100644
+index 0000000..74337fa
+--- /dev/null
++++ b/tests/test_handover_manager.py
+@@ -0,0 +1,118 @@
++import pytest
++from minimise.handover_manager import HandoverManager
++from minimise.models import Task, TaskStatus
++import uuid
++
++
++def test_build_handover_prompt():
++    """Test building a handover prompt with task output, diff, and next task."""
++    task_output = "Created database schema"
++    diff = """diff --git a/schema.sql b/schema.sql
+++CREATE TABLE users (id INT PRIMARY KEY);
+++CREATE TABLE posts (id INT PRIMARY KEY);"""
++
++    next_task = Task(
++        id=str(uuid.uuid4()),
++        job_id=str(uuid.uuid4()),
++        name="Implement API",
++        description="Build REST API endpoints",
++        status=TaskStatus.PENDING,
++    )
++
++    prompt = HandoverManager.build_handover_prompt(task_output, diff, next_task)
++
++    # Assert key elements are present in the prompt
++    assert "Previous Task Summary" in prompt
++    assert "Created database schema" in prompt
++    assert "Files changed: 1" in prompt
++    assert "Implement API" in prompt
++    assert "Build REST API endpoints" in prompt
++
++
++def test_build_handover_prompt_counts_multiple_files():
++    """Test that file count is calculated correctly for multiple files."""
++    task_output = "Modified multiple files"
++    diff = """diff --git a/file1.py b/file1.py
+++new content 1
++diff --git a/file2.py b/file2.py
+++new content 2
++diff --git a/file3.py b/file3.py
+++new content 3"""
++
++    next_task = Task(
++        id=str(uuid.uuid4()),
++        job_id=str(uuid.uuid4()),
++        name="Next Task",
++        description="Do something next",
++        status=TaskStatus.PENDING,
++    )
++
++    prompt = HandoverManager.build_handover_prompt(task_output, diff, next_task)
++
++    assert "Files changed: 3" in prompt
++
++
++def test_build_handover_prompt_counts_lines():
++    """Test that added and removed lines are counted correctly."""
++    task_output = "Made code changes"
++    diff = """diff --git a/file.py b/file.py
++-old line 1
++-old line 2
+++new line 1
+++new line 2
+++new line 3"""
++
++    next_task = Task(
++        id=str(uuid.uuid4()),
++        job_id=str(uuid.uuid4()),
++        name="Next Task",
++        description="Continue work",
++        status=TaskStatus.PENDING,
++    )
++
++    prompt = HandoverManager.build_handover_prompt(task_output, diff, next_task)
++
++    assert "Lines added: 3" in prompt
++    assert "Lines removed: 2" in prompt
++
++
++def test_build_handover_prompt_truncates_large_diff():
++    """Test that large diffs are truncated to 2000 characters."""
++    task_output = "Made large changes"
++    # Create a diff larger than 2000 chars
++    large_diff = "diff --git a/file.py b/file.py\n"
++    large_diff += "+large line " * 200  # Add many lines to exceed 2000 chars
++
++    next_task = Task(
++        id=str(uuid.uuid4()),
++        job_id=str(uuid.uuid4()),
++        name="Next Task",
++        description="Continue work",
++        status=TaskStatus.PENDING,
++    )
++
++    prompt = HandoverManager.build_handover_prompt(task_output, large_diff, next_task)
++
++    # The diff portion should be truncated (with ... appended)
++    assert "..." in prompt
++    # Check that the prompt is reasonable in size
++    assert len(prompt) < len(large_diff) + 1000  # Some overhead for formatting
++
++
++def test_build_handover_prompt_includes_next_task_context():
++    """Test that next task name and description are properly included."""
++    task_output = "Output from task"
++    diff = "diff --git a/file.py b/file.py\n+content"
++
++    next_task = Task(
++        id=str(uuid.uuid4()),
++        job_id=str(uuid.uuid4()),
++        name="Build Authentication System",
++        description="Implement OAuth2 with JWT tokens and refresh mechanism",
++        status=TaskStatus.PENDING,
++    )
++
++    prompt = HandoverManager.build_handover_prompt(task_output, diff, next_task)
++
++    assert "Build Authentication System" in prompt
++    assert "Implement OAuth2 with JWT tokens and refresh mechanism" in prompt

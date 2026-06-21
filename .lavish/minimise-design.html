@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Minimise - Design Proposal</title>
+    <script src="https://cdn.tailwindcss.com/4.0.0"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+            color: #e2e8f0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            line-height: 1.6;
+        }
+        .card-section {
+            background: rgba(30, 41, 59, 0.5);
+            border: 1px solid #334155;
+            border-radius: 0.5rem;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .card-section.highlight { background: rgba(30, 58, 138, 0.2); border-color: #1e3a8a; }
+        .card-section.highlight h2 { color: #93c5fd; }
+        .card-section.success { background: rgba(20, 83, 45, 0.2); border-color: #166534; }
+        .card-section.success h2 { color: #86efac; }
+        .subsection {
+            background: rgba(71, 85, 105, 0.2);
+            border-left: 4px solid #3b82f6;
+            padding-left: 1rem;
+            padding-top: 0.75rem;
+            padding-bottom: 0.75rem;
+            margin-bottom: 1rem;
+        }
+        code {
+            background: #0f172a;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.875rem;
+            font-family: 'Courier New', monospace;
+            color: #06b6d4;
+        }
+        .cli-cmd {
+            background: #0f172a;
+            color: #e2e8f0;
+            padding: 1rem;
+            border-radius: 0.375rem;
+            font-family: 'Courier New', monospace;
+            font-size: 0.875rem;
+            border: 1px solid #334155;
+            margin: 0.75rem 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        h1 {
+            font-size: 2.25rem;
+            font-weight: bold;
+            margin-bottom: 0.5rem;
+            color: #60a5fa;
+        }
+        h2 {
+            font-size: 1.875rem;
+            font-weight: bold;
+            margin-top: 1.5rem;
+            margin-bottom: 1rem;
+            color: #93c5fd;
+        }
+        h3 {
+            font-size: 1.125rem;
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+            color: #e2e8f0;
+        }
+        .diagram {
+            background: #0f172a;
+            border-radius: 0.375rem;
+            border: 1px solid #475569;
+            padding: 1rem;
+            margin: 1rem 0;
+            font-family: 'Courier New', monospace;
+            font-size: 0.875rem;
+            color: #cbd5e1;
+            overflow-x: auto;
+            white-space: pre;
+        }
+        .badge {
+            display: inline-block;
+            background: rgba(30, 58, 138, 0.5);
+            color: #93c5fd;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.875rem;
+            border: 1px solid #1e3a8a;
+            margin-right: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .highlight { color: #fcd34d; font-weight: 600; }
+        ul { margin-left: 1.5rem; }
+        li { margin-bottom: 0.5rem; }
+        p { margin-bottom: 0.75rem; }
+        .grid { display: grid; gap: 1rem; }
+        .grid-3 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+        @media (max-width: 768px) { .grid-3 { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body class="p-8">
+    <div class="max-w-5xl mx-auto">
+        <!-- Header -->
+        <div class="mb-8">
+            <h1>⚙️ Minimise</h1>
+            <p class="text-slate-300 text-lg">A plan orchestrator for multi-agent execution with real-time visualization</p>
+            <div class="mt-4">
+                <span class="badge">Backend-first</span>
+                <span class="badge">Multi-job orchestration</span>
+                <span class="badge">Context-passing pipeline</span>
+                <span class="badge">UI-agnostic</span>
+            </div>
+        </div>
+
+        <!-- CLI Commands -->
+        <div class="card-section">
+            <h2>CLI Commands</h2>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                <div>
+                    <h3>Job Management</h3>
+                    <div class="cli-cmd">mini job new --plan plan.yaml</div>
+                    <p class="text-sm text-slate-400">Create & start a new job from plan</p>
+
+                    <div class="cli-cmd">mini job list</div>
+                    <p class="text-sm text-slate-400">Show all jobs (running/completed/failed)</p>
+
+                    <div class="cli-cmd">mini job status &lt;job-id&gt;</div>
+                    <p class="text-sm text-slate-400">Show job details & task progress</p>
+                </div>
+                <div>
+                    <h3>Job Control</h3>
+                    <div class="cli-cmd">mini job stop &lt;job-id&gt;</div>
+                    <p class="text-sm text-slate-400">Cancel/stop a running job</p>
+
+                    <div class="cli-cmd">mini job resume &lt;job-id&gt;</div>
+                    <p class="text-sm text-slate-400">Retry a failed job from last checkpoint</p>
+
+                    <div class="cli-cmd">mini job logs &lt;job-id&gt;</div>
+                    <p class="text-sm text-slate-400">View job output & logs</p>
+                </div>
+            </div>
+            <div class="mt-6 pt-6 border-t border-slate-700">
+                <h3>Visualization & Server</h3>
+                <div class="cli-cmd">mini view [start]</div>
+                <p class="text-sm text-slate-400 mb-4">Launch web UI (defaults to list view, optionally start server)</p>
+
+                <div class="cli-cmd">mini view stop</div>
+                <p class="text-sm text-slate-400">Shut down the Minimise server</p>
+            </div>
+        </div>
+
+        <!-- Architecture -->
+        <div class="card-section">
+            <h2>Backend Architecture</h2>
+            <div class="subsection">
+                <h3>Core Components</h3>
+                <ul class="space-y-2 text-slate-300">
+                    <li><span class="text-blue-400">📄 Plan Parser</span> — reads plan.yaml, validates structure</li>
+                    <li><span class="text-blue-400">🎯 Job Manager</span> — creates jobs, tracks multiple concurrent runs</li>
+                    <li><span class="text-blue-400">⚡ Task Executor</span> — runs task commands, handles retries (1-3 attempts)</li>
+                    <li><span class="text-blue-400">🔗 Handover Manager</span> — passes context between tasks</li>
+                    <li><span class="text-blue-400">💾 State Tracker</span> — persists job/task state to disk</li>
+                    <li><span class="text-blue-400">🪝 Hook Runner</span> — executes pre/post hooks (plan & task level)</li>
+                    <li><span class="text-blue-400">🌐 API Server</span> — REST/WebSocket for UI clients</li>
+                </ul>
+            </div>
+
+            <h3 class="mt-6">Execution Loop</h3>
+            <div class="diagram">
+┌─────────────────────────────────────────────────────────────┐
+│ mini job new --plan plan.yaml                                   │
+└──────────────────┬──────────────────────────────────────────┘
+                   ↓
+            ┌──────────────┐
+            │ Job Manager  │ → creates job_id, init state
+            └──────┬───────┘
+                   ↓
+            ┌──────────────┐
+            │ Hook Runner  │ → run pre_plan_hook
+            └──────┬───────┘
+                   ↓
+      ┌────────────────────────────┐
+      │ Loop: for each task        │
+      │                            │
+      │ ┌────────────────────────┐ │
+      │ │ Pre-task Hook          │ │
+      │ └────────────────────────┘ │
+      │ ┌────────────────────────┐ │
+      │ │ Task Executor          │ │  (1-3 retries on error)
+      │ │ - Pass to Claude Code  │ │
+      │ │ - Capture output       │ │
+      │ └────────────────────────┘ │
+      │ ┌────────────────────────┐ │
+      │ │ Handover Manager       │ │
+      │ │ - Prepare context      │ │
+      │ │ - For next task        │ │
+      │ └────────────────────────┘ │
+      │ ┌────────────────────────┐ │
+      │ │ Post-task Hook         │ │
+      │ └────────────────────────┘ │
+      │ ┌────────────────────────┐ │
+      │ │ State Tracker          │ │
+      │ │ - Persist to disk      │ │
+      │ │ - Broadcast via API    │ │
+      │ └────────────────────────┘ │
+      └────────────────────────────┘
+                   ↓
+            ┌──────────────┐
+            │ Hook Runner  │ → run post_plan_hook
+            └──────┬───────┘
+                   ↓
+        ┌──────────────────────┐
+        │ Job Complete         │
+        │ UIs show final state │
+        └──────────────────────┘
+            </div>
+        </div>
+
+        <!-- Data Model -->
+        <div class="card-section">
+            <h2>plan.yaml Structure</h2>
+            <div class="subsection">
+                <h3>Plan Definition</h3>
+                <pre class="bg-slate-900 p-4 rounded border border-slate-700 overflow-x-auto text-sm"><code class="text-cyan-300">plan:
+  name: "Implementation Plan"
+  briefing: |
+    High-level overview of what this plan does,
+    key objectives, and success criteria
+  documentation: |
+    Reference materials, design docs, links
+    that provide context for tasks
+
+  pre_plan_hook: "echo 'Starting plan execution'"
+  post_plan_hook: "echo 'Plan execution complete'"
+
+  tasks:
+    - id: "task-1"
+      name: "Setup Database"
+      description: "Initialize database schema and seed data"
+      pre_task_hook: "echo 'Setting up DB'"
+      post_task_hook: "echo 'DB ready'"
+
+    - id: "task-2"
+      name: "Build API"
+      description: "Implement REST API endpoints"
+      pre_task_hook: ""
+      post_task_hook: ""
+
+    # ... more tasks
+</code></pre>
+            </div>
+
+            <div class="subsection">
+                <h3>Key Fields</h3>
+                <ul class="space-y-2 text-slate-300">
+                    <li><span class="highlight">hooks</span> — Shell commands or callbacks at plan/task boundaries (pre_task_hook, post_task_hook)</li>
+                    <li><span class="highlight">id</span> — Unique task identifier for tracking</li>
+                    <li><span class="highlight">name, description</span> — Task details for agents</li>
+                    <li style="color: #fcd34d;">📌 <span class="highlight">Handover defaults to prompt</span> — Output from previous task passed as context to next agent</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Integration with Claude Code -->
+        <div class="card-section">
+            <h2>Integration with Claude Code</h2>
+            <div class="subsection">
+                <h3>Task Execution Flow</h3>
+                <p class="text-slate-300 mb-4">When a task is ready to execute:</p>
+                <div class="diagram">
+1. Minimise constructs payload:
+   - Task definition (name, description, id)
+   - Handover context (output from previous task)
+   - Plan briefing & documentation
+   - Task sequence info
+
+2. Minimise invokes Claude Code:
+   claude-code -p "&lt;payload&gt;"
+
+3. Claude Code executes task:
+   - Receives payload in non-interactive mode
+   - Performs work (implementation, analysis, etc.)
+   - Returns result
+
+4. Minimise captures result:
+   - Extracts task output
+   - Prepares handover context
+   - Stores in State Tracker
+   - Broadcasts via API Server
+
+5. Next task receives handover:
+   - Previous output becomes input context
+   - Process repeats
+                </div>
+            </div>
+
+            <div class="subsection">
+                <h3>Handover Strategies</h3>
+                <ul class="space-y-2 text-slate-300">
+                    <li><span class="text-blue-400">prompt</span> — Output sent as a natural prompt/context to next agent</li>
+                    <li><span class="text-blue-400">command</span> — Output used to construct a shell command for next task</li>
+                    <li><span class="text-blue-400">structured</span> — Output parsed and passed as structured data (JSON/YAML)</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- API & UIs -->
+        <div class="card-section">
+            <h2>Backend API & Multi-UI Architecture</h2>
+            <div class="subsection">
+                <h3>API Endpoints (REST + WebSocket)</h3>
+                <ul class="space-y-2 font-mono text-sm text-slate-300">
+                    <li><code class="text-cyan-300">GET /jobs</code> — List all jobs</li>
+                    <li><code class="text-cyan-300">POST /jobs</code> — Create new job</li>
+                    <li><code class="text-cyan-300">GET /jobs/{job-id}</code> — Job details + task list</li>
+                    <li><code class="text-cyan-300">GET /jobs/{job-id}/tasks/{task-id}</code> — Task details, output, retries, diffs</li>
+                    <li><code class="text-cyan-300">POST /jobs/{job-id}/cancel</code> — Revoke job</li>
+                    <li><code class="text-cyan-300">WS /jobs/{job-id}/stream</code> — Real-time updates</li>
+                </ul>
+            </div>
+
+            <div class="subsection">
+                <h3>UI Clients (Decoupled)</h3>
+                <p class="text-slate-300 mb-4">Multiple UIs can connect to the same backend:</p>
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 1rem;">
+                    <div style="background: rgba(71, 85, 105, 0.2); padding: 0.75rem; border-radius: 0.375rem; border: 1px solid #475569;">
+                        <p style="font-weight: 600; color: #93c5fd;">Web Dashboard</p>
+                        <p style="font-size: 0.875rem; color: #94a3b8;">Interactive browser UI for monitoring & control</p>
+                    </div>
+                    <div style="background: rgba(71, 85, 105, 0.2); padding: 0.75rem; border-radius: 0.375rem; border: 1px solid #475569;">
+                        <p style="font-weight: 600; color: #93c5fd;">Terminal UI</p>
+                        <p style="font-size: 0.875rem; color: #94a3b8;">Rich TUI for terminal-based monitoring</p>
+                    </div>
+                    <div style="background: rgba(71, 85, 105, 0.2); padding: 0.75rem; border-radius: 0.375rem; border: 1px solid #475569;">
+                        <p style="font-weight: 600; color: #93c5fd;">CLI Reports</p>
+                        <p style="font-size: 0.875rem; color: #94a3b8;">Text-based logs & status via <code>mini job logs</code></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- State Persistence -->
+        <div class="card-section">
+            <h2>State Persistence & Storage</h2>
+            <div class="subsection">
+                <h3>Local Storage</h3>
+                <p class="text-slate-300 mb-3">All state stored locally in <code>~/.minimise/</code>:</p>
+                <div class="diagram">
+~/.minimise/
+├── minimise.db (SQLite database for all metadata)
+│   ├── jobs table (job_id, name, status, timestamps)
+│   ├── tasks table (task_id, job_id, status, output, retries)
+│   └── diffs table (task_id, diff_data, base_commit)
+├── jobs/
+│   └── {job-id}/
+│       ├── plan.yaml (copy of original plan)
+│       └── tasks/
+│           └── {task-id}/
+│               └── diff.txt (git diff output)
+├── server.log (API server logs)
+└── config.json (Minimise configuration)
+                </div>
+                <div class="subsection">
+                    <h3>Concurrency & Atomicity (via SQLite)</h3>
+                    <p style="color: #cbd5e1;">Multiple Minimise processes access metadata safely through SQLite:</p>
+                    <ul style="color: #cbd5e1;">
+                        <li><span class="highlight">SQLite ACID guarantees</span> — All metadata operations are atomic and consistent</li>
+                        <li><span class="highlight">Built-in locking</span> — SQLite handles reader/writer coordination automatically</li>
+                        <li><span class="highlight">No file corruption</span> — SQLite prevents race conditions on metadata writes</li>
+                        <li><span class="highlight">Job execution safety</span> — Use database transaction to atomically check if job is already running and mark it as running, preventing accidental double-execution</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Git-Based Diff Tracking -->
+        <div class="card-section">
+            <h2>Git-Based Diff Tracking</h2>
+            <div class="subsection">
+                <h3>Pre-Execution Validation</h3>
+                <p style="color: #cbd5e1; margin-bottom: 0.75rem;">When <code>mini job new --plan plan.yaml</code> starts:</p>
+                <ul style="color: #cbd5e1;">
+                    <li>✅ Validate git state: no uncommitted changes, no staged changes</li>
+                    <li>✅ Verify all local work is committed/checked in</li>
+                    <li>✅ If git state is dirty, fail with clear error message</li>
+                    <li>✅ Record base commit hash at job start</li>
+                </ul>
+            </div>
+            <div class="subsection">
+                <h3>Per-Task Diff Calculation</h3>
+                <p style="color: #cbd5e1; margin-bottom: 0.75rem;">As each task executes:</p>
+                <ul style="color: #cbd5e1;">
+                    <li>📌 Keep base commit hash in memory/state.json</li>
+                    <li>📌 After task completes, calculate: <code>git diff base-commit..HEAD</code></li>
+                    <li>📌 Store diff in <code>~/.minimise/jobs/{job-id}/tasks/{task-id}/diff.txt</code></li>
+                    <li>📌 Next task receives: previous task output + diff summary</li>
+                </ul>
+            </div>
+            <div class="subsection">
+                <h3>TBD: Handoff Prompt Template</h3>
+                <p style="color: #fcd34d;">🔄 To be discussed separately: Define the handoff prompt template that combines:</p>
+                <ul style="color: #cbd5e1; margin-top: 0.75rem;">
+                    <li>Previous task output/result</li>
+                    <li>Summary of what was completed</li>
+                    <li>Diff of changes made (files changed, lines added/removed)</li>
+                    <li>Context for the next task to continue from</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Design Validation -->
+        <div class="card-section highlight">
+            <h2 class="text-blue-300">Design Validation</h2>
+            <div class="space-y-3 text-slate-300">
+                <p>✅ <span class="highlight">Decoupled UI</span> — Backend independent of visualization layer</p>
+                <p>✅ <span class="highlight">Multi-job support</span> — Track multiple concurrent plan runs</p>
+                <p>✅ <span class="highlight">Context-passing pipeline</span> — Handover mechanism connects tasks</p>
+                <p>✅ <span class="highlight">Real-time monitoring</span> — WebSocket updates to UIs</p>
+                <p>✅ <span class="highlight">Job control</span> — Cancel/resume via API</p>
+                <p>✅ <span class="highlight">Retry logic</span> — Up to 3 attempts per task on failure</p>
+                <p>✅ <span class="highlight">Hook system</span> — Pre/post hooks at plan & task level</p>
+                <p>✅ <span class="highlight">Claude Code integration</span> — Non-interactive mode via <code>-p</code> flag</p>
+                <p>✅ <span class="highlight">Local-first</span> — All state stays local, no cloud dependency</p>
+            </div>
+        </div>
+
+        <!-- Next Steps -->
+        <div class="card-section success">
+            <h2 class="text-green-300">Next Steps</h2>
+            <ul class="space-y-2 text-slate-300">
+                <li>✏️ Review this design — any changes or clarifications?</li>
+                <li>📝 Write detailed design spec (once approved)</li>
+                <li>🏗️ Create implementation plan with phases</li>
+                <li>💻 Start development (backend first, then UIs)</li>
+            </ul>
+        </div>
+    </div>
+</body>
+</html>

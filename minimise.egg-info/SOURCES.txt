@@ -1,0 +1,9 @@
+pyproject.toml
+setup.py
+minimise.egg-info/PKG-INFO
+minimise.egg-info/SOURCES.txt
+minimise.egg-info/dependency_links.txt
+minimise.egg-info/entry_points.txt
+minimise.egg-info/requires.txt
+minimise.egg-info/top_level.txt
+tests/test_database.py
