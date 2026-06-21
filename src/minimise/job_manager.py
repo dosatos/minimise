@@ -105,6 +105,7 @@ class JobManager:
                 description=task_config.get("description", ""),
                 status=TaskStatus.PENDING,
                 created_at=datetime.utcnow(),
+                base_commit=base_commit,
             )
             tasks.append(task)
 

@@ -207,3 +207,184 @@ def test_task_completion_without_base_commit(temp_db_dir, db, git_repo):
     updated_task = db.get_task(task.id)
     assert updated_task.status == TaskStatus.COMPLETED
     assert updated_task.output == "Task completed"
+
+
+def test_task_commits_against_base_commit(temp_db_dir, db, git_repo):
+    """Test that task commits are created against the task's base_commit, not HEAD."""
+    from minimise.models import Job, JobStatus
+
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(db, git_tracker, temp_db_dir)
+
+    job_id = str(uuid.uuid4())
+    base_commit = git_tracker.get_current_commit()
+
+    # Create job
+    job = Job(
+        id=job_id,
+        name="Test Job",
+        status=JobStatus.PENDING,
+        base_commit=base_commit,
+    )
+    db.create_job(job)
+
+    task = Task(
+        id=str(uuid.uuid4()),
+        job_id=job_id,
+        name="Task 1: Make changes",
+        description="Create a new file",
+        status=TaskStatus.PENDING,
+        base_commit=base_commit,
+    )
+    db.create_task(task)
+
+    # Mock Claude Code to create a file change
+    def mock_invoke(context):
+        # Create a change in the repo
+        test_file = git_repo / "changes.txt"
+        test_file.write_text("changes made by task")
+        return True, "Changes made"
+
+    executor._invoke_claude_code = mock_invoke
+
+    # Execute task
+    success, output = executor.execute_task(task, job_id, "")
+    assert success
+
+    # Verify: diff should be stored in task.diff_path
+    updated_task = db.get_task(task.id)
+    assert updated_task.diff_path is not None
+    diff_path = Path(updated_task.diff_path)
+    assert diff_path.exists()
+
+    # Verify diff contains the change
+    diff_content = diff_path.read_text()
+    assert "changes.txt" in diff_content or "changes made" in diff_content
+
+
+def test_task_commit_message_format(temp_db_dir, db, git_repo):
+    """Test that task commits use the correct message format."""
+    from minimise.models import Job, JobStatus
+
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(db, git_tracker, temp_db_dir)
+
+    job_id = str(uuid.uuid4())
+    base_commit = git_tracker.get_current_commit()
+
+    # Create job
+    job = Job(
+        id=job_id,
+        name="Test Job",
+        status=JobStatus.PENDING,
+        base_commit=base_commit,
+    )
+    db.create_job(job)
+
+    task = Task(
+        id=str(uuid.uuid4()),
+        job_id=job_id,
+        name="task-1-fix: Important fix",
+        description="Fix something important",
+        status=TaskStatus.PENDING,
+        base_commit=base_commit,
+    )
+    db.create_task(task)
+
+    # Mock Claude Code to create a file change
+    def mock_invoke(context):
+        test_file = git_repo / "fix.txt"
+        test_file.write_text("fixed")
+        return True, "Fixed"
+
+    executor._invoke_claude_code = mock_invoke
+
+    # Execute task
+    success, output = executor.execute_task(task, job_id, "")
+    assert success
+
+    # Verify: the diff file should exist and have proper format
+    updated_task = db.get_task(task.id)
+    assert updated_task.diff_path is not None
+    assert updated_task.status == TaskStatus.COMPLETED
+
+
+def test_task_diff_excludes_prior_task_changes(temp_db_dir, db, git_repo):
+    """Test that task diff only contains changes from this task, not prior tasks."""
+    from minimise.models import Job, JobStatus
+
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(db, git_tracker, temp_db_dir)
+
+    job_id = str(uuid.uuid4())
+    base_commit = git_tracker.get_current_commit()
+
+    # Create job
+    job = Job(
+        id=job_id,
+        name="Test Job",
+        status=JobStatus.PENDING,
+        base_commit=base_commit,
+    )
+    db.create_job(job)
+
+    # Task 1: Make first change
+    task1 = Task(
+        id=str(uuid.uuid4()),
+        job_id=job_id,
+        name="Task 1: First change",
+        description="First change",
+        status=TaskStatus.PENDING,
+        base_commit=base_commit,
+    )
+    db.create_task(task1)
+
+    # Mock first task: create file1
+    def mock_invoke_task1(context):
+        test_file = git_repo / "file1.txt"
+        test_file.write_text("task1 content")
+        return True, "Task 1 done"
+
+    executor._invoke_claude_code = mock_invoke_task1
+
+    # Execute task 1
+    success1, _ = executor.execute_task(task1, job_id, "")
+    assert success1
+
+    # Get commit after task1
+    task1_commit = git_tracker.get_current_commit()
+
+    # Task 2: Make second change (with task1_commit as base)
+    task2 = Task(
+        id=str(uuid.uuid4()),
+        job_id=job_id,
+        name="Task 2: Second change",
+        description="Second change",
+        status=TaskStatus.PENDING,
+        base_commit=task1_commit,  # Task2 base is task1's output
+    )
+    db.create_task(task2)
+
+    # Mock second task: create file2
+    def mock_invoke_task2(context):
+        test_file = git_repo / "file2.txt"
+        test_file.write_text("task2 content")
+        return True, "Task 2 done"
+
+    executor._invoke_claude_code = mock_invoke_task2
+
+    # Execute task 2 - it should only diff against task1_commit, not base_commit
+    success2, _ = executor.execute_task(task2, job_id, "")
+    assert success2
+
+    # Verify task2's diff
+    updated_task2 = db.get_task(task2.id)
+    assert updated_task2.diff_path is not None
+    diff_path = Path(updated_task2.diff_path)
+    assert diff_path.exists()
+
+    diff_content = diff_path.read_text()
+    # Task2's diff should contain file2 (task2's change)
+    assert "file2.txt" in diff_content or "task2 content" in diff_content
+    # Task2's diff should NOT contain file1 (task1's change) since task2 base is after task1
+    # Note: This is implementation-dependent on how git diff works

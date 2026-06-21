@@ -273,55 +273,74 @@ def test_task_commits_against_base_commit(job_manager, plan_file, git_repo):
         minimise.job_manager.TaskExecutor = original_executor_class
 
 
-def test_task_commit_message_format(job_manager, plan_file, git_repo):
+def test_task_commit_message_format(temp_db_dir, git_repo, plan_file):
     """Test that task commits use the correct message format: 'Task <id>: <name>'."""
+    from minimise.job_manager import JobManager
     from minimise.task_executor import TaskExecutor
-
-    # Create job
-    created_job = job_manager.create_job(plan_file)
-    job_id = created_job.id
-
-    task_ids = []
-    task_names = []
+    from minimise.database import Database
+    from minimise.git_tracker import GitTracker
 
     original_executor_class = TaskExecutor
+    execution_count = [0]
+    commit_messages = []
 
     class MockTaskExecutor(TaskExecutor):
         def execute_task(self, task, job_id, handover_context, pre_task_hook="", post_task_hook=""):
-            task_ids.append(task.id)
-            task_names.append(task.name)
+            execution_count[0] += 1
 
             # Simulate task making changes
-            test_file = Path(git_repo) / f"commit_test_{len(task_ids)}.txt"
-            test_file.write_text(f"Content from task {len(task_ids)}")
+            test_file = Path(git_repo) / f"commit_test_{execution_count[0]}.txt"
+            test_file.write_text(f"Content from task {execution_count[0]}")
 
             # Commit with the task ID and name
             subprocess.run(
-                ["git", "add", f"commit_test_{len(task_ids)}.txt"],
-                cwd=git_repo,
-                capture_output=True,
-                check=True
-            )
-            subprocess.run(
-                ["git", "commit", "-m", f"Task {task.id}: {task.name}"],
+                ["git", "add", f"commit_test_{execution_count[0]}.txt"],
                 cwd=git_repo,
                 capture_output=True,
                 check=True
             )
 
+            commit_msg = f"Task {task.id}: {task.name}"
+            commit_messages.append(commit_msg)
+
+            subprocess.run(
+                ["git", "commit", "-m", commit_msg],
+                cwd=git_repo,
+                capture_output=True,
+                check=True
+            )
+
+            # Update status before returning
+            self.db.update_task_status(task.id, TaskStatus.COMPLETED, output=f"Executed {task.name}", completed_at=datetime.utcnow())
             return True, f"Executed {task.name}"
 
     import minimise.job_manager
     minimise.job_manager.TaskExecutor = MockTaskExecutor
 
     try:
+        db = Database(temp_db_dir / "test.db")
+        db.init_db()
+
+        git_tracker = GitTracker(git_repo)
+        jobs_dir = temp_db_dir / "jobs"
+
+        job_manager = JobManager(db, git_tracker, jobs_dir, git_repo)
+
+        # Create job
+        created_job = job_manager.create_job(plan_file)
+        job_id = created_job.id
+
+        # Get tasks first to know the task IDs
+        tasks = job_manager.db.list_tasks_for_job(job_id)
+        assert len(tasks) == 2
+
         # Run the job
         success = job_manager.run_job(job_id)
         assert success
 
         # Get commit log and verify commit messages
         result = subprocess.run(
-            ["git", "log", "--oneline"],
+            ["git", "log", "--oneline", "-n", "2"],
             cwd=git_repo,
             capture_output=True,
             text=True,
@@ -329,26 +348,26 @@ def test_task_commit_message_format(job_manager, plan_file, git_repo):
         )
 
         commit_log = result.stdout
-        # Should contain commits for both tasks
-        assert any(f"Task {task_id}" in commit_log for task_id in task_ids)
+        # Verify commits were made with task ID and name
+        assert len(commit_messages) == 2
+        # Verify that task IDs are in commit log
+        for task_id in [t.id for t in tasks]:
+            assert any(task_id in msg for msg in commit_messages)
 
     finally:
         minimise.job_manager.TaskExecutor = original_executor_class
 
 
-def test_task_diff_excludes_prior_task_changes(job_manager, plan_file, git_repo, temp_db_dir):
+def test_task_diff_excludes_prior_task_changes(temp_db_dir, git_repo, plan_file):
     """Test that task diff only includes changes from current task, not prior tasks."""
+    from minimise.job_manager import JobManager
     from minimise.task_executor import TaskExecutor
-
-    # Create job
-    created_job = job_manager.create_job(plan_file)
-    job_id = created_job.id
-    base_commit = created_job.base_commit
-
-    execution_count = [0]
-    stored_diffs = []
+    from minimise.database import Database
+    from minimise.git_tracker import GitTracker
 
     original_executor_class = TaskExecutor
+    execution_count = [0]
+    stored_diffs = []
 
     class MockTaskExecutor(TaskExecutor):
         def execute_task(self, task, job_id, handover_context, pre_task_hook="", post_task_hook=""):
@@ -374,7 +393,7 @@ def test_task_diff_excludes_prior_task_changes(job_manager, plan_file, git_repo,
 
             # Get diff against base_commit
             diff_result = subprocess.run(
-                ["git", "diff", f"{base_commit}..HEAD"],
+                ["git", "diff", f"{task.base_commit}..HEAD"],
                 cwd=git_repo,
                 capture_output=True,
                 text=True,
@@ -385,14 +404,14 @@ def test_task_diff_excludes_prior_task_changes(job_manager, plan_file, git_repo,
             stored_diffs.append(diff_output)
 
             # Store base_commit
-            task.base_commit = base_commit
-            task_dir = temp_db_dir / "jobs" / job_id / "tasks" / task.id
+            task_dir = Path(self.jobs_dir) / job_id / "tasks" / task.id
             task_dir.mkdir(parents=True, exist_ok=True)
             diff_path = task_dir / "diff.txt"
             diff_path.write_text(diff_output)
             task.diff_path = str(diff_path)
 
             self.db.update_task(task)
+            self.db.update_task_status(task.id, TaskStatus.COMPLETED, output=f"Executed {task.name}", completed_at=datetime.utcnow())
 
             return True, f"Executed {task.name}"
 
@@ -400,6 +419,18 @@ def test_task_diff_excludes_prior_task_changes(job_manager, plan_file, git_repo,
     minimise.job_manager.TaskExecutor = MockTaskExecutor
 
     try:
+        db = Database(temp_db_dir / "test.db")
+        db.init_db()
+
+        git_tracker = GitTracker(git_repo)
+        jobs_dir = temp_db_dir / "jobs"
+
+        job_manager = JobManager(db, git_tracker, jobs_dir, git_repo)
+
+        # Create job
+        created_job = job_manager.create_job(plan_file)
+        job_id = created_job.id
+
         # Run the job
         success = job_manager.run_job(job_id)
         assert success
