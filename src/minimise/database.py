@@ -216,12 +216,17 @@ class Database:
         return rows_deleted > 0
 
     def resolve_job_id(self, job_id_or_prefix: str) -> Optional[str]:
-        """Resolve a job ID, supporting both full IDs and prefixes (e.g., first 8 chars)."""
+        """Resolve a job ID, supporting both full IDs and prefixes (e.g., first 8 chars).
+
+        Returns the job ID if exactly one match found, None otherwise.
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
         cursor.execute("SELECT id FROM jobs WHERE id = ? OR id LIKE ?", (job_id_or_prefix, f"{job_id_or_prefix}%"))
-        row = cursor.fetchone()
+        rows = cursor.fetchall()
         conn.close()
 
-        return row[0] if row else None
+        if len(rows) == 1:
+            return rows[0][0]
+        return None

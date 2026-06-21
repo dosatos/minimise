@@ -1,6 +1,7 @@
 """CLI interface for Minimise - plan orchestrator for multi-agent execution."""
 
 import click
+import sqlite3
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -41,11 +42,24 @@ def get_job_manager(db: Database) -> JobManager:
 def resolve_job_id(job_id_or_prefix: str) -> str:
     """Resolve a job ID from full ID or prefix (e.g., first 8 chars)."""
     db = get_db()
-    resolved = db.resolve_job_id(job_id_or_prefix)
-    if not resolved:
-        console.print(f"[red]Error: Job {job_id_or_prefix} not found[/red]")
+
+    conn = sqlite3.connect(db.db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM jobs WHERE id = ? OR id LIKE ?", (job_id_or_prefix, f"{job_id_or_prefix}%"))
+    matches = cursor.fetchall()
+    conn.close()
+
+    if len(matches) == 1:
+        return matches[0][0]
+    elif len(matches) > 1:
+        console.print(f"[red]Error: Multiple jobs match '{job_id_or_prefix}':[/red]")
+        for match in matches:
+            console.print(f"  {match[0]}")
+        console.print("[yellow]Please provide more characters to disambiguate[/yellow]")
         raise SystemExit(1)
-    return resolved
+    else:
+        console.print(f"[red]Error: Job '{job_id_or_prefix}' not found[/red]")
+        raise SystemExit(1)
 
 
 def _get_status_color(status) -> str:
