@@ -338,7 +338,6 @@ manager.run_job('{job_id}')
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
-                preexec_fn=os.setsid if hasattr(os, 'setsid') else None,
             )
 
             pid = process.pid
