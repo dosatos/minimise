@@ -54,3 +54,4 @@ htmlcov/
 .env.local
 *.log
 worklogs/
+.worktrees/
