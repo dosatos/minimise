@@ -93,12 +93,16 @@ class Database:
             completed_at=datetime.fromisoformat(row['completed_at']) if row['completed_at'] else None,
         )
 
-    def list_jobs(self) -> List[Job]:
-        """Fetch all jobs."""
+    def list_jobs(self, limit: Optional[int] = None) -> List[Job]:
+        """Fetch jobs with optional limit."""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM jobs ORDER BY created_at DESC")
+
+        if limit is not None:
+            cursor.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,))
+        else:
+            cursor.execute("SELECT * FROM jobs ORDER BY created_at DESC")
         rows = cursor.fetchall()
         conn.close()
 

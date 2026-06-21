@@ -122,11 +122,12 @@ def job_new(plan: str):
 
 @job.command(name="list")
 @click.option("--format", type=click.Choice(["table", "json"]), default="table", help="Output format")
-def job_list(format):
+@click.option("--limit", type=int, default=10, help="Maximum number of jobs to display (default: 10)")
+def job_list(format, limit):
     """List all jobs."""
     try:
         db = get_db()
-        jobs = db.list_jobs()
+        jobs = db.list_jobs(limit=limit)
 
         if not jobs:
             if format == "json":

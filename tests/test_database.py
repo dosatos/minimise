@@ -34,6 +34,62 @@ def test_list_jobs(db):
     assert len(jobs) == 2
     assert {j.name for j in jobs} == {"Job 1", "Job 2"}
 
+def test_list_jobs_with_limit(db):
+    """Test listing jobs with limit parameter returns most recent jobs first."""
+    import time
+
+    # Create 5 jobs with small delays to ensure different timestamps
+    job_ids = []
+    for i in range(5):
+        job = Job(id=str(uuid.uuid4()), name=f"Job {i}", status=JobStatus.PENDING)
+        db.create_job(job)
+        job_ids.append((job.id, job.name, job.created_at))
+        time.sleep(0.01)  # Small delay to ensure ordering
+
+    # Test limit=2 returns 2 most recent jobs
+    jobs = db.list_jobs(limit=2)
+    assert len(jobs) == 2
+    assert jobs[0].name == "Job 4"
+    assert jobs[1].name == "Job 3"
+
+    # Test limit=3 returns 3 most recent jobs
+    jobs = db.list_jobs(limit=3)
+    assert len(jobs) == 3
+    assert jobs[0].name == "Job 4"
+    assert jobs[1].name == "Job 3"
+    assert jobs[2].name == "Job 2"
+
+def test_list_jobs_ordering_desc(db):
+    """Test that list_jobs returns jobs ordered by created_at DESC (newest first)."""
+    import time
+
+    # Create 3 jobs
+    jobs_created = []
+    for i in range(3):
+        job = Job(id=str(uuid.uuid4()), name=f"Job {i}", status=JobStatus.PENDING)
+        db.create_job(job)
+        jobs_created.append(job)
+        time.sleep(0.01)
+
+    # List all jobs and verify they're in DESC order
+    jobs = db.list_jobs()
+    assert len(jobs) == 3
+    assert jobs[0].id == jobs_created[2].id  # Most recent first
+    assert jobs[1].id == jobs_created[1].id
+    assert jobs[2].id == jobs_created[0].id  # Oldest last
+
+def test_list_jobs_limit_none_returns_all(db):
+    """Test that list_jobs with limit=None returns all jobs (backward compatibility)."""
+    for i in range(5):
+        job = Job(id=str(uuid.uuid4()), name=f"Job {i}", status=JobStatus.PENDING)
+        db.create_job(job)
+
+    # Both should return all jobs
+    jobs_default = db.list_jobs()
+    jobs_explicit_none = db.list_jobs(limit=None)
+    assert len(jobs_default) == 5
+    assert len(jobs_explicit_none) == 5
+
 def test_update_job_status(db):
     """Test updating job status."""
     job = Job(id=str(uuid.uuid4()), name="Test Job", status=JobStatus.PENDING)
