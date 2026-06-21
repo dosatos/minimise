@@ -2,7 +2,26 @@
 
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A CLI tool for orchestrating multi-agent plan execution with task sequencing, retry logic, and git-based diff tracking.
+A CLI tool that **guarantees deterministic, high-quality implementation** of multi-agent plans with fresh context per task, built-in quality guardrails, and centralized orchestration of multiple concurrent jobs.
+
+## The Problem
+
+When delegating complex implementation tasks to AI agents (via Claude Code or similar harnesses), you face three key challenges:
+
+1. **❌ Non-deterministic execution** — No guarantee that implementation plans will be completed 100% as specified. Context bloat in long sessions degrades quality.
+
+2. **❌ Context rot** — Long-running sessions accumulate context junk (previous trials, irrelevant history, noise). This degrades agent performance over time.
+
+3. **❌ Scattered job visibility** — Running multiple jobs across terminals makes it impossible to see status, monitor progress, or estimate completion. The human stays in the loop manually babysitting.
+
+## The Solution
+
+Minimise solves this by:
+
+- **Fresh context per task** — Each task runs in an isolated session with only relevant context passed via structured handover
+- **Quality guardrails** — Add verification steps (previous result validation, quality gates) to ensure high-quality output
+- **Centralized orchestration** — Delegate multiple jobs to background processes and monitor them from one place
+- **Deterministic execution** — Structured task sequencing with retry logic guarantees plans complete as written
 
 ## Install
 
@@ -14,22 +33,30 @@ pip install -e .
 
 ## Quick Start
 
-### 1. Create a plan file (`my-plan.yaml`)
+### 1. Define your implementation plan
+
+Create a plan file (`my-plan.yaml`) that describes what needs to be implemented. Each task starts fresh with only the previous task's output as context:
 
 ```yaml
 plan:
-  name: "My Plan"
-  briefing: "Execute multiple tasks sequentially"
+  name: "Implement Feature X"
+  briefing: "Build a new API endpoint with tests and documentation"
   
   tasks:
     - id: task-1
-      name: "First Task"
-      description: "What needs to be done"
+      name: "Write tests"
+      description: "Define test cases for the new endpoint"
     
     - id: task-2
-      name: "Second Task"
-      description: "Continues from task 1's output + git diff"
+      name: "Implement endpoint"
+      description: "Implement the endpoint to pass tests from task 1"
+    
+    - id: task-3
+      name: "Add verification"
+      description: "Verify implementation and run full test suite"
 ```
+
+Each task receives **only** the output of the previous task (git diff, completion report) — fresh context prevents degradation.
 
 ### 2. Run tests
 
@@ -115,7 +142,22 @@ docs/
 
 ## Status
 
-✅ Production-ready backend
-- 42/42 tests passing
-- All 7 core components complete
-- Ready for UI clients and integrations
+✅ **Production-ready backend**
+- 80/80 tests passing
+- All core components complete
+- Tested with Anthropic & Bedrock backends
+- Ready for multi-job orchestration
+
+### Core Features
+- ✅ Deterministic task sequencing with retry logic (3x)
+- ✅ Fresh context per task via structured handover
+- ✅ Git-based state validation and diff tracking
+- ✅ Job timing & progress monitoring
+- ✅ Concurrent job orchestration
+- ✅ REST API + WebSocket support
+- ✅ SQLite persistence
+
+### Next Phase
+- Real-time job monitoring dashboard
+- Advanced filtering and bulk operations
+- Additional output formats (CSV, HTML reports)
