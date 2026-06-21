@@ -273,6 +273,7 @@ class Database:
             started_at=datetime.fromisoformat(row['started_at']) if row['started_at'] else None,
             completed_at=datetime.fromisoformat(row['completed_at']) if row['completed_at'] else None,
             diff_path=row['diff_path'],
+            base_commit=row['base_commit'] if 'base_commit' in row.keys() else None,
         )
 
     def list_tasks_for_job(self, job_id: str) -> List[Task]:
