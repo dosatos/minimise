@@ -3,6 +3,8 @@
 import click
 import json
 import sqlite3
+import signal
+import os
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -81,7 +83,7 @@ def job():
 @job.command(name="new")
 @click.option("--plan", required=True, help="Path to plan.yaml file")
 def job_new(plan: str):
-    """Create and execute a new job from a plan file."""
+    """Create a new job from a plan file (does not execute)."""
     try:
         plan_path = Path(plan).resolve()
 
@@ -101,20 +103,46 @@ def job_new(plan: str):
         console.print(f"[green]Job created[/green]")
         console.print(f"[bold]Job ID:[/bold] {job_obj.id}")
         console.print(f"[bold]Name:[/bold] {job_obj.name}")
+        console.print(f"[bold]Status:[/bold] {job_obj.status.value}")
         console.print(f"[bold]Tasks:[/bold] {len(job_obj.tasks)}\n")
-
-        # Execute the job immediately
-        console.print("[cyan]Executing job...[/cyan]")
-        success = job_manager.run_job(job_obj.id)
-
-        if success:
-            console.print(f"[green]Job completed successfully[/green]")
-        else:
-            console.print(f"[red]Job failed[/red]")
-            raise SystemExit(1)
+        console.print(f"[dim]Start with: mini job start {job_obj.id[:8]}[/dim]")
 
     except SystemExit:
         raise
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
+        raise SystemExit(1)
+
+
+@job.command(name="start")
+@click.argument("job_id")
+def job_start(job_id: str):
+    """Start a job (spawns subprocess in background)."""
+    try:
+        job_id = resolve_job_id(job_id)
+        db = get_db()
+        job_manager = get_job_manager(db)
+
+        job_obj = db.get_job(job_id)
+        if job_obj is None:
+            console.print(f"[red]Error: Job {job_id} not found[/red]")
+            raise SystemExit(1)
+
+        if job_obj.status != JobStatus.PENDING:
+            console.print(f"[red]Error: Job must be in PENDING state to start (current: {job_obj.status.value})[/red]")
+            raise SystemExit(1)
+
+        pid = job_manager.start_job(job_id)
+
+        if pid is None:
+            console.print(f"[red]Error: Failed to start job[/red]")
+            raise SystemExit(1)
+
+        console.print(f"[green]Job started successfully[/green]")
+        console.print(f"[bold]Job ID:[/bold] {job_id}")
+        console.print(f"[bold]PID:[/bold] {pid}")
+        console.print(f"[dim]Check status with: mini job status {job_id[:8]}[/dim]")
+
     except Exception as e:
         console.print(f"[red]Error: {str(e)}[/red]")
         raise SystemExit(1)
@@ -245,18 +273,31 @@ def job_status(job_id: str):
 @job.command(name="stop")
 @click.argument("job_id")
 def job_stop(job_id: str):
-    """Cancel a running job."""
+    """Stop a running job (sends SIGTERM to subprocess)."""
     try:
         job_id = resolve_job_id(job_id)
         db = get_db()
         job_manager = get_job_manager(db)
 
-        success = job_manager.cancel_job(job_id)
+        job_obj = db.get_job(job_id)
+        if job_obj is None:
+            console.print(f"[red]Error: Job {job_id} not found[/red]")
+            raise SystemExit(1)
+
+        if job_obj.status != JobStatus.RUNNING:
+            console.print(f"[red]Error: Job must be in RUNNING state to stop (current: {job_obj.status.value})[/red]")
+            raise SystemExit(1)
+
+        if job_obj.pid is None:
+            console.print(f"[red]Error: Job has no associated process[/red]")
+            raise SystemExit(1)
+
+        success = job_manager.stop_job(job_id)
 
         if success:
-            console.print(f"[green]Job {job_id} cancelled successfully[/green]")
+            console.print(f"[green]Job {job_id} stopped successfully[/green]")
         else:
-            console.print(f"[red]Error: Failed to cancel job {job_id}[/red]")
+            console.print(f"[red]Error: Failed to stop job {job_id}[/red]")
             raise SystemExit(1)
 
     except Exception as e:

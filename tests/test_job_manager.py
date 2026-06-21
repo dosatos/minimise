@@ -156,14 +156,14 @@ def test_cancel_job_basic(job_manager, plan_file):
     result = job_manager.cancel_job(job_id)
     assert result is True
 
-    # Verify job status is CANCELLED
+    # Verify job status is STOPPED
     job = job_manager.get_job_status(job_id)
-    assert job.status == JobStatus.CANCELLED
+    assert job.status == JobStatus.STOPPED
 
-    # Verify tasks are CANCELLED
+    # Verify tasks are STOPPED
     for task in job.tasks:
         if task.status != TaskStatus.COMPLETED and task.status != TaskStatus.FAILED:
-            assert task.status == TaskStatus.CANCELLED
+            assert task.status == TaskStatus.STOPPED
 
 
 def test_run_job_basic(job_manager, plan_file):

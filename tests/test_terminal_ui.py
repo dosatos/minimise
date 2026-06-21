@@ -209,9 +209,9 @@ class TestGetStatusColor:
         """Test color for failed status."""
         assert get_status_color(TaskStatus.FAILED) == "red"
 
-    def test_get_status_color_cancelled(self):
-        """Test color for cancelled status."""
-        assert get_status_color(TaskStatus.CANCELLED) == "magenta"
+    def test_get_status_color_stopped(self):
+        """Test color for stopped status."""
+        assert get_status_color(TaskStatus.STOPPED) == "magenta"
 
     def test_get_status_color_job_status(self):
         """Test color for job status."""

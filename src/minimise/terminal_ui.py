@@ -19,7 +19,7 @@ def get_status_color(status) -> str:
         "running": "blue",
         "completed": "green",
         "failed": "red",
-        "cancelled": "magenta",
+        "stopped": "magenta",
     }
     return colors.get(status_value, "white")
 

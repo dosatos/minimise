@@ -2,6 +2,9 @@
 
 import uuid
 import yaml
+import subprocess
+import signal
+import os
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -238,7 +241,7 @@ class JobManager:
         """
         Cancel a running job.
 
-        Updates job status to CANCELLED and marks all PENDING/RUNNING tasks as cancelled.
+        Updates job status to STOPPED and marks all PENDING/RUNNING tasks as stopped.
 
         Args:
             job_id: ID of the job to cancel
@@ -250,8 +253,8 @@ class JobManager:
         if not job:
             return False
 
-        # Update job status to CANCELLED
-        self.db.update_job_status(job_id, JobStatus.CANCELLED, completed_at=datetime.utcnow())
+        # Update job status to STOPPED
+        self.db.update_job_status(job_id, JobStatus.STOPPED, completed_at=datetime.utcnow())
         if self.on_job_update:
             self.on_job_update(job_id)
 
@@ -259,7 +262,7 @@ class JobManager:
         tasks = self.db.list_tasks_for_job(job_id)
         for task in tasks:
             if task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
-                self.db.update_task_status(task.id, TaskStatus.CANCELLED, completed_at=datetime.utcnow())
+                self.db.update_task_status(task.id, TaskStatus.STOPPED, completed_at=datetime.utcnow())
                 if self.on_task_update:
                     self.on_task_update(job_id, task.id)
 
@@ -284,3 +287,108 @@ class JobManager:
         job.tasks = tasks
 
         return job
+
+    def start_job(self, job_id: str) -> Optional[int]:
+        """
+        Start a job by spawning it as a subprocess in the background.
+
+        Only works if job status is PENDING. Spawns a subprocess that runs run_job
+        and returns the PID immediately (non-blocking).
+
+        Args:
+            job_id: ID of the job to start
+
+        Returns:
+            Process PID if job started successfully, None otherwise
+        """
+        job = self.db.get_job(job_id)
+        if not job:
+            print(f"Job {job_id} not found")
+            return None
+
+        if job.status != JobStatus.PENDING:
+            print(f"Job must be in PENDING state (current: {job.status.value})")
+            return None
+
+        try:
+            # Spawn subprocess that runs the job
+            process = subprocess.Popen(
+                ["python", "-m", "minimise.job_manager", job_id],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+
+            pid = process.pid
+
+            # Update job status to RUNNING with PID
+            self.db.update_job_status(
+                job_id,
+                JobStatus.RUNNING,
+                started_at=datetime.utcnow(),
+                pid=pid
+            )
+            if self.on_job_update:
+                self.on_job_update(job_id)
+
+            return pid
+
+        except Exception as e:
+            print(f"Error starting job: {e}")
+            return None
+
+    def stop_job(self, job_id: str) -> bool:
+        """
+        Stop a running job by sending SIGTERM to its subprocess.
+
+        Only works if job status is RUNNING and has an associated PID.
+        Sets job status to STOPPED.
+
+        Args:
+            job_id: ID of the job to stop
+
+        Returns:
+            True if job stopped successfully, False otherwise
+        """
+        job = self.db.get_job(job_id)
+        if not job:
+            print(f"Job {job_id} not found")
+            return False
+
+        if job.status != JobStatus.RUNNING:
+            print(f"Job must be in RUNNING state (current: {job.status.value})")
+            return False
+
+        if job.pid is None:
+            print("Job has no associated process")
+            return False
+
+        try:
+            # Send SIGTERM to the process group
+            os.killpg(os.getpgid(job.pid), signal.SIGTERM)
+
+            # Update job status to STOPPED
+            self.db.update_job_status(
+                job_id,
+                JobStatus.STOPPED,
+                completed_at=datetime.utcnow()
+            )
+            if self.on_job_update:
+                self.on_job_update(job_id)
+
+            return True
+
+        except ProcessLookupError:
+            # Process already terminated
+            self.db.update_job_status(
+                job_id,
+                JobStatus.STOPPED,
+                completed_at=datetime.utcnow()
+            )
+            if self.on_job_update:
+                self.on_job_update(job_id)
+            return True
+
+        except Exception as e:
+            print(f"Error stopping job: {e}")
+            return False

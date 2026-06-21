@@ -23,9 +23,16 @@ class Database:
                 base_commit TEXT,
                 created_at TEXT NOT NULL,
                 started_at TEXT,
-                completed_at TEXT
+                completed_at TEXT,
+                pid INTEGER
             )
         """)
+
+        # Add pid column if it doesn't exist (migration for existing databases)
+        cursor.execute("PRAGMA table_info(jobs)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if 'pid' not in columns:
+            cursor.execute("ALTER TABLE jobs ADD COLUMN pid INTEGER")
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS tasks (
@@ -64,9 +71,9 @@ class Database:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO jobs (id, name, status, plan_path, base_commit, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (job.id, job.name, job.status.value, job.plan_path, job.base_commit, job.created_at.isoformat()))
+            INSERT INTO jobs (id, name, status, plan_path, base_commit, created_at, pid)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (job.id, job.name, job.status.value, job.plan_path, job.base_commit, job.created_at.isoformat(), job.pid))
         conn.commit()
         conn.close()
 
@@ -82,6 +89,11 @@ class Database:
         if not row:
             return None
 
+        try:
+            pid = row['pid']
+        except IndexError:
+            pid = None
+
         return Job(
             id=row['id'],
             name=row['name'],
@@ -91,6 +103,7 @@ class Database:
             created_at=datetime.fromisoformat(row['created_at']),
             started_at=datetime.fromisoformat(row['started_at']) if row['started_at'] else None,
             completed_at=datetime.fromisoformat(row['completed_at']) if row['completed_at'] else None,
+            pid=pid,
         )
 
     def list_jobs(self, limit: Optional[int] = None) -> List[Job]:
@@ -106,8 +119,13 @@ class Database:
         rows = cursor.fetchall()
         conn.close()
 
-        return [
-            Job(
+        jobs = []
+        for row in rows:
+            try:
+                pid = row['pid']
+            except IndexError:
+                pid = None
+            jobs.append(Job(
                 id=row['id'],
                 name=row['name'],
                 status=JobStatus(row['status']),
@@ -116,11 +134,11 @@ class Database:
                 created_at=datetime.fromisoformat(row['created_at']),
                 started_at=datetime.fromisoformat(row['started_at']) if row['started_at'] else None,
                 completed_at=datetime.fromisoformat(row['completed_at']) if row['completed_at'] else None,
-            )
-            for row in rows
-        ]
+                pid=pid,
+            ))
+        return jobs
 
-    def update_job_status(self, job_id: str, status: JobStatus, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None) -> None:
+    def update_job_status(self, job_id: str, status: JobStatus, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, pid: Optional[int] = None) -> None:
         """Update job status.
 
         Only updates fields that are explicitly provided. If started_at or completed_at
@@ -140,6 +158,10 @@ class Database:
         if completed_at is not None:
             update_fields.append("completed_at = ?")
             params.append(completed_at.isoformat())
+
+        if pid is not None:
+            update_fields.append("pid = ?")
+            params.append(pid)
 
         params.append(job_id)
 

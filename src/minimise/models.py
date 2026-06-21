@@ -8,14 +8,14 @@ class TaskStatus(Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
-    CANCELLED = "cancelled"
+    STOPPED = "stopped"
 
 class JobStatus(Enum):
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
-    CANCELLED = "cancelled"
+    STOPPED = "stopped"
 
 @dataclass
 class Task:
@@ -42,3 +42,4 @@ class Job:
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     tasks: list[Task] = field(default_factory=list)
+    pid: Optional[int] = None
