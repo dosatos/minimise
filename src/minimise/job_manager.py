@@ -68,10 +68,13 @@ class JobManager:
         # Parse plan.yaml
         try:
             with open(plan_path, "r") as f:
-                plan_config = yaml.safe_load(f)
+                plan_file = yaml.safe_load(f)
         except Exception as e:
             print(f"Error reading plan file: {e}")
             return None
+
+        # Handle both nested (plan.xxx) and flat (xxx) formats
+        plan_config = plan_file.get("plan", plan_file) if isinstance(plan_file, dict) else plan_file
 
         # Extract plan metadata
         plan_name = plan_config.get("name", "Unnamed Plan")
@@ -154,10 +157,13 @@ class JobManager:
 
         try:
             with open(plan_path, "r") as f:
-                plan_config = yaml.safe_load(f)
+                plan_file = yaml.safe_load(f)
         except Exception as e:
             print(f"Error reading plan file: {e}")
             return False
+
+        # Handle both nested (plan.xxx) and flat (xxx) formats
+        plan_config = plan_file.get("plan", plan_file) if isinstance(plan_file, dict) else plan_file
 
         # Update job status to RUNNING
         self.db.update_job_status(job_id, JobStatus.RUNNING, started_at=datetime.utcnow())
