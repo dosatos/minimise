@@ -47,9 +47,16 @@ class Database:
                 started_at TEXT,
                 completed_at TEXT,
                 diff_path TEXT,
+                base_commit TEXT,
                 FOREIGN KEY(job_id) REFERENCES jobs(id)
             )
         """)
+
+        # Add base_commit column if it doesn't exist (migration for existing databases)
+        cursor.execute("PRAGMA table_info(tasks)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if 'base_commit' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN base_commit TEXT")
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS diffs (
@@ -175,11 +182,11 @@ class Database:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO tasks (id, job_id, name, description, status, output, retries, created_at, started_at, completed_at, diff_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks (id, job_id, name, description, status, output, retries, created_at, started_at, completed_at, diff_path, base_commit)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (task.id, task.job_id, task.name, task.description, task.status.value, task.output, task.retries,
               task.created_at.isoformat(), task.started_at.isoformat() if task.started_at else None,
-              task.completed_at.isoformat() if task.completed_at else None, task.diff_path))
+              task.completed_at.isoformat() if task.completed_at else None, task.diff_path, task.base_commit))
         conn.commit()
         conn.close()
 
@@ -212,6 +219,33 @@ class Database:
 
         query = f"UPDATE tasks SET {', '.join(update_fields)} WHERE id = ?"
         cursor.execute(query, params)
+        conn.commit()
+        conn.close()
+
+    def update_task(self, task: Task) -> None:
+        """Update an entire task object.
+
+        Updates all fields of the task in the database.
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE tasks SET
+                job_id = ?,
+                name = ?,
+                description = ?,
+                status = ?,
+                output = ?,
+                retries = ?,
+                created_at = ?,
+                started_at = ?,
+                completed_at = ?,
+                diff_path = ?,
+                base_commit = ?
+            WHERE id = ?
+        """, (task.job_id, task.name, task.description, task.status.value, task.output, task.retries,
+              task.created_at.isoformat(), task.started_at.isoformat() if task.started_at else None,
+              task.completed_at.isoformat() if task.completed_at else None, task.diff_path, task.base_commit, task.id))
         conn.commit()
         conn.close()
 

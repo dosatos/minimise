@@ -30,6 +30,7 @@ class Task:
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     diff_path: Optional[str] = None
+    base_commit: Optional[str] = None
 
 @dataclass
 class Job:
