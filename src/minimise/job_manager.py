@@ -311,12 +311,28 @@ class JobManager:
             return None
 
         try:
-            # Spawn subprocess that runs the job
+            # Create a Python script that will run the job in a subprocess
+            # Use start_new_session=True to create a new process group
+            script = f"""
+import sys
+sys.path.insert(0, '{str(self.jobs_dir.parent.parent)}')
+from minimise.database import Database
+from minimise.job_manager import JobManager
+from minimise.git_tracker import GitTracker
+from pathlib import Path
+
+db = Database(Path.home() / '.minimise' / 'minimise.db')
+git_tracker = GitTracker(Path.cwd())
+jobs_dir = Path.home() / '.minimise' / 'jobs'
+manager = JobManager(db, git_tracker, jobs_dir, Path.cwd())
+manager.run_job('{job_id}')
+"""
             process = subprocess.Popen(
-                ["python", "-m", "minimise.job_manager", job_id],
+                ["python", "-c", script],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
+                preexec_fn=os.setsid if hasattr(os, 'setsid') else None,
             )
 
             pid = process.pid
