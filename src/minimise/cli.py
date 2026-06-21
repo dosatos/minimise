@@ -15,6 +15,7 @@ from minimise.job_manager import JobManager
 from minimise.git_tracker import GitTracker
 from minimise.api_server import APIServer
 from minimise.models import JobStatus, TaskStatus
+from minimise.terminal_ui import get_status_color, render_task_table_with_gantt
 
 
 # Global constants
@@ -63,20 +64,6 @@ def resolve_job_id(job_id_or_prefix: str) -> str:
         raise SystemExit(1)
 
 
-def _get_status_color(status) -> str:
-    """Get color for status badge."""
-    if isinstance(status, JobStatus) or isinstance(status, TaskStatus):
-        status_value = status.value
-    else:
-        status_value = str(status)
-
-    colors = {
-        "pending": "yellow",
-        "running": "blue",
-        "completed": "green",
-        "failed": "red",
-    }
-    return colors.get(status_value, "white")
 
 
 @click.group()
@@ -177,7 +164,7 @@ def job_list(format):
             table.add_column("Progress", style="yellow")
 
             for j in jobs:
-                status_text = Text(j.status.value, style=_get_status_color(j.status))
+                status_text = Text(j.status.value, style=get_status_color(j.status))
                 tasks = db.list_tasks_for_job(j.id)
                 task_count = len(tasks)
                 completed_count = sum(1 for t in tasks if t.status == TaskStatus.COMPLETED)
@@ -240,22 +227,10 @@ def job_status(job_id: str):
                 f"[bold]Completed:[/bold] {job_obj.completed_at.strftime('%Y-%m-%d %H:%M:%S')}"
             )
 
-        # Display task progress
+        # Display task progress with Gantt chart
         if job_obj.tasks:
             console.print(f"\n[bold]Task Progress[/bold]")
-            table = Table()
-            table.add_column("Task Name", style="cyan")
-            table.add_column("Status", style="cyan")
-            table.add_column("Retries", style="yellow")
-
-            for task in job_obj.tasks:
-                status_text = Text(task.status.value, style=_get_status_color(task.status))
-                table.add_row(
-                    task.name,
-                    status_text,
-                    str(task.retries),
-                )
-
+            table = render_task_table_with_gantt(job_obj, job_obj.tasks)
             console.print(table)
             console.print(f"\n[dim]View full output with: mini job logs {job_id[:8]}[/dim]")
         else:

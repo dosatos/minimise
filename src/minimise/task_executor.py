@@ -119,27 +119,56 @@ class TaskExecutor:
 
     def _invoke_claude_code(self, context: dict) -> tuple[bool, str]:
         """
-        Invoke Claude Code with task context via -p flag.
+        Invoke Claude Code agent to execute task.
+
+        Spawns a Claude Code agent subprocess with task description and context.
+        The agent modifies the codebase and returns success status.
 
         Args:
-            context: Context dictionary
+            context: Context dictionary with task_name, task_description, handover
 
         Returns:
             (success, output)
         """
+        import subprocess
         import json
-        import tempfile
 
-        # Write context to temp file
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(context, f)
-            context_file = f.name
+        task_name = context.get("task_name", "Task")
+        task_description = context.get("task_description", "")
+        handover = context.get("handover", "")
 
-        # Invoke Claude Code with context
-        cmd = f'npx claude-code -p "{context_file}"'
-        success, output = run_shell_command(cmd)
+        # Build prompt for Claude Code agent
+        prompt = f"""You are executing a task in a multi-agent plan execution system.
 
-        # Clean up
-        Path(context_file).unlink()
+Task: {task_name}
 
-        return success, output
+Description:
+{task_description}
+
+Context from previous tasks:
+{handover if handover else "(no prior context)"}
+
+Execute this task by modifying the codebase as needed. When done, write a summary of what you implemented."""
+
+        try:
+            # Spawn Claude Code CLI with the prompt
+            # Use echo to pipe prompt and capture output
+            cmd = f'echo {json.dumps(prompt)} | npx claude-code 2>&1'
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                cwd=str(self.jobs_dir.parent.parent),  # Run from repo root
+            )
+
+            output = result.stdout + result.stderr
+            success = result.returncode == 0
+
+            return success, output
+
+        except subprocess.TimeoutExpired:
+            return False, f"Task execution timeout after 300 seconds"
+        except Exception as e:
+            return False, f"Failed to invoke Claude Code: {str(e)}"
