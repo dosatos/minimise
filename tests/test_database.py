@@ -176,3 +176,95 @@ def test_delete_job_removes_disk_files(db, temp_db_dir):
 
     # Verify job directory is removed from disk
     assert not job_dir.exists()
+
+
+def test_job_timing_preservation(db):
+    """Test that job timing fields are preserved across updates.
+
+    Verifies the fix for the timing capture issue: when updating job status
+    without providing started_at or completed_at, existing values should be preserved.
+    """
+    import time
+
+    job = Job(id=str(uuid.uuid4()), name="Test Job", status=JobStatus.PENDING)
+    db.create_job(job)
+
+    # Initial state - no timing
+    job1 = db.get_job(job.id)
+    assert job1.started_at is None
+    assert job1.completed_at is None
+
+    # Update to RUNNING with started_at
+    start_time = datetime.utcnow()
+    time.sleep(0.01)
+    db.update_job_status(job.id, JobStatus.RUNNING, started_at=start_time)
+
+    job2 = db.get_job(job.id)
+    assert job2.status == JobStatus.RUNNING
+    assert job2.started_at == start_time
+    assert job2.completed_at is None
+
+    # Update to COMPLETED with completed_at (should preserve started_at)
+    time.sleep(0.01)
+    end_time = datetime.utcnow()
+    db.update_job_status(job.id, JobStatus.COMPLETED, completed_at=end_time)
+
+    job3 = db.get_job(job.id)
+    assert job3.status == JobStatus.COMPLETED
+    assert job3.started_at == start_time, "started_at should be preserved"
+    assert job3.completed_at == end_time
+    assert job3.completed_at > job3.started_at
+
+
+def test_task_timing_preservation(db):
+    """Test that task timing fields are preserved across updates.
+
+    Verifies the fix for the timing capture issue: when updating task status
+    without providing started_at or completed_at, existing values should be preserved.
+    """
+    import time
+
+    job = Job(id=str(uuid.uuid4()), name="Test Job", status=JobStatus.PENDING)
+    db.create_job(job)
+
+    task = Task(
+        id=str(uuid.uuid4()),
+        job_id=job.id,
+        name="Test Task",
+        description="",
+        status=TaskStatus.PENDING,
+    )
+    db.create_task(task)
+
+    # Initial state - no timing
+    task1 = db.get_task(task.id)
+    assert task1.started_at is None
+    assert task1.completed_at is None
+
+    # Update to RUNNING with started_at
+    start_time = datetime.utcnow()
+    time.sleep(0.01)
+    db.update_task_status(task.id, TaskStatus.RUNNING, started_at=start_time)
+
+    task2 = db.get_task(task.id)
+    assert task2.status == TaskStatus.RUNNING
+    assert task2.started_at == start_time
+    assert task2.completed_at is None
+
+    # Update to COMPLETED with completed_at and output (should preserve started_at)
+    time.sleep(0.01)
+    end_time = datetime.utcnow()
+    db.update_task_status(
+        task.id,
+        TaskStatus.COMPLETED,
+        output="Task output",
+        retries=0,
+        completed_at=end_time,
+    )
+
+    task3 = db.get_task(task.id)
+    assert task3.status == TaskStatus.COMPLETED
+    assert task3.started_at == start_time, "started_at should be preserved"
+    assert task3.completed_at == end_time
+    assert task3.output == "Task output"
+    assert task3.completed_at > task3.started_at

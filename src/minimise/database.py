@@ -121,12 +121,30 @@ class Database:
         ]
 
     def update_job_status(self, job_id: str, status: JobStatus, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None) -> None:
-        """Update job status."""
+        """Update job status.
+
+        Only updates fields that are explicitly provided. If started_at or completed_at
+        are None, their existing database values are preserved.
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE jobs SET status = ?, started_at = ?, completed_at = ? WHERE id = ?
-        """, (status.value, started_at.isoformat() if started_at else None, completed_at.isoformat() if completed_at else None, job_id))
+
+        # Build dynamic UPDATE statement to only update provided fields
+        update_fields = ["status = ?"]
+        params = [status.value]
+
+        if started_at is not None:
+            update_fields.append("started_at = ?")
+            params.append(started_at.isoformat())
+
+        if completed_at is not None:
+            update_fields.append("completed_at = ?")
+            params.append(completed_at.isoformat())
+
+        params.append(job_id)
+
+        query = f"UPDATE jobs SET {', '.join(update_fields)} WHERE id = ?"
+        cursor.execute(query, params)
         conn.commit()
         conn.close()
 
@@ -144,12 +162,34 @@ class Database:
         conn.close()
 
     def update_task_status(self, task_id: str, status: TaskStatus, output: Optional[str] = None, retries: int = 0, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None) -> None:
-        """Update task status."""
+        """Update task status.
+
+        Only updates fields that are explicitly provided. If started_at or completed_at
+        are None, their existing database values are preserved.
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE tasks SET status = ?, output = ?, retries = ?, started_at = ?, completed_at = ? WHERE id = ?
-        """, (status.value, output, retries, started_at.isoformat() if started_at else None, completed_at.isoformat() if completed_at else None, task_id))
+
+        # Build dynamic UPDATE statement to only update provided fields
+        update_fields = ["status = ?", "retries = ?"]
+        params = [status.value, retries]
+
+        # Always update output if provided (even if None)
+        update_fields.append("output = ?")
+        params.append(output)
+
+        if started_at is not None:
+            update_fields.append("started_at = ?")
+            params.append(started_at.isoformat())
+
+        if completed_at is not None:
+            update_fields.append("completed_at = ?")
+            params.append(completed_at.isoformat())
+
+        params.append(task_id)
+
+        query = f"UPDATE tasks SET {', '.join(update_fields)} WHERE id = ?"
+        cursor.execute(query, params)
         conn.commit()
         conn.close()
 
