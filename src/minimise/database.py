@@ -200,3 +200,17 @@ class Database:
             )
             for row in rows
         ]
+
+    def delete_job(self, job_id: str) -> bool:
+        """Delete a job and all its associated tasks."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("DELETE FROM tasks WHERE job_id = ?", (job_id,))
+        cursor.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+
+        conn.commit()
+        rows_deleted = cursor.rowcount
+        conn.close()
+
+        return rows_deleted > 0

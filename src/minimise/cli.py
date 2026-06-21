@@ -238,6 +238,26 @@ def job_stop(job_id: str):
         raise SystemExit(1)
 
 
+@job.command(name="delete")
+@click.argument("job_id")
+def job_delete(job_id: str):
+    """Delete a job and all its tasks."""
+    try:
+        db = get_db()
+
+        success = db.delete_job(job_id)
+
+        if success:
+            console.print(f"[green]Job {job_id} deleted successfully[/green]")
+        else:
+            console.print(f"[red]Error: Job {job_id} not found[/red]")
+            raise SystemExit(1)
+
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
+        raise SystemExit(1)
+
+
 @job.command(name="resume")
 @click.argument("job_id")
 def job_resume(job_id: str):
