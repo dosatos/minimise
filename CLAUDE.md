@@ -51,6 +51,17 @@ cat README.md
 cat TESTING.md
 ```
 
+## Implementation Preference: Dogfooding via `mini`
+
+When implementing features or fixes:
+1. **Prefer `mini` commands** as the primary method — this dogfoods the tool and validates real-world usage
+2. **Only fall back** to direct code changes when:
+   - The feature is blocked in `mini` (e.g., WebSocket handlers not yet implemented)
+   - The fix requires direct code changes that `mini` cannot invoke (e.g., schema migrations, internal refactors)
+   - Direct changes make the dogfooding path clearer (rare)
+
+This keeps the tool dogfood-friendly and ensures CLI/API actually work.
+
 ## Current State
 - ✅ Backend: Production-ready (42/42 tests)
 - ⏳ Next: Phase 4 visualization UIs

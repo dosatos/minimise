@@ -131,7 +131,6 @@ class TaskExecutor:
             (success, output)
         """
         import subprocess
-        import json
 
         task_name = context.get("task_name", "Task")
         task_description = context.get("task_description", "")
@@ -151,19 +150,19 @@ Context from previous tasks:
 Execute this task by modifying the codebase as needed. When done, write a summary of what you implemented."""
 
         try:
-            # Spawn Claude Code CLI with the prompt
-            # Use echo to pipe prompt and capture output
-            cmd = f'echo {json.dumps(prompt)} | npx claude-code 2>&1'
+            # Spawn Claude Code CLI with the prompt via stdin
+            # Use: claude -p --output-format text
+            # The -p flag enables non-interactive mode, reading prompt from stdin
             result = subprocess.run(
-                cmd,
-                shell=True,
+                ["claude", "-p", "--output-format", "text"],
+                input=prompt,
                 capture_output=True,
                 text=True,
                 timeout=300,
                 cwd=str(self.jobs_dir.parent.parent),  # Run from repo root
             )
 
-            output = result.stdout + result.stderr
+            output = result.stdout
             success = result.returncode == 0
 
             return success, output
