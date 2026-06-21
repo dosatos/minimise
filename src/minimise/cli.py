@@ -1,6 +1,7 @@
 """CLI interface for Minimise - plan orchestrator for multi-agent execution."""
 
 import click
+import json
 import sqlite3
 from pathlib import Path
 from datetime import datetime
@@ -133,47 +134,72 @@ def job_new(plan: str):
 
 
 @job.command(name="list")
-def job_list():
+@click.option("--format", type=click.Choice(["table", "json"]), default="table", help="Output format")
+def job_list(format):
     """List all jobs."""
     try:
         db = get_db()
         jobs = db.list_jobs()
 
         if not jobs:
-            console.print("[yellow]No jobs found[/yellow]")
+            if format == "json":
+                console.print(json.dumps([], indent=2))
+            else:
+                console.print("[yellow]No jobs found[/yellow]")
             return
 
-        table = Table(title="Minimise Jobs")
-        table.add_column("Job ID", style="cyan")
-        table.add_column("Name", style="magenta")
-        table.add_column("Status", style="cyan")
-        table.add_column("Created", style="green")
-        table.add_column("Progress", style="yellow")
+        if format == "json":
+            jobs_data = []
+            for j in jobs:
+                tasks = db.list_tasks_for_job(j.id)
+                task_count = len(tasks)
+                completed_count = sum(1 for t in tasks if t.status == TaskStatus.COMPLETED)
 
-        for j in jobs:
-            status_text = Text(j.status.value, style=_get_status_color(j.status))
-            tasks = db.list_tasks_for_job(j.id)
-            task_count = len(tasks)
-            completed_count = sum(1 for t in tasks if t.status == TaskStatus.COMPLETED)
-            created = j.created_at.strftime("%Y-%m-%d %H:%M:%S") if j.created_at else "N/A"
+                jobs_data.append({
+                    "id": j.id,
+                    "name": j.name,
+                    "status": j.status.value,
+                    "created_at": j.created_at.isoformat() if j.created_at else None,
+                    "started_at": j.started_at.isoformat() if j.started_at else None,
+                    "completed_at": j.completed_at.isoformat() if j.completed_at else None,
+                    "tasks": {
+                        "total": task_count,
+                        "completed": completed_count,
+                    },
+                })
+            console.print(json.dumps(jobs_data, indent=2))
+        else:
+            table = Table(title="Minimise Jobs")
+            table.add_column("Job ID", style="cyan")
+            table.add_column("Name", style="magenta")
+            table.add_column("Status", style="cyan")
+            table.add_column("Created", style="green")
+            table.add_column("Progress", style="yellow")
 
-            progress_text = f"{completed_count}/{task_count}"
-            if completed_count == task_count and task_count > 0:
-                progress = Text(progress_text, style="green")
-            elif completed_count > 0:
-                progress = Text(progress_text, style="yellow")
-            else:
-                progress = Text(progress_text, style="red")
+            for j in jobs:
+                status_text = Text(j.status.value, style=_get_status_color(j.status))
+                tasks = db.list_tasks_for_job(j.id)
+                task_count = len(tasks)
+                completed_count = sum(1 for t in tasks if t.status == TaskStatus.COMPLETED)
+                created = j.created_at.strftime("%Y-%m-%d %H:%M:%S") if j.created_at else "N/A"
 
-            table.add_row(
-                j.id,
-                j.name,
-                status_text,
-                created,
-                progress,
-            )
+                progress_text = f"{completed_count}/{task_count}"
+                if completed_count == task_count and task_count > 0:
+                    progress = Text(progress_text, style="green")
+                elif completed_count > 0:
+                    progress = Text(progress_text, style="yellow")
+                else:
+                    progress = Text(progress_text, style="red")
 
-        console.print(table)
+                table.add_row(
+                    j.id,
+                    j.name,
+                    status_text,
+                    created,
+                    progress,
+                )
+
+            console.print(table)
 
     except Exception as e:
         console.print(f"[red]Error: {str(e)}[/red]")
