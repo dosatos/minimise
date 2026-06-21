@@ -1,5 +1,7 @@
 # Minimise
 
+[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A CLI tool for orchestrating multi-agent plan execution with task sequencing, retry logic, and git-based diff tracking.
 
 ## Install
