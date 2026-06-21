@@ -166,7 +166,7 @@ def job_list():
                 progress = Text(progress_text, style="red")
 
             table.add_row(
-                j.id[:8],
+                j.id,
                 j.name,
                 status_text,
                 created,
@@ -221,19 +221,17 @@ def job_status(job_id: str):
             table.add_column("Task Name", style="cyan")
             table.add_column("Status", style="cyan")
             table.add_column("Retries", style="yellow")
-            table.add_column("Output", style="green")
 
             for task in job_obj.tasks:
                 status_text = Text(task.status.value, style=_get_status_color(task.status))
-                output_preview = (task.output[:50] + "...") if task.output else "N/A"
                 table.add_row(
                     task.name,
                     status_text,
                     str(task.retries),
-                    output_preview,
                 )
 
             console.print(table)
+            console.print(f"\n[dim]View full output with: mini job logs {job_id[:8]}[/dim]")
         else:
             console.print("[yellow]No tasks for this job[/yellow]")
 
