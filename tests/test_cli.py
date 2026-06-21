@@ -54,3 +54,32 @@ tasks:
         assert result.exit_code in [0, 1]  # Allow both success and graceful failure
         # Ensure no Python tracebacks in output
         assert "Traceback" not in result.output
+
+
+def test_mini_job_help(runner):
+    """Test that job commands have help text."""
+    result = runner.invoke(mini, ["job", "--help"])
+    assert result.exit_code == 0
+    assert "new" in result.output
+    assert "list" in result.output
+    assert "status" in result.output
+    assert "stop" in result.output
+    assert "resume" in result.output
+    assert "logs" in result.output
+
+
+def test_mini_view_help(runner):
+    """Test that view commands have help text."""
+    result = runner.invoke(mini, ["view", "--help"])
+    assert result.exit_code == 0
+    assert "start" in result.output
+    assert "stop" in result.output
+
+
+def test_mini_main_help(runner):
+    """Test main CLI help."""
+    result = runner.invoke(mini, ["--help"])
+    assert result.exit_code == 0
+    assert "Minimise" in result.output
+    assert "job" in result.output
+    assert "view" in result.output
