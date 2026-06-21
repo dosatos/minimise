@@ -124,18 +124,29 @@ def job_list():
         table.add_column("Name", style="magenta")
         table.add_column("Status", style="cyan")
         table.add_column("Created", style="green")
-        table.add_column("Tasks", style="yellow")
+        table.add_column("Progress", style="yellow")
 
         for j in jobs:
             status_text = Text(j.status.value, style=_get_status_color(j.status))
-            task_count = len(db.list_tasks_for_job(j.id))
+            tasks = db.list_tasks_for_job(j.id)
+            task_count = len(tasks)
+            completed_count = sum(1 for t in tasks if t.status == TaskStatus.COMPLETED)
             created = j.created_at.strftime("%Y-%m-%d %H:%M:%S") if j.created_at else "N/A"
+
+            progress_text = f"{completed_count}/{task_count}"
+            if completed_count == task_count and task_count > 0:
+                progress = Text(progress_text, style="green")
+            elif completed_count > 0:
+                progress = Text(progress_text, style="yellow")
+            else:
+                progress = Text(progress_text, style="red")
+
             table.add_row(
                 j.id[:8],
                 j.name,
                 status_text,
                 created,
-                str(task_count),
+                progress,
             )
 
         console.print(table)
