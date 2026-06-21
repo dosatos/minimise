@@ -46,6 +46,11 @@ class TaskExecutor:
         if not job:
             return False, f"Job {job_id} not found"
 
+        # Capture task's base_commit at start (if not already set)
+        if not task.base_commit:
+            task.base_commit = self.git_tracker.get_current_commit()
+            self.db.update_task(task)
+
         # Run pre-task hook
         if pre_task_hook:
             success, output = run_shell_command(pre_task_hook)
@@ -97,13 +102,29 @@ class TaskExecutor:
                 )
                 return False, f"Post-task hook failed: {hook_output}"
 
-        # Calculate and store diff
-        # Issue #2 fix: Always update status when task succeeds (even if base_commit is None)
+        # Calculate and store diff against task's base_commit
         if final_success:
-            if job.base_commit:
-                diff = self.git_tracker.get_diff(job.base_commit)
+            if task.base_commit:
+                diff = self.git_tracker.get_diff(task.base_commit)
                 diff_path = task_dir / "diff.txt"
                 diff_path.write_text(diff)
+                # Update task with diff_path in database
+                self.db.update_task(task)
+
+            # Commit changes with task-specific message
+            commit_message = f"Task {task.id}: {task.name}"
+            try:
+                commit_result = self.git_tracker.commit(commit_message)
+                if commit_result:
+                    # Update task with diff_path before marking COMPLETED
+                    diff_path = task_dir / "diff.txt"
+                    if diff_path.exists():
+                        task.diff_path = str(diff_path)
+                        self.db.update_task(task)
+            except Exception as e:
+                # Log commit failure but don't fail the task
+                final_output += f"\n[Note: Git commit failed: {str(e)}]"
+
             self.db.update_task_status(
                 task.id,
                 TaskStatus.COMPLETED,
