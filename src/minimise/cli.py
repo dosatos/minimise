@@ -38,6 +38,16 @@ def get_job_manager(db: Database) -> JobManager:
     return JobManager(db, git_tracker, JOBS_DIR, REPO_PATH)
 
 
+def resolve_job_id(job_id_or_prefix: str) -> str:
+    """Resolve a job ID from full ID or prefix (e.g., first 8 chars)."""
+    db = get_db()
+    resolved = db.resolve_job_id(job_id_or_prefix)
+    if not resolved:
+        console.print(f"[red]Error: Job {job_id_or_prefix} not found[/red]")
+        raise SystemExit(1)
+    return resolved
+
+
 def _get_status_color(status) -> str:
     """Get color for status badge."""
     if isinstance(status, JobStatus) or isinstance(status, TaskStatus):
@@ -161,6 +171,7 @@ def job_list():
 def job_status(job_id: str):
     """Show job details and task progress."""
     try:
+        job_id = resolve_job_id(job_id)
         db = get_db()
         job_manager = get_job_manager(db)
 
@@ -222,6 +233,7 @@ def job_status(job_id: str):
 def job_stop(job_id: str):
     """Cancel a running job."""
     try:
+        job_id = resolve_job_id(job_id)
         db = get_db()
         job_manager = get_job_manager(db)
 
@@ -243,6 +255,7 @@ def job_stop(job_id: str):
 def job_delete(job_id: str):
     """Delete a job and all its tasks."""
     try:
+        job_id = resolve_job_id(job_id)
         db = get_db()
 
         success = db.delete_job(job_id)
@@ -263,6 +276,7 @@ def job_delete(job_id: str):
 def job_resume(job_id: str):
     """Retry failed job from checkpoint."""
     try:
+        job_id = resolve_job_id(job_id)
         db = get_db()
         job_manager = get_job_manager(db)
 
@@ -299,6 +313,7 @@ def job_resume(job_id: str):
 def job_logs(job_id: str):
     """View job output and logs."""
     try:
+        job_id = resolve_job_id(job_id)
         db = get_db()
 
         job_obj = db.get_job(job_id)
