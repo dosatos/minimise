@@ -140,13 +140,30 @@ def test_get_job_status_not_found(job_manager):
 
 
 def test_cancel_job_basic(job_manager, plan_file):
-    """Test cancel job basic implementation."""
+    """Test cancel job cancels a job and its tasks."""
     created_job = job_manager.create_job(plan_file)
     job_id = created_job.id
 
-    # Cancel should work for now (stub implementation)
+    # Simulate job running by marking it as RUNNING
+    job_manager.db.update_job_status(job_id, JobStatus.RUNNING, started_at=datetime.utcnow())
+
+    # Mark some tasks as RUNNING
+    tasks = job_manager.db.list_tasks_for_job(job_id)
+    if len(tasks) > 0:
+        job_manager.db.update_task_status(tasks[0].id, TaskStatus.RUNNING)
+
+    # Cancel the job
     result = job_manager.cancel_job(job_id)
-    assert result is False or result is True  # Accept any boolean for now
+    assert result is True
+
+    # Verify job status is CANCELLED
+    job = job_manager.get_job_status(job_id)
+    assert job.status == JobStatus.CANCELLED
+
+    # Verify tasks are CANCELLED
+    for task in job.tasks:
+        if task.status != TaskStatus.COMPLETED and task.status != TaskStatus.FAILED:
+            assert task.status == TaskStatus.CANCELLED
 
 
 def test_run_job_basic(job_manager, plan_file):

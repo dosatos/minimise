@@ -224,7 +224,7 @@ class JobManager:
         """
         Cancel a running job.
 
-        Stub implementation for now - marks job as cancelled.
+        Updates job status to CANCELLED and marks all PENDING/RUNNING tasks as cancelled.
 
         Args:
             job_id: ID of the job to cancel
@@ -236,8 +236,16 @@ class JobManager:
         if not job:
             return False
 
-        # For now, just return False (stub)
-        return False
+        # Update job status to CANCELLED
+        self.db.update_job_status(job_id, JobStatus.CANCELLED, completed_at=datetime.utcnow())
+
+        # Cancel all tasks that are not already completed/failed
+        tasks = self.db.list_tasks_for_job(job_id)
+        for task in tasks:
+            if task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
+                self.db.update_task_status(task.id, TaskStatus.CANCELLED, completed_at=datetime.utcnow())
+
+        return True
 
     def get_job_status(self, job_id: str) -> Optional[Job]:
         """
