@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minimise"
+version = "0.1.0"
+description = "Plan orchestrator for multi-agent execution"
+requires-python = ">=3.9"
+dependencies = [
+    "click>=8.0",
+    "pydantic>=2.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[project.scripts]
+mini = "minimise.cli:main"
