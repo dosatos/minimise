@@ -97,7 +97,7 @@ class JobManager:
         # Create Task objects from config
         tasks = []
         for idx, task_config in enumerate(tasks_config):
-            task_id = str(uuid.uuid4())
+            task_id = task_config.get("id", str(uuid.uuid4()))
             task = Task(
                 id=task_id,
                 job_id=job_id,
