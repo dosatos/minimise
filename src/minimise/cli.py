@@ -69,7 +69,7 @@ def job():
 @job.command(name="new")
 @click.option("--plan", required=True, help="Path to plan.yaml file")
 def job_new(plan: str):
-    """Create and start a new job from a plan file."""
+    """Create and execute a new job from a plan file."""
     try:
         plan_path = Path(plan).resolve()
 
@@ -86,11 +86,20 @@ def job_new(plan: str):
             console.print("[red]Error: Failed to create job[/red]")
             raise SystemExit(1)
 
-        console.print(f"[green]Job created successfully[/green]")
+        console.print(f"[green]Job created[/green]")
         console.print(f"[bold]Job ID:[/bold] {job_obj.id}")
         console.print(f"[bold]Name:[/bold] {job_obj.name}")
-        console.print(f"[bold]Status:[/bold] {job_obj.status.value}")
-        console.print(f"[bold]Tasks:[/bold] {len(job_obj.tasks)}")
+        console.print(f"[bold]Tasks:[/bold] {len(job_obj.tasks)}\n")
+
+        # Execute the job immediately
+        console.print("[cyan]Executing job...[/cyan]")
+        success = job_manager.run_job(job_obj.id)
+
+        if success:
+            console.print(f"[green]Job completed successfully[/green]")
+        else:
+            console.print(f"[red]Job failed[/red]")
+            raise SystemExit(1)
 
     except SystemExit:
         raise
