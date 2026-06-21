@@ -675,3 +675,113 @@ def test_post_plan_hook_failure_persists_job(job_manager, plan_file):
 
         finally:
             job_manager.task_executor.execute_task = original_method
+
+
+def test_failed_job_plan_lock_released(job_manager, plan_file):
+    """Test that plan lock is released when a job fails."""
+    execution_count = [0]
+    original_method = job_manager.task_executor.execute_task
+
+    def mock_execute_task(task, job_id, handover_context, pre_task_hook="", post_task_hook=""):
+        execution_count[0] += 1
+        if execution_count[0] == 1:
+            # Fail on first task
+            error_msg = "Task execution failed: simulated failure"
+            job_manager.db.update_task_status(task.id, TaskStatus.FAILED, output=error_msg, completed_at=datetime.utcnow())
+            return False, error_msg
+        return True, f"Executed {task.name}"
+
+    job_manager.task_executor.execute_task = mock_execute_task
+
+    try:
+        # Create job
+        created_job = job_manager.create_job(plan_file)
+        job_id = created_job.id
+
+        # Create a lock file to simulate a lock
+        job_dir = job_manager.jobs_dir / job_id
+        lock_path = job_dir / "plan.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("locked")
+        assert lock_path.exists(), "Lock file should exist before job failure"
+
+        # Run the job - it should fail
+        success = job_manager.run_job(job_id)
+        assert not success
+
+        # Verify job has FAILED status
+        job = job_manager.get_job_status(job_id)
+        assert job.status == JobStatus.FAILED
+
+        # Verify lock is released (file deleted)
+        assert not lock_path.exists(), "Lock file should be released after job failure"
+
+    finally:
+        job_manager.task_executor.execute_task = original_method
+
+
+def test_resume_failed_job_retries_from_last_completed(job_manager, plan_file):
+    """Test that resuming a failed job retries from the last completed task."""
+    execution_count = [0]
+    original_method = job_manager.task_executor.execute_task
+
+    def mock_execute_task(task, job_id, handover_context, pre_task_hook="", post_task_hook=""):
+        execution_count[0] += 1
+        # First run: fail on second task
+        if execution_count[0] <= 1:
+            job_manager.db.update_task_status(task.id, TaskStatus.COMPLETED, output=f"Executed {task.name}", completed_at=datetime.utcnow())
+            return True, f"Executed {task.name}"
+        elif execution_count[0] == 2:
+            # Fail on first resume attempt of second task
+            error_msg = "Task execution failed on resume"
+            job_manager.db.update_task_status(task.id, TaskStatus.FAILED, output=error_msg, completed_at=datetime.utcnow())
+            return False, error_msg
+        else:
+            # Success on subsequent retries
+            job_manager.db.update_task_status(task.id, TaskStatus.COMPLETED, output=f"Executed {task.name}", completed_at=datetime.utcnow())
+            return True, f"Executed {task.name}"
+
+    job_manager.task_executor.execute_task = mock_execute_task
+
+    try:
+        # Create job with 2 tasks
+        created_job = job_manager.create_job(plan_file)
+        job_id = created_job.id
+        tasks = job_manager.db.list_tasks_for_job(job_id)
+        assert len(tasks) == 2, "Plan should have 2 tasks"
+
+        # First run - should fail on second task
+        success = job_manager.run_job(job_id)
+        assert not success
+
+        # Verify job status is FAILED
+        job = job_manager.get_job_status(job_id)
+        assert job.status == JobStatus.FAILED
+
+        # Verify first task is COMPLETED and second is FAILED
+        tasks_after_first = job_manager.db.list_tasks_for_job(job_id)
+        assert tasks_after_first[0].status == TaskStatus.COMPLETED
+        assert tasks_after_first[1].status == TaskStatus.FAILED
+
+        # Reset failed tasks to PENDING to retry
+        for task in tasks_after_first:
+            if task.status == TaskStatus.FAILED:
+                job_manager.db.update_task_status(task.id, TaskStatus.PENDING, output=None, completed_at=None)
+
+        # Reset job to PENDING for retry
+        job_manager.db.update_job_status(job_id, JobStatus.PENDING, started_at=None, completed_at=None)
+
+        # Resume the job - should retry from second task (first is already COMPLETED)
+        success = job_manager.run_job(job_id)
+        assert success
+
+        # Verify job is COMPLETED
+        final_job = job_manager.get_job_status(job_id)
+        assert final_job.status == JobStatus.COMPLETED
+
+        # Verify all tasks are COMPLETED
+        final_tasks = job_manager.db.list_tasks_for_job(job_id)
+        assert all(t.status == TaskStatus.COMPLETED for t in final_tasks)
+
+    finally:
+        job_manager.task_executor.execute_task = original_method

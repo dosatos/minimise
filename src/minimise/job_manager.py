@@ -40,6 +40,21 @@ class JobManager:
         self.on_job_update = on_job_update
         self.on_task_update = on_task_update
 
+    def release_lock(self, plan_path: str) -> None:
+        """
+        Release any file locks held by a plan.
+
+        Args:
+            plan_path: Path to the plan (used to derive lock file path)
+        """
+        plan_path_obj = Path(plan_path)
+        lock_path = plan_path_obj.parent / f"{plan_path_obj.stem}.lock"
+        if lock_path.exists():
+            try:
+                lock_path.unlink()
+            except Exception as e:
+                print(f"Warning: Could not release lock at {lock_path}: {e}")
+
     def create_job(self, plan_path: Path) -> Optional[Job]:
         """
         Create a job from a plan.yaml file.
@@ -181,6 +196,7 @@ class JobManager:
             success, output = run_shell_command(pre_plan_hook)
             if not success:
                 print(f"Pre-plan hook failed: {output}")
+                self.release_lock(str(plan_path))
                 self.db.update_job_status(job_id, JobStatus.FAILED, completed_at=datetime.utcnow())
                 if self.on_job_update:
                     self.on_job_update(job_id)
@@ -210,6 +226,7 @@ class JobManager:
 
             if not success:
                 print(f"Task {task.name} failed: {output}")
+                self.release_lock(str(plan_path))
                 self.db.update_job_status(job_id, JobStatus.FAILED, completed_at=datetime.utcnow())
                 if self.on_job_update:
                     self.on_job_update(job_id)
@@ -232,6 +249,7 @@ class JobManager:
             success, output = run_shell_command(post_plan_hook)
             if not success:
                 print(f"Post-plan hook failed: {output}")
+                self.release_lock(str(plan_path))
                 self.db.update_job_status(job_id, JobStatus.FAILED, completed_at=datetime.utcnow())
                 if self.on_job_update:
                     self.on_job_update(job_id)
