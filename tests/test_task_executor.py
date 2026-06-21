@@ -118,3 +118,92 @@ def test_pre_post_hooks_execution(temp_db_dir, db, git_repo):
     assert post_marker.exists(), "Post-hook did not run"
     assert success
     assert output == "Task completed successfully"
+
+
+def test_post_hook_failure_updates_status(temp_db_dir, db, git_repo):
+    """Test that post-hook failure updates task status to FAILED."""
+    from minimise.models import Job, JobStatus
+
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(db, git_tracker, temp_db_dir)
+
+    job_id = str(uuid.uuid4())
+
+    # Create the job first
+    job = Job(
+        id=job_id,
+        name="Test Job",
+        status=JobStatus.PENDING,
+        base_commit=git_tracker.get_current_commit(),
+    )
+    db.create_job(job)
+
+    task = Task(
+        id=str(uuid.uuid4()),
+        job_id=job_id,
+        name="Test Task",
+        description="",
+        status=TaskStatus.PENDING,
+    )
+    db.create_task(task)
+
+    # Mock Claude Code to succeed
+    def mock_invoke(context):
+        return True, "Success"
+
+    executor._invoke_claude_code = mock_invoke
+
+    # Run with failing post-hook
+    failing_post_hook = "exit 1"
+    success, output = executor.execute_task(
+        task, job_id, "", post_task_hook=failing_post_hook
+    )
+
+    # Verify: should fail and DB should show FAILED
+    assert not success
+    updated_task = db.get_task(task.id)
+    assert updated_task.status == TaskStatus.FAILED
+    assert "Post-task hook failed" in updated_task.output
+
+
+def test_task_completion_without_base_commit(temp_db_dir, db, git_repo):
+    """Test that task success updates status even when base_commit is None."""
+    from minimise.models import Job, JobStatus
+
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(db, git_tracker, temp_db_dir)
+
+    job_id = str(uuid.uuid4())
+
+    # Create the job WITHOUT base_commit
+    job = Job(
+        id=job_id,
+        name="Test Job",
+        status=JobStatus.PENDING,
+        base_commit=None,  # No base_commit
+    )
+    db.create_job(job)
+
+    task = Task(
+        id=str(uuid.uuid4()),
+        job_id=job_id,
+        name="Test Task",
+        description="",
+        status=TaskStatus.PENDING,
+    )
+    db.create_task(task)
+
+    # Mock Claude Code to succeed
+    def mock_invoke(context):
+        return True, "Task completed"
+
+    executor._invoke_claude_code = mock_invoke
+
+    # Execute task
+    success, output = executor.execute_task(task, job_id, "")
+
+    # Verify: task should be COMPLETED even without base_commit
+    assert success
+    updated_task = db.get_task(task.id)
+    assert updated_task.status == TaskStatus.COMPLETED
+    assert updated_task.output == "Task completed"

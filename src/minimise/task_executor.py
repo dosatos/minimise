@@ -82,13 +82,23 @@ class TaskExecutor:
         if post_task_hook:
             hook_success, hook_output = run_shell_command(post_task_hook)
             if not hook_success:
+                # Issue #1 fix: Update status to FAILED before returning
+                self.db.update_task_status(
+                    task.id,
+                    TaskStatus.FAILED,
+                    output=f"Post-task hook failed: {hook_output}",
+                    retries=task.retries,
+                    completed_at=datetime.utcnow(),
+                )
                 return False, f"Post-task hook failed: {hook_output}"
 
         # Calculate and store diff
-        if final_success and job.base_commit:
-            diff = self.git_tracker.get_diff(job.base_commit)
-            diff_path = task_dir / "diff.txt"
-            diff_path.write_text(diff)
+        # Issue #2 fix: Always update status when task succeeds (even if base_commit is None)
+        if final_success:
+            if job.base_commit:
+                diff = self.git_tracker.get_diff(job.base_commit)
+                diff_path = task_dir / "diff.txt"
+                diff_path.write_text(diff)
             self.db.update_task_status(
                 task.id,
                 TaskStatus.COMPLETED,
@@ -96,7 +106,7 @@ class TaskExecutor:
                 retries=task.retries,
                 completed_at=datetime.utcnow(),
             )
-        elif not final_success:
+        else:
             self.db.update_task_status(
                 task.id,
                 TaskStatus.FAILED,
