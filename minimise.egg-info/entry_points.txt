@@ -1,2 +1,0 @@
-[console_scripts]
-mini = minimise.cli:main

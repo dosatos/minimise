@@ -1,7 +1,0 @@
-Metadata-Version: 2.4
-Name: minimise
-Version: 0.1.0
-Summary: Plan orchestrator for multi-agent execution
-Requires-Python: >=3.9
-Requires-Dist: click>=8.0
-Requires-Dist: pydantic>=2.0
