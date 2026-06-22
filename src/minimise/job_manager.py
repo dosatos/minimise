@@ -112,12 +112,19 @@ class JobManager:
         # Create Task objects from config
         tasks = []
         for idx, task_config in enumerate(tasks_config):
+            # Validate goal field is present
+            if "goal" not in task_config:
+                print(f"Error: Task {idx + 1} ({task_config.get('name', 'Unnamed')}) is missing 'goal:' field")
+                print("Each task must include 'goal:' field describing the task's objective")
+                return None
+
             task_id = task_config.get("id", str(uuid.uuid4()))
             task = Task(
                 id=task_id,
                 job_id=job_id,
                 name=task_config.get("name", f"Task {idx + 1}"),
                 description=task_config.get("description", ""),
+                goal=task_config.get("goal", ""),
                 status=TaskStatus.PENDING,
                 created_at=datetime.utcnow(),
                 base_commit=base_commit,
@@ -210,6 +217,18 @@ class JobManager:
         handover_context = ""
 
         for idx, task in enumerate(tasks):
+            # Skip completed tasks (for resume)
+            if task.status == TaskStatus.COMPLETED:
+                # Still build handover context from completed task output
+                if task.output and idx < len(tasks) - 1:
+                    if job.base_commit:
+                        diff = self.git_tracker.get_diff(job.base_commit)
+                    else:
+                        diff = ""
+                    next_task = tasks[idx + 1]
+                    handover_context = HandoverManager.build_handover_prompt(task.output, diff, next_task)
+                continue
+
             # Get task config for hooks
             task_config = tasks_config[idx] if idx < len(tasks_config) else {}
             pre_task_hook = task_config.get("pre_task_hook", "")
