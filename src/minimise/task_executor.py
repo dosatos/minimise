@@ -73,6 +73,7 @@ class TaskExecutor:
                 "handover": handover_context,
                 "task_name": task.name,
                 "task_description": task.description,
+                "task_goal": task.goal,
             }
 
             # Invoke Claude Code with task context
@@ -180,7 +181,7 @@ class TaskExecutor:
         The agent modifies the codebase and returns success status.
 
         Args:
-            context: Context dictionary with task_name, task_description, handover
+            context: Context dictionary with task_name, task_description, task_goal, handover
 
         Returns:
             (success, output)
@@ -189,14 +190,16 @@ class TaskExecutor:
 
         task_name = context.get("task_name", "Task")
         task_description = context.get("task_description", "")
+        task_goal = context.get("task_goal", "")
         handover = context.get("handover", "")
 
         # Build prompt for Claude Code agent
+        goal_section = f"Goal: {task_goal}\n\n" if task_goal else ""
         prompt = f"""You are executing a task in a multi-agent plan execution system.
 
 Task: {task_name}
 
-Description:
+{goal_section}Description:
 {task_description}
 
 Context from previous tasks:

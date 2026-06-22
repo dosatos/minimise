@@ -31,6 +31,7 @@ class Task:
     completed_at: Optional[datetime] = None
     diff_path: Optional[str] = None
     base_commit: Optional[str] = None
+    goal: Optional[str] = None
 
 @dataclass
 class Job:
