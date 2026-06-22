@@ -45,18 +45,21 @@ plan:
   tasks:
     - id: task-1
       name: "Write tests"
-      description: "Define test cases for the new endpoint"
+      goal: "Define comprehensive test cases for the new endpoint"
+      description: "Create test file with fixtures and test cases"
     
     - id: task-2
       name: "Implement endpoint"
-      description: "Implement the endpoint to pass tests from task 1"
+      goal: "Implement the endpoint to pass all tests from task 1"
+      description: "Add endpoint handler, validation, and response formatting"
     
     - id: task-3
       name: "Add verification"
-      description: "Verify implementation and run full test suite"
+      goal: "Verify implementation quality and ensure tests pass"
+      description: "Run full test suite, check coverage, and validate behavior"
 ```
 
-Each task receives **only** the output of the previous task (git diff, completion report) — fresh context prevents degradation.
+Each task includes a **goal** field that clearly states the task's objective. The agent receives this goal prepended to the description, ensuring alignment on intent. Each task receives **only** the output of the previous task (git diff, completion report) — fresh context prevents degradation.
 
 ### 2. Run tests
 
@@ -136,6 +139,30 @@ mini job results diff a1b2c3d4 --task-id task-2
 # Show full prompt with handover context for a task
 mini job show a1b2c3d4 --task-id task-2
 ```
+
+## Task Goals
+
+Each task in a plan should include a `goal` field that clearly states the task's objective:
+
+```yaml
+tasks:
+  - id: task-1
+    name: "Setup database"
+    goal: "Create PostgreSQL schema with indexes and migrations"
+    description: |
+      1. Create migration file
+      2. Define schema with proper constraints
+      3. Add indexes for performance
+```
+
+The **goal** is prepended to the agent's prompt, ensuring clarity on intent. This prevents vague task descriptions from causing agent misalignment and makes task completion criteria explicit.
+
+### Goal vs Description
+
+- **Goal**: One-line objective (e.g., "Implement user authentication API")
+- **Description**: Implementation details and steps (e.g., "Add Flask routes, hash passwords with bcrypt, implement JWT")
+
+This separation ensures agents understand *what* is needed before tackling *how*.
 
 ## Commands
 

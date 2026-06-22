@@ -688,7 +688,8 @@ def job_show(job_id: str, task_id: Optional[str]):
             with open(plan_path, 'r') as f:
                 plan_data = yaml.safe_load(f)
 
-            plan = plan_data.get('plan', {})
+            # Handle both nested (plan.xxx) and flat (xxx) formats
+            plan = plan_data.get('plan', plan_data) if isinstance(plan_data, dict) else plan_data
 
             console.print(f"\n[bold]Plan Structure[/bold]")
             console.print(f"[bold]Job:[/bold] {job_obj.name} ({job_id})")
@@ -723,6 +724,10 @@ def job_show(job_id: str, task_id: Optional[str]):
                 console.print(f"\n  [{i}] [bold {status_color}]{task_name}[/bold {status_color}]")
                 console.print(f"      [dim]ID:[/dim] {task_id}")
                 console.print(f"      [dim]Status:[/dim] {status}")
+
+                # Display goal if present
+                if task_plan.get('goal'):
+                    console.print(f"      [dim]Goal:[/dim] {task_plan['goal'][:70]}")
 
                 description = task_plan.get('description', 'No description')
                 description_lines = description.strip().split("\n")

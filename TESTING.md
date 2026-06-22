@@ -14,7 +14,22 @@ pytest tests/test_cli.py -v
 
 Expected output: `159 passed`
 
-### 1a. New Tests for Deferred Execution Workflow
+### 1a. Tests for Goal Attribute Feature
+
+The test suite includes 4 tests for the goal field feature:
+
+- **test_plan_load_goal_field** — Task model loads goal from YAML
+- **test_plan_goal_prepended_to_prompt** — Goal is prepended to agent context
+- **test_plan_missing_goal_validation_error** — Missing goal raises validation error
+- **test_goal_in_job_show_output** — Goal displays in job show output
+
+These tests verify that:
+1. The goal field is properly stored in Task objects
+2. Goals are validated as required in plan YAML files
+3. Missing goals raise clear error messages
+4. Goals are prepended to agent prompts for clarity
+
+### 1b. New Tests for Deferred Execution Workflow
 
 The test suite now includes 52 comprehensive tests for the new workflow commands:
 
@@ -63,11 +78,20 @@ plan:
   tasks:
     - id: task-1
       name: "First Task"
+      goal: "Set up initial infrastructure"
       description: "This is the first task"
     
     - id: task-2
       name: "Second Task"
+      goal: "Build on top of task 1's output"
       description: "This is the second task that gets context from task 1"
+```
+
+**Important:** Each task must include a `goal` field. This is required and validated when creating a job. If a task is missing a goal, you'll see an error:
+
+```
+Error: Task 1 (First Task) is missing 'goal:' field
+Each task must include 'goal:' field describing the task's objective
 ```
 
 ### 4. Verify Git State
@@ -292,7 +316,68 @@ mini job results diff a1b2c3d4 --task-id task-with-no-diff
 # Output shows task header but "No diff available"
 ```
 
-### 7. Test Full Workflow
+### 7. Test Goal Field
+
+The goal field clarifies task intent and is prepended to the agent's prompt.
+
+#### Test Missing Goal Validation
+
+```bash
+# Create a plan WITHOUT goal field
+cat > test-no-goal.yaml << 'EOF'
+plan:
+  name: "Invalid Plan"
+  briefing: "This plan is missing goals"
+  
+  tasks:
+    - id: task-1
+      name: "Task without goal"
+      description: "This task has no goal field"
+EOF
+
+# Try to create job - should fail
+mini job new --plan test-no-goal.yaml
+# Expected error:
+#   Error: Task 1 (Task without goal) is missing 'goal:' field
+#   Each task must include 'goal:' field describing the task's objective
+```
+
+#### Test Goal Display in Job Show
+
+```bash
+# Create a plan WITH goal fields
+cat > test-with-goals.yaml << 'EOF'
+plan:
+  name: "Plan with Goals"
+  briefing: "All tasks have clear goals"
+  
+  tasks:
+    - id: task-1
+      name: "Setup"
+      goal: "Initialize project structure and dependencies"
+      description: "Create directories and install packages"
+    
+    - id: task-2
+      name: "Build"
+      goal: "Compile code and generate artifacts"
+      description: "Run build system and verify outputs"
+EOF
+
+# Create job
+mini job new --plan test-with-goals.yaml
+# Output: Job created with ID (e.g., a1b2c3d4)
+
+# Show job details
+mini job show a1b2c3d4
+# Output should include:
+#   Task: Setup
+#   Goal: Initialize project structure and dependencies
+#   
+#   Task: Build
+#   Goal: Compile code and generate artifacts
+```
+
+### 8. Test Full Workflow
 
 ```bash
 # Complete workflow: create → show → start → monitor → stop → resume → results

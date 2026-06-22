@@ -71,12 +71,14 @@ def plan_file(temp_db_dir):
             {
                 "name": "Task 1",
                 "description": "First task",
+                "goal": "Complete first task",
                 "pre_task_hook": "",
                 "post_task_hook": "",
             },
             {
                 "name": "Task 2",
                 "description": "Second task",
+                "goal": "Complete second task",
                 "pre_task_hook": "",
                 "post_task_hook": "",
             }
@@ -595,6 +597,7 @@ def test_pre_plan_hook_failure_persists_job(job_manager, plan_file, temp_db_dir)
             {
                 "name": "Task 1",
                 "description": "First task",
+                "goal": "Complete task",
                 "pre_task_hook": "",
                 "post_task_hook": "",
             }
@@ -634,6 +637,7 @@ def test_post_plan_hook_failure_persists_job(job_manager, plan_file):
             {
                 "name": "Task 1",
                 "description": "First task",
+                "goal": "Complete task",
                 "pre_task_hook": "",
                 "post_task_hook": "",
             }
