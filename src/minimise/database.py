@@ -249,6 +249,17 @@ class Database:
         conn.commit()
         conn.close()
 
+    def update_task_diff_path(self, task_id: str, diff_path: str) -> None:
+        """Update only the diff_path for a task.
+
+        Preserves all other fields unchanged.
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE tasks SET diff_path = ? WHERE id = ?", (diff_path, task_id))
+        conn.commit()
+        conn.close()
+
     def get_task(self, task_id: str) -> Optional[Task]:
         """Fetch a task by ID."""
         conn = sqlite3.connect(self.db_path)

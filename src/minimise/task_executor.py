@@ -102,28 +102,23 @@ class TaskExecutor:
                 )
                 return False, f"Post-task hook failed: {hook_output}"
 
-        # Calculate and store diff against task's base_commit
+        # Commit changes with task-specific message (before calculating diff)
         if final_success:
+            commit_message = f"Task {task.id}: {task.name}"
+            try:
+                commit_result = self.git_tracker.commit(commit_message)
+            except Exception as e:
+                # Log commit failure but don't fail the task
+                final_output += f"\n[Note: Git commit failed: {str(e)}]"
+                commit_result = None
+
+            # Calculate and store diff against task's base_commit (after commit)
             if task.base_commit:
                 diff = self.git_tracker.get_diff(task.base_commit)
                 diff_path = task_dir / "diff.txt"
                 diff_path.write_text(diff)
-                # Update task with diff_path in database
-                self.db.update_task(task)
-
-            # Commit changes with task-specific message
-            commit_message = f"Task {task.id}: {task.name}"
-            try:
-                commit_result = self.git_tracker.commit(commit_message)
-                if commit_result:
-                    # Update task with diff_path before marking COMPLETED
-                    diff_path = task_dir / "diff.txt"
-                    if diff_path.exists():
-                        task.diff_path = str(diff_path)
-                        self.db.update_task(task)
-            except Exception as e:
-                # Log commit failure but don't fail the task
-                final_output += f"\n[Note: Git commit failed: {str(e)}]"
+                # Update only diff_path in database (preserves all other fields)
+                self.db.update_task_diff_path(task.id, str(diff_path))
 
             self.db.update_task_status(
                 task.id,
