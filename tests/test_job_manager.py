@@ -789,3 +789,225 @@ def test_resume_failed_job_retries_from_last_completed(job_manager, plan_file):
 
     finally:
         job_manager.task_executor.execute_task = original_method
+
+
+def test_estimated_duration_min_parsed_from_yaml(job_manager, temp_db_dir):
+    """Test that estimated_duration_min is parsed from YAML task spec."""
+    plan_content = {
+        "name": "Plan with Durations",
+        "briefing": "Test plan with task durations",
+        "pre_plan_hook": "",
+        "post_plan_hook": "",
+        "tasks": [
+            {
+                "name": "Quick Task",
+                "description": "A quick task",
+                "goal": "Complete quickly",
+                "estimated_duration_min": 5,
+                "pre_task_hook": "",
+                "post_task_hook": "",
+            },
+            {
+                "name": "Medium Task",
+                "description": "A medium task",
+                "goal": "Complete in reasonable time",
+                "estimated_duration_min": 60,
+                "pre_task_hook": "",
+                "post_task_hook": "",
+            },
+            {
+                "name": "Long Task",
+                "description": "A long task",
+                "goal": "Complete eventually",
+                "estimated_duration_min": 480,
+                "pre_task_hook": "",
+                "post_task_hook": "",
+            },
+        ]
+    }
+
+    plan_path = temp_db_dir / "plan_with_durations.yaml"
+    with open(plan_path, "w") as f:
+        yaml.dump(plan_content, f)
+
+    # Create job from plan
+    job = job_manager.create_job(plan_path)
+
+    # Verify all tasks have the correct estimated_duration_min values
+    assert len(job.tasks) == 3
+    assert job.tasks[0].estimated_duration_min == 5
+    assert job.tasks[1].estimated_duration_min == 60
+    assert job.tasks[2].estimated_duration_min == 480
+
+
+def test_estimated_duration_min_optional_field(job_manager, temp_db_dir):
+    """Test that estimated_duration_min is optional and defaults to None."""
+    plan_content = {
+        "name": "Plan Without Durations",
+        "briefing": "Test plan with missing durations",
+        "pre_plan_hook": "",
+        "post_plan_hook": "",
+        "tasks": [
+            {
+                "name": "Task Without Duration",
+                "description": "Task without specified duration",
+                "goal": "Complete task",
+                "pre_task_hook": "",
+                "post_task_hook": "",
+            },
+            {
+                "name": "Task With Duration",
+                "description": "Task with duration",
+                "goal": "Complete task",
+                "estimated_duration_min": 30,
+                "pre_task_hook": "",
+                "post_task_hook": "",
+            },
+        ]
+    }
+
+    plan_path = temp_db_dir / "plan_mixed_durations.yaml"
+    with open(plan_path, "w") as f:
+        yaml.dump(plan_content, f)
+
+    # Create job from plan
+    job = job_manager.create_job(plan_path)
+
+    # Verify task without duration has None
+    assert job.tasks[0].estimated_duration_min is None
+    # Verify task with duration has correct value
+    assert job.tasks[1].estimated_duration_min == 30
+
+
+def test_estimated_duration_min_stored_in_database(job_manager, temp_db_dir):
+    """Test that estimated_duration_min is stored in the database."""
+    plan_content = {
+        "name": "Plan for DB Storage",
+        "briefing": "Test database storage",
+        "pre_plan_hook": "",
+        "post_plan_hook": "",
+        "tasks": [
+            {
+                "name": "DB Task 1",
+                "description": "First task",
+                "goal": "Complete first",
+                "estimated_duration_min": 15,
+                "pre_task_hook": "",
+                "post_task_hook": "",
+            },
+            {
+                "name": "DB Task 2",
+                "description": "Second task",
+                "goal": "Complete second",
+                "estimated_duration_min": 45,
+                "pre_task_hook": "",
+                "post_task_hook": "",
+            },
+        ]
+    }
+
+    plan_path = temp_db_dir / "plan_for_db.yaml"
+    with open(plan_path, "w") as f:
+        yaml.dump(plan_content, f)
+
+    # Create job from plan
+    created_job = job_manager.create_job(plan_path)
+    job_id = created_job.id
+
+    # Retrieve tasks directly from database
+    db_tasks = job_manager.db.list_tasks_for_job(job_id)
+
+    # Verify tasks have correct estimated_duration_min values in database
+    assert len(db_tasks) == 2
+    assert db_tasks[0].estimated_duration_min == 15
+    assert db_tasks[1].estimated_duration_min == 45
+
+
+def test_estimated_duration_min_survives_job_resume(job_manager, temp_db_dir):
+    """Test that estimated_duration_min survives job resume."""
+    plan_content = {
+        "name": "Plan for Resume Test",
+        "briefing": "Test resume persistence",
+        "pre_plan_hook": "",
+        "post_plan_hook": "",
+        "tasks": [
+            {
+                "name": "Resume Task 1",
+                "description": "First task",
+                "goal": "Complete first",
+                "estimated_duration_min": 20,
+                "pre_task_hook": "",
+                "post_task_hook": "",
+            },
+            {
+                "name": "Resume Task 2",
+                "description": "Second task",
+                "goal": "Complete second",
+                "estimated_duration_min": 90,
+                "pre_task_hook": "",
+                "post_task_hook": "",
+            },
+        ]
+    }
+
+    plan_path = temp_db_dir / "plan_for_resume.yaml"
+    with open(plan_path, "w") as f:
+        yaml.dump(plan_content, f)
+
+    # Create initial job
+    initial_job = job_manager.create_job(plan_path)
+    job_id = initial_job.id
+
+    # Simulate first task completion (without actually running)
+    db_tasks = job_manager.db.list_tasks_for_job(job_id)
+    job_manager.db.update_task_status(
+        db_tasks[0].id,
+        TaskStatus.COMPLETED,
+        output="Completed",
+        completed_at=datetime.utcnow()
+    )
+
+    # Update job to RUNNING to simulate partial execution
+    job_manager.db.update_job_status(job_id, JobStatus.RUNNING, started_at=datetime.utcnow())
+
+    # Retrieve job again (simulating resume)
+    resumed_job = job_manager.get_job_status(job_id)
+
+    # Verify estimated_duration_min values are still present after resume
+    assert len(resumed_job.tasks) == 2
+    assert resumed_job.tasks[0].estimated_duration_min == 20
+    assert resumed_job.tasks[1].estimated_duration_min == 90
+
+
+def test_estimated_duration_min_zero_value(job_manager, temp_db_dir):
+    """Test that estimated_duration_min handles zero value correctly."""
+    plan_content = {
+        "name": "Plan with Zero Duration",
+        "briefing": "Test zero duration",
+        "pre_plan_hook": "",
+        "post_plan_hook": "",
+        "tasks": [
+            {
+                "name": "Instant Task",
+                "description": "Should complete instantly",
+                "goal": "Complete immediately",
+                "estimated_duration_min": 0,
+                "pre_task_hook": "",
+                "post_task_hook": "",
+            },
+        ]
+    }
+
+    plan_path = temp_db_dir / "plan_zero_duration.yaml"
+    with open(plan_path, "w") as f:
+        yaml.dump(plan_content, f)
+
+    # Create job from plan
+    job = job_manager.create_job(plan_path)
+
+    # Verify zero value is preserved
+    assert job.tasks[0].estimated_duration_min == 0
+
+    # Verify it's stored in database
+    db_tasks = job_manager.db.list_tasks_for_job(job.id)
+    assert db_tasks[0].estimated_duration_min == 0

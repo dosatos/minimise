@@ -128,6 +128,7 @@ class JobManager:
                 status=TaskStatus.PENDING,
                 created_at=datetime.utcnow(),
                 base_commit=base_commit,
+                estimated_duration_min=task_config.get("estimated_duration_min"),
             )
             tasks.append(task)
 

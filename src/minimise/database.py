@@ -49,6 +49,7 @@ class Database:
                 diff_path TEXT,
                 base_commit TEXT,
                 goal TEXT,
+                estimated_duration_min INTEGER DEFAULT NULL,
                 FOREIGN KEY(job_id) REFERENCES jobs(id)
             )
         """)
@@ -64,6 +65,12 @@ class Database:
         columns = [column[1] for column in cursor.fetchall()]
         if 'goal' not in columns:
             cursor.execute("ALTER TABLE tasks ADD COLUMN goal TEXT")
+
+        # Add estimated_duration_min column if it doesn't exist (migration for existing databases)
+        cursor.execute("PRAGMA table_info(tasks)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if 'estimated_duration_min' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN estimated_duration_min INTEGER DEFAULT NULL")
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS diffs (
@@ -189,11 +196,11 @@ class Database:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO tasks (id, job_id, name, description, status, output, retries, created_at, started_at, completed_at, diff_path, base_commit, goal)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks (id, job_id, name, description, status, output, retries, created_at, started_at, completed_at, diff_path, base_commit, goal, estimated_duration_min)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (task.id, task.job_id, task.name, task.description, task.status.value, task.output, task.retries,
               task.created_at.isoformat(), task.started_at.isoformat() if task.started_at else None,
-              task.completed_at.isoformat() if task.completed_at else None, task.diff_path, task.base_commit, task.goal))
+              task.completed_at.isoformat() if task.completed_at else None, task.diff_path, task.base_commit, task.goal, task.estimated_duration_min))
         conn.commit()
         conn.close()
 
@@ -248,11 +255,13 @@ class Database:
                 started_at = ?,
                 completed_at = ?,
                 diff_path = ?,
-                base_commit = ?
+                base_commit = ?,
+                goal = ?,
+                estimated_duration_min = ?
             WHERE id = ?
         """, (task.job_id, task.name, task.description, task.status.value, task.output, task.retries,
               task.created_at.isoformat(), task.started_at.isoformat() if task.started_at else None,
-              task.completed_at.isoformat() if task.completed_at else None, task.diff_path, task.base_commit, task.id))
+              task.completed_at.isoformat() if task.completed_at else None, task.diff_path, task.base_commit, task.goal, task.estimated_duration_min, task.id))
         conn.commit()
         conn.close()
 
@@ -293,6 +302,7 @@ class Database:
             diff_path=row['diff_path'],
             base_commit=row['base_commit'] if 'base_commit' in row.keys() else None,
             goal=row['goal'] if 'goal' in row.keys() else None,
+            estimated_duration_min=row['estimated_duration_min'] if 'estimated_duration_min' in row.keys() else None,
         )
 
     def list_tasks_for_job(self, job_id: str) -> List[Task]:
@@ -319,6 +329,7 @@ class Database:
                 diff_path=row['diff_path'],
                 base_commit=row['base_commit'] if 'base_commit' in row.keys() else None,
                 goal=row['goal'] if 'goal' in row.keys() else None,
+                estimated_duration_min=row['estimated_duration_min'] if 'estimated_duration_min' in row.keys() else None,
             )
             for row in rows
         ]

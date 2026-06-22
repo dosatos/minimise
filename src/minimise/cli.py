@@ -253,6 +253,9 @@ def job_status(job_id: str, format: str):
                 if task.started_at and task.completed_at:
                     duration = (task.completed_at - task.started_at).total_seconds()
                     task_data["duration_seconds"] = duration
+                # Add estimated_duration_min if present
+                if task.estimated_duration_min is not None:
+                    task_data["estimated_duration_min"] = task.estimated_duration_min
                 tasks_data.append(task_data)
 
             output = {
@@ -728,6 +731,11 @@ def job_show(job_id: str, task_id: Optional[str]):
                 # Display goal if present
                 if task_plan.get('goal'):
                     console.print(f"      [dim]Goal:[/dim] {task_plan['goal'][:70]}")
+
+                # Display estimated_duration_min if present
+                if task_plan.get('estimated_duration_min') is not None:
+                    duration = task_plan['estimated_duration_min']
+                    console.print(f"      [dim]Estimated Duration:[/dim] {duration} min")
 
                 description = task_plan.get('description', 'No description')
                 description_lines = description.strip().split("\n")
