@@ -260,7 +260,7 @@ docs/
 ## Status
 
 ✅ **Production-ready backend**
-- 146/146 tests passing
+- 159/159 tests passing
 - All core components complete
 - Full deferred execution workflow implemented
 - Tested with Anthropic & Bedrock backends
@@ -269,11 +269,12 @@ docs/
 ### Core Features
 - ✅ Deterministic task sequencing with retry logic (3x)
 - ✅ Fresh context per task via structured handover
-- ✅ Git-based state validation and diff tracking
-- ✅ Job timing & progress monitoring
+- ✅ Git-based state validation and diff tracking (per-task commits)
+- ✅ Job timing & progress monitoring (accurate task durations)
 - ✅ Concurrent job orchestration
 - ✅ **Deferred execution workflow** (new/show/start/stop/resume)
 - ✅ Job lifecycle management (PENDING → RUNNING → COMPLETED/FAILED/STOPPED)
+- ✅ Failed plan persistence & recovery (automatic lock release)
 - ✅ Results retrieval (logs, diffs, full context)
 - ✅ REST API + WebSocket support
 - ✅ SQLite persistence

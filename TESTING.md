@@ -5,14 +5,14 @@
 ### 1. Run Tests
 
 ```bash
-# Run all 146 tests
+# Run all 159 tests
 pytest tests/ -v
 
 # Run specific test suite
 pytest tests/test_cli.py -v
 ```
 
-Expected output: `146 passed`
+Expected output: `159 passed`
 
 ### 1a. New Tests for Deferred Execution Workflow
 
@@ -450,7 +450,7 @@ pytest tests/test_job_manager.py -v
 # REST API and WebSocket
 pytest tests/test_api_server.py -v
 
-# CLI commands (146 total)
+# CLI commands (159 total)
 pytest tests/test_cli.py -v
 ```
 
