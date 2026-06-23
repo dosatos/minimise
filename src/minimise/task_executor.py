@@ -1,9 +1,10 @@
-import os
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 from minimise.models import Task, TaskStatus
 from minimise.database import Database
 from minimise.git_tracker import GitTracker
+from minimise.harness import AgentHarness, ClaudeCodeHarness
 from minimise.utils import run_shell_command, ensure_directory
 
 
@@ -12,11 +13,19 @@ class TaskExecutor:
 
     MAX_RETRIES = 3
 
-    def __init__(self, db: Database, git_tracker: GitTracker, jobs_dir: Path, on_task_update=None):
+    def __init__(
+        self,
+        db: Database,
+        git_tracker: GitTracker,
+        jobs_dir: Path,
+        on_task_update=None,
+        harness: Optional[AgentHarness] = None,
+    ):
         self.db = db
         self.git_tracker = git_tracker
         self.jobs_dir = jobs_dir
         self.on_task_update = on_task_update
+        self.harness = harness or ClaudeCodeHarness()
 
     def execute_task(
         self,
@@ -139,40 +148,6 @@ class TaskExecutor:
 
         return final_success, final_output
 
-    def _build_claude_env(self) -> dict:
-        """Build secure environment for Claude Code subprocess.
-
-        Only includes necessary env vars for Claude auth and PATH resolution.
-        Excludes sensitive credentials and unnecessary variables.
-        Uses either Anthropic API OR AWS Bedrock, never both (to avoid conflicts).
-        """
-        use_bedrock = os.environ.get("CLAUDE_CODE_USE_BEDROCK") == "1"
-
-        # Common vars for all backends
-        common_keys = {
-            "PATH",           # Required to find claude command
-            "HOME",           # Required for ~/.claude auth cache
-            "USER",           # Context info
-            "SHELL",          # Shell preferences
-            "LANG",           # Locale
-        }
-
-        if use_bedrock:
-            # Use only Bedrock credentials
-            safe_keys = common_keys | {
-                "CLAUDE_CODE_USE_BEDROCK",
-                "AWS_REGION",
-                "AWS_ACCESS_KEY_ID",
-                "AWS_SECRET_ACCESS_KEY",
-                "AWS_SESSION_TOKEN",
-                "AWS_BEARER_TOKEN_BEDROCK",
-            }
-        else:
-            # Use only Anthropic credentials
-            safe_keys = common_keys | {"ANTHROPIC_API_KEY"}
-
-        return {k: v for k, v in os.environ.items() if k in safe_keys}
-
     def _invoke_claude_code(self, context: dict) -> tuple[bool, str]:
         """
         Invoke Claude Code agent to execute task.
@@ -186,8 +161,6 @@ class TaskExecutor:
         Returns:
             (success, output)
         """
-        import subprocess
-
         task_name = context.get("task_name", "Task")
         task_description = context.get("task_description", "")
         task_goal = context.get("task_goal", "")
@@ -205,29 +178,18 @@ Task: {task_name}
 Context from previous tasks:
 {handover if handover else "(no prior context)"}
 
+⚠️  CRITICAL: Do not create exploratory jobs with 'mini job new'. If you accidentally create any jobs (test plans, temporary explorations, etc.), delete them before finishing:
+   mini job delete <job_id> --force
+
+⚠️  COMMITS: If you create any git commits, do NOT add co-author trailers (no "Co-Authored-By:" lines, no "Generated with Claude Code" lines). Use a plain commit message only. Prefer to leave changes uncommitted — the orchestrator commits your work for you.
+
 Execute this task by modifying the codebase as needed. When done, write a summary of what you implemented."""
 
-        try:
-            # Spawn Claude Code CLI with the prompt via stdin
-            # Use: claude -p --output-format text --dangerously-skip-permissions
-            # The -p flag enables non-interactive mode, reading prompt from stdin
-            # --dangerously-skip-permissions allows auto-approval in background job context
-            result = subprocess.run(
-                ["claude", "-p", "--output-format", "text", "--dangerously-skip-permissions"],
-                input=prompt,
-                capture_output=True,
-                text=True,
-                timeout=300,
-                cwd=str(self.jobs_dir.parent.parent),  # Run from repo root
-                env=self._build_claude_env(),  # Pass only necessary env vars
-            )
-
-            output = result.stdout
-            success = result.returncode == 0
-
-            return success, output
-
-        except subprocess.TimeoutExpired:
-            return False, f"Task execution timeout after 300 seconds"
-        except Exception as e:
-            return False, f"Failed to invoke Claude Code: {str(e)}"
+        # Delegate to the injected harness. The harness owns env construction,
+        # the subprocess invocation, timeout (default 300s, matching the prior
+        # subprocess timeout), and error handling.
+        repo_root = str(self.jobs_dir.parent.parent)  # Run from repo root
+        result = self.harness.run(prompt, cwd=repo_root, allow_edits=True)
+        return result.success, (
+            result.output if result.success else (result.error or result.output)
+        )

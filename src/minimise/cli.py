@@ -5,6 +5,7 @@ import json
 import sqlite3
 import signal
 import os
+import yaml
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -18,6 +19,8 @@ from minimise.git_tracker import GitTracker
 from minimise.api_server import APIServer
 from minimise.models import JobStatus, TaskStatus
 from minimise.terminal_ui import get_status_color, render_task_table_with_gantt
+from minimise.plan_validator import PlanValidator
+from minimise.plan_reviewer import PlanReviewer
 
 
 # Global constants
@@ -82,7 +85,8 @@ def job():
 
 @job.command(name="new")
 @click.option("--plan", required=True, help="Path to plan.yaml file")
-def job_new(plan: str):
+@click.option("--skip-review", is_flag=True, help="Skip plan review (for trusted plans)")
+def job_new(plan: str, skip_review: bool):
     """Create a new job from a plan file (does not execute)."""
     try:
         plan_path = Path(plan).resolve()
@@ -91,6 +95,59 @@ def job_new(plan: str):
             console.print(f"[red]Error: Plan file not found at {plan_path}[/red]")
             raise SystemExit(1)
 
+        # 1. Load and validate plan syntax
+        try:
+            with open(plan_path, "r") as f:
+                plan_dict = yaml.safe_load(f)
+        except Exception as e:
+            console.print(f"[red]Error reading plan file: {e}[/red]")
+            raise SystemExit(1)
+
+        validator = PlanValidator()
+        syntax_errors = validator.validate(plan_dict)
+
+        if syntax_errors:
+            console.print("[red]Syntax validation failed:[/red]")
+            for i, issue in enumerate(syntax_errors, 1):
+                console.print(f"  {i}. {issue.message}")
+            raise SystemExit(1)
+
+        console.print("[green]✓[/green] Plan syntax valid")
+
+        # 2. Run agent-based review (unless skipped)
+        if not skip_review:
+            reviewer = PlanReviewer()
+            console.print("[dim]🤖 Reviewing plan quality...[/dim]")
+            findings = reviewer.review(plan_dict)
+
+            if findings:
+                console.print(f"\n[red]📋 Plan review failed ({len(findings)} issue(s) to address):[/red]")
+                for i, finding in enumerate(findings, 1):
+                    severity_color = {
+                        "high": "red",
+                        "medium": "yellow",
+                        "low": "blue"
+                    }.get(finding.severity, "white")
+
+                    console.print(f"\n  {i}. [{severity_color}]{finding.title}[/{severity_color}]")
+                    console.print(f"     Task: {finding.task_id}")
+                    console.print(f"     {finding.description}")
+                    if finding.suggestion:
+                        console.print(f"     [dim]Suggestion: {finding.suggestion}[/dim]")
+
+                console.print(
+                    "\n[yellow]Address the findings above in the plan and re-run "
+                    "`mini job new`.[/yellow]"
+                )
+                console.print(
+                    "[dim]To bypass review for a trusted plan, re-run with --skip-review.[/dim]"
+                )
+                raise SystemExit(1)
+
+            else:
+                console.print("[green]✓[/green] Plan review passed")
+
+        # 3. Create the job
         db = get_db()
         job_manager = get_job_manager(db)
 
@@ -100,7 +157,7 @@ def job_new(plan: str):
             console.print("[red]Error: Failed to create job[/red]")
             raise SystemExit(1)
 
-        console.print(f"[green]Job created[/green]")
+        console.print(f"[green]✓ Job created[/green]")
         console.print(f"[bold]Job ID:[/bold] {job_obj.id}")
         console.print(f"[bold]Name:[/bold] {job_obj.name}")
         console.print(f"[bold]Status:[/bold] {job_obj.status.value}")
