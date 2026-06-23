@@ -231,8 +231,7 @@ def test_cancel_job_failure(api_server, mock_job_manager, db):
 
 def test_api_server_thread_setup(api_server):
     """Test server thread setup (without actually running in production mode)."""
-    # Just verify the thread can be created and flag is set
-    assert api_server._running is False
+    # Verify no server thread exists until start() is called.
     assert api_server.server_thread is None
 
     # We don't actually run the server in tests because it's a blocking operation

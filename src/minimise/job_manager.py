@@ -427,43 +427,25 @@ manager.run_job('{job_id}')
         try:
             # Send SIGTERM to the process group
             os.killpg(os.getpgid(job.pid), signal.SIGTERM)
-
-            # Update job status to STOPPED
-            self.db.update_job_status(
-                job_id,
-                JobStatus.STOPPED,
-                completed_at=datetime.utcnow()
-            )
-
-            # Mark any running or pending tasks as STOPPED
-            tasks = self.db.list_tasks_for_job(job_id)
-            for task in tasks:
-                if task.status in [TaskStatus.RUNNING, TaskStatus.PENDING]:
-                    self.db.update_task_status(task.id, TaskStatus.STOPPED)
-
-            if self.on_job_update:
-                self.on_job_update(job_id)
-
-            return True
-
         except ProcessLookupError:
-            # Process already terminated
-            self.db.update_job_status(
-                job_id,
-                JobStatus.STOPPED,
-                completed_at=datetime.utcnow()
-            )
-
-            # Mark any running or pending tasks as STOPPED
-            tasks = self.db.list_tasks_for_job(job_id)
-            for task in tasks:
-                if task.status in [TaskStatus.RUNNING, TaskStatus.PENDING]:
-                    self.db.update_task_status(task.id, TaskStatus.STOPPED)
-
-            if self.on_job_update:
-                self.on_job_update(job_id)
-            return True
-
+            # Process already terminated; still finalize state below.
+            pass
         except Exception as e:
             print(f"Error stopping job: {e}")
             return False
+
+        # Update job status to STOPPED and mark running/pending tasks STOPPED.
+        self.db.update_job_status(
+            job_id,
+            JobStatus.STOPPED,
+            completed_at=datetime.utcnow()
+        )
+        tasks = self.db.list_tasks_for_job(job_id)
+        for task in tasks:
+            if task.status in [TaskStatus.RUNNING, TaskStatus.PENDING]:
+                self.db.update_task_status(task.id, TaskStatus.STOPPED)
+
+        if self.on_job_update:
+            self.on_job_update(job_id)
+
+        return True

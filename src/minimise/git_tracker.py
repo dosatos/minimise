@@ -15,6 +15,21 @@ class GitTracker:
         """
         self.repo_path = Path(repo_path)
 
+    def _run(self, args: list) -> Optional[str]:
+        """Run a git command, returning its stdout, or None if git is missing
+        or the command exits non-zero."""
+        try:
+            result = subprocess.run(
+                ["git", *args],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return result.stdout
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            return None
+
     def validate_clean_state(self) -> Tuple[bool, str]:
         """
         Validate that the git repository has a clean state (no uncommitted changes).
@@ -49,22 +64,11 @@ class GitTracker:
         Returns:
             The commit hash (40 hex characters) or None if error
         """
-        try:
-            result = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=self.repo_path,
-                capture_output=True,
-                text=True,
-                check=True
-            )
-
-            commit_hash = result.stdout.strip()
-            return commit_hash if len(commit_hash) == 40 else None
-
-        except FileNotFoundError:
+        out = self._run(["rev-parse", "HEAD"])
+        if out is None:
             return None
-        except subprocess.CalledProcessError:
-            return None
+        commit_hash = out.strip()
+        return commit_hash if len(commit_hash) == 40 else None
 
     def get_diff(self, base_commit: str) -> str:
         """
@@ -76,21 +80,8 @@ class GitTracker:
         Returns:
             The diff output as a string
         """
-        try:
-            result = subprocess.run(
-                ["git", "diff", f"{base_commit}..HEAD"],
-                cwd=self.repo_path,
-                capture_output=True,
-                text=True,
-                check=True
-            )
-
-            return result.stdout
-
-        except FileNotFoundError:
-            return ""
-        except subprocess.CalledProcessError:
-            return ""
+        out = self._run(["diff", f"{base_commit}..HEAD"])
+        return out if out is not None else ""
 
     def commit(self, message: str) -> Optional[str]:
         """

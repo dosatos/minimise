@@ -54,21 +54,13 @@ class Database:
             )
         """)
 
-        # Add base_commit column if it doesn't exist (migration for existing databases)
+        # Add missing columns for existing databases (read schema once).
         cursor.execute("PRAGMA table_info(tasks)")
         columns = [column[1] for column in cursor.fetchall()]
         if 'base_commit' not in columns:
             cursor.execute("ALTER TABLE tasks ADD COLUMN base_commit TEXT")
-
-        # Add goal column if it doesn't exist (migration for existing databases)
-        cursor.execute("PRAGMA table_info(tasks)")
-        columns = [column[1] for column in cursor.fetchall()]
         if 'goal' not in columns:
             cursor.execute("ALTER TABLE tasks ADD COLUMN goal TEXT")
-
-        # Add estimated_duration_min column if it doesn't exist (migration for existing databases)
-        cursor.execute("PRAGMA table_info(tasks)")
-        columns = [column[1] for column in cursor.fetchall()]
         if 'estimated_duration_min' not in columns:
             cursor.execute("ALTER TABLE tasks ADD COLUMN estimated_duration_min INTEGER DEFAULT NULL")
 

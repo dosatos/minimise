@@ -1,24 +1,15 @@
 """REST API server with WebSocket support for job/task state exposure."""
 
 import threading
-import json
-from datetime import datetime
-from typing import Optional, List
+from typing import Optional
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 
-from minimise.models import Job, Task, JobStatus, TaskStatus
+from minimise.models import Job, Task
 from minimise.database import Database
 from minimise.job_manager import JobManager
-
-
-def serialize_datetime(obj):
-    """Helper function to serialize datetime objects to ISO format."""
-    if isinstance(obj, datetime):
-        return obj.isoformat()
-    raise TypeError(f"Type {type(obj)} not serializable")
 
 
 def job_to_dict(job: Job) -> dict:
@@ -69,7 +60,6 @@ class APIServer:
         self.job_manager = job_manager
         self.port = port
         self.app = Flask(__name__)
-        self.app.config["JSON_ENCODER_CLASS"] = None  # Use default JSON encoder
 
         # Enable CORS
         CORS(self.app, resources={r"/*": {"origins": "*"}})
@@ -78,7 +68,6 @@ class APIServer:
         self.socketio = SocketIO(self.app, cors_allowed_origins="*")
 
         self.server_thread: Optional[threading.Thread] = None
-        self._running = False
 
         # Set up broadcast callbacks on JobManager
         self.job_manager.on_job_update = self.broadcast_job_update
@@ -216,8 +205,6 @@ class APIServer:
         if self.server_thread is not None and self.server_thread.is_alive():
             return
 
-        self._running = True
-
         def run_server():
             """Run the server in a thread."""
             self.socketio.run(
@@ -235,7 +222,6 @@ class APIServer:
 
     def stop(self):
         """Gracefully shut down the server."""
-        self._running = False
         if self.socketio:
             try:
                 self.socketio.stop()
