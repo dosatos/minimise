@@ -3,10 +3,12 @@ import tempfile
 import subprocess
 from pathlib import Path
 from datetime import datetime
+from unittest.mock import Mock
 from minimise.task_executor import TaskExecutor
 from minimise.models import Task, TaskStatus
 from minimise.database import Database
 from minimise.git_tracker import GitTracker
+from minimise.harness import AgentHarness, HarnessResult
 import uuid
 
 
@@ -388,3 +390,83 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, db, git_repo):
     assert "file2.txt" in diff_content or "task2 content" in diff_content
     # Task2's diff should NOT contain file1 (task1's change) since task2 base is after task1
     # Note: This is implementation-dependent on how git diff works
+
+
+def test_default_harness_is_claude_code(temp_db_dir, db, git_repo):
+    """TaskExecutor defaults to ClaudeCodeHarness when no harness injected."""
+    from minimise.harness import ClaudeCodeHarness
+
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(db, git_tracker, temp_db_dir)
+
+    assert isinstance(executor.harness, ClaudeCodeHarness)
+
+
+def test_injected_harness_is_stored(temp_db_dir, db, git_repo):
+    """An explicitly injected harness is stored on the executor."""
+    git_tracker = GitTracker(git_repo)
+    fake = Mock(spec=AgentHarness)
+    executor = TaskExecutor(db, git_tracker, temp_db_dir, harness=fake)
+
+    assert executor.harness is fake
+
+
+def test_invoke_delegates_to_harness_and_propagates_success(temp_db_dir, db, git_repo):
+    """_invoke_claude_code delegates to harness.run and propagates success/output."""
+    git_tracker = GitTracker(git_repo)
+    fake = Mock(spec=AgentHarness)
+    fake.run.return_value = HarnessResult(success=True, output="agent did the work")
+    executor = TaskExecutor(db, git_tracker, temp_db_dir, harness=fake)
+
+    context = {
+        "task_name": "task-7: Build widget",
+        "task_description": "Implement the widget module",
+        "task_goal": "A working widget",
+        "handover": "prior context",
+    }
+    success, output = executor._invoke_claude_code(context)
+
+    assert success is True
+    assert output == "agent did the work"
+
+    # harness.run called once with allow_edits=True and cwd at the repo root.
+    fake.run.assert_called_once()
+    args, kwargs = fake.run.call_args
+    assert kwargs["allow_edits"] is True
+    assert kwargs["cwd"] == str(temp_db_dir.parent.parent)
+    # No timeout/model override is passed: harness defaults are preserved.
+    assert "timeout" not in kwargs
+    assert "model" not in kwargs
+
+    # Prompt (first positional arg) carries the task name and description.
+    prompt = args[0]
+    assert "task-7: Build widget" in prompt
+    assert "Implement the widget module" in prompt
+
+
+def test_invoke_failure_returns_error_when_present(temp_db_dir, db, git_repo):
+    """On failure, _invoke_claude_code returns result.error when set."""
+    git_tracker = GitTracker(git_repo)
+    fake = Mock(spec=AgentHarness)
+    fake.run.return_value = HarnessResult(
+        success=False, output="partial stdout", error="boom: it failed"
+    )
+    executor = TaskExecutor(db, git_tracker, temp_db_dir, harness=fake)
+
+    success, output = executor._invoke_claude_code({"task_name": "T", "task_description": "D"})
+
+    assert success is False
+    assert output == "boom: it failed"
+
+
+def test_invoke_failure_falls_back_to_output_when_no_error(temp_db_dir, db, git_repo):
+    """On failure with no error string, falls back to result.output."""
+    git_tracker = GitTracker(git_repo)
+    fake = Mock(spec=AgentHarness)
+    fake.run.return_value = HarnessResult(success=False, output="just stdout", error=None)
+    executor = TaskExecutor(db, git_tracker, temp_db_dir, harness=fake)
+
+    success, output = executor._invoke_claude_code({"task_name": "T", "task_description": "D"})
+
+    assert success is False
+    assert output == "just stdout"
