@@ -1,171 +1,106 @@
+import textwrap
+
 import pytest
-from minimise.plan_validator import PlanValidator, ValidationIssue, ValidationLevel
+import yaml
+from pydantic import ValidationError
+
+from minimise.models import Plan
 
 
-@pytest.fixture
-def validator():
-    return PlanValidator()
+def _valid_plan_dict():
+    return {
+        "name": "My Plan",
+        "tasks": [
+            {
+                "id": "task-1",
+                "name": "Task Name",
+                "description": "A longer description with sufficient length",
+                "goal": "A clear goal",
+                "estimated_duration_min": 30,
+            }
+        ],
+    }
 
 
 class TestSyntaxValidation:
-    """Test basic YAML/schema syntax validation only."""
+    """Plan.from_yaml / model_validate enforce basic schema."""
 
-    def test_valid_plan_passes_syntax(self, validator):
-        """Valid plan with all required fields passes."""
-        plan = {
-            "name": "My Plan",
-            "tasks": [
-                {
-                    "id": "task-1",
-                    "name": "Task Name",
-                    "description": "A longer description with sufficient length",
-                    "goal": "A clear goal",
-                    "estimated_duration_min": 30
-                }
-            ]
-        }
-        errors = validator.validate(plan)
-        assert len(errors) == 0
+    def test_valid_plan_passes(self):
+        plan = Plan.model_validate(_valid_plan_dict())
+        assert plan.name == "My Plan"
+        assert len(plan.tasks) == 1
 
-    def test_missing_plan_name(self, validator):
-        """Plan without name field fails."""
-        plan = {"description": "Some plan", "tasks": []}
-        errors = validator.validate(plan)
-        assert len(errors) > 0
-        assert any("name" in e.message.lower() for e in errors)
+    def test_missing_plan_name(self):
+        with pytest.raises(ValidationError):
+            Plan.model_validate({"tasks": _valid_plan_dict()["tasks"]})
 
-    def test_missing_tasks_field(self, validator):
-        """Plan without tasks field fails."""
-        plan = {"name": "My Plan", "description": "Some plan"}
-        errors = validator.validate(plan)
-        assert len(errors) > 0
-        assert any("tasks" in e.message.lower() for e in errors)
+    def test_missing_tasks_field(self):
+        with pytest.raises(ValidationError):
+            Plan.model_validate({"name": "My Plan"})
 
-    def test_empty_tasks_list(self, validator):
-        """Plan with empty tasks list fails."""
-        plan = {"name": "My Plan", "description": "Some plan", "tasks": []}
-        errors = validator.validate(plan)
-        assert len(errors) > 0
+    def test_empty_tasks_list(self):
+        with pytest.raises(ValidationError):
+            Plan.model_validate({"name": "My Plan", "tasks": []})
 
-    def test_task_missing_id(self, validator):
-        """Task without id field fails."""
-        plan = {
-            "name": "My Plan",
-            "tasks": [{"name": "Task 1", "description": "Desc"}]
-        }
-        errors = validator.validate(plan)
-        assert len(errors) > 0
+    @pytest.mark.parametrize("missing", ["id", "name", "description", "goal", "estimated_duration_min"])
+    def test_task_missing_required_field(self, missing):
+        task = _valid_plan_dict()["tasks"][0]
+        del task[missing]
+        with pytest.raises(ValidationError):
+            Plan.model_validate({"name": "P", "tasks": [task]})
 
-    def test_task_missing_name(self, validator):
-        """Task without name field fails."""
-        plan = {
-            "name": "My Plan",
-            "tasks": [{"id": "task-1", "description": "Desc"}]
-        }
-        errors = validator.validate(plan)
-        assert len(errors) > 0
-
-    def test_task_missing_description(self, validator):
-        """Task without description field fails."""
-        plan = {
-            "name": "My Plan",
-            "tasks": [{"id": "task-1", "name": "Task Name"}]
-        }
-        errors = validator.validate(plan)
-        assert len(errors) > 0
-
-    def test_task_missing_goal(self, validator):
-        """Task without goal field fails."""
-        plan = {
-            "name": "My Plan",
-            "tasks": [
-                {
-                    "id": "task-1",
-                    "name": "Task Name",
-                    "description": "A description"
-                }
-            ]
-        }
-        errors = validator.validate(plan)
-        assert len(errors) > 0
-
-    def test_task_missing_estimated_duration(self, validator):
-        """Task without estimated_duration_min field fails."""
-        plan = {
-            "name": "My Plan",
-            "tasks": [
-                {
-                    "id": "task-1",
-                    "name": "Task Name",
-                    "description": "A description",
-                    "goal": "A goal"
-                }
-            ]
-        }
-        errors = validator.validate(plan)
-        assert len(errors) > 0
-
-    def test_duplicate_task_ids(self, validator):
-        """Plan with duplicate task IDs fails."""
-        plan = {
-            "name": "My Plan",
-            "tasks": [
-                {
-                    "id": "task-1",
-                    "name": "Task One",
-                    "description": "Desc one",
-                    "goal": "Goal one",
-                    "estimated_duration_min": 30
-                },
-                {
-                    "id": "task-1",
-                    "name": "Task Two",
-                    "description": "Desc two",
-                    "goal": "Goal two",
-                    "estimated_duration_min": 30
-                }
-            ]
-        }
-        errors = validator.validate(plan)
-        assert len(errors) > 0
-        assert any("duplicate" in e.message.lower() or "unique" in e.message.lower() for e in errors)
-
-    def test_validation_issue_structure(self, validator):
-        """Validation issues have required fields."""
-        plan = {"name": "Bad Plan", "tasks": []}
-        errors = validator.validate(plan)
-        assert len(errors) > 0
-
-        for issue in errors:
-            assert hasattr(issue, 'level')
-            assert hasattr(issue, 'field')
-            assert hasattr(issue, 'message')
-            assert issue.level == ValidationLevel.ERROR
+    def test_duplicate_task_ids(self):
+        p = _valid_plan_dict()
+        p["tasks"].append(dict(p["tasks"][0], name="Task Two"))
+        with pytest.raises(ValidationError, match="unique"):
+            Plan.model_validate(p)
 
 
 class TestEstimatedDurationValidation:
     """estimated_duration_min must be a positive integer."""
 
     def _plan(self, value):
-        return {
-            "name": "P",
-            "tasks": [
-                {"id": "t1", "name": "n", "description": "d", "goal": "g",
-                 "estimated_duration_min": value},
-            ],
-        }
+        p = _valid_plan_dict()
+        p["tasks"][0]["estimated_duration_min"] = value
+        return p
 
-    def test_estimated_duration_must_be_positive_int(self, validator):
-        issues = validator.validate(self._plan(0))
-        assert any(i.field == "task[0].estimated_duration_min" and i.level == ValidationLevel.ERROR
-                   for i in issues)
+    @pytest.mark.parametrize("bad", [0, -5, "soon", 3.5, True])
+    def test_rejects_non_positive_int(self, bad):
+        with pytest.raises(ValidationError):
+            Plan.model_validate(self._plan(bad))
 
-    def test_estimated_duration_rejects_non_int(self, validator):
-        for bad in ["soon", -5, True, 3.5]:
-            issues = validator.validate(self._plan(bad))
-            assert any(i.field == "task[0].estimated_duration_min" and i.level == ValidationLevel.ERROR
-                       for i in issues), f"expected error for {bad!r}"
+    def test_accepts_positive_int(self):
+        assert Plan.model_validate(self._plan(5)).tasks[0].estimated_duration_min == 5
 
-    def test_estimated_duration_accepts_positive_int(self, validator):
-        issues = validator.validate(self._plan(5))
-        assert not any(i.field == "task[0].estimated_duration_min" for i in issues)
+
+class TestFromYaml:
+    """from_yaml reads the file, unwraps nested 'plan:', and preserves extras."""
+
+    def _write(self, tmp_path, text):
+        path = tmp_path / "plan.yaml"
+        path.write_text(textwrap.dedent(text))
+        return path
+
+    def test_flat_format(self, tmp_path):
+        path = self._write(tmp_path, yaml.dump(_valid_plan_dict()))
+        plan = Plan.from_yaml(path)
+        assert plan.name == "My Plan"
+
+    def test_nested_plan_key_unwrapped(self, tmp_path):
+        path = self._write(tmp_path, yaml.dump({"plan": _valid_plan_dict()}))
+        plan = Plan.from_yaml(path)
+        assert plan.name == "My Plan"
+
+    def test_extras_preserved(self, tmp_path):
+        data = _valid_plan_dict()
+        data["briefing"] = "context here"
+        data["tasks"][0]["pre_task_hook"] = "echo hi"
+        path = self._write(tmp_path, yaml.dump(data))
+        plan = Plan.from_yaml(path)
+        assert plan.briefing == "context here"
+        assert plan.tasks[0].pre_task_hook == "echo hi"
+
+    def test_invalid_plan_raises(self, tmp_path):
+        path = self._write(tmp_path, yaml.dump({"name": "P", "tasks": []}))
+        with pytest.raises(ValidationError):
+            Plan.from_yaml(path)

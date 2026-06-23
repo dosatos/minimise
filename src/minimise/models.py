@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Optional
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 class TaskStatus(Enum):
     PENDING = "pending"
@@ -51,11 +51,13 @@ class Job:
     pid: Optional[int] = None
 
 class PlanTask(BaseModel):
+    model_config = ConfigDict(extra="allow")  # preserve per-task hooks (pre_task_hook, post_task_hook)
     id: str
     name: str
     description: str
     goal: str
-    estimated_duration_min: PositiveInt
+    # strict rejects bool (an int subclass) and float; gt=0 keeps it positive
+    estimated_duration_min: int = Field(gt=0, strict=True)
 
 class Plan(BaseModel):
     model_config = ConfigDict(extra="allow")

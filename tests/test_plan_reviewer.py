@@ -3,12 +3,13 @@ from unittest.mock import Mock
 import os
 from minimise.plan_reviewer import PlanReviewer, ReviewFinding
 from minimise.harness import AgentHarness, ClaudeCodeHarness, HarnessResult
+from minimise.models import Plan
 
 
 @pytest.fixture
 def valid_plan():
     """A valid plan that might still have quality issues."""
-    return {
+    return Plan.model_validate({
         "name": "User Auth Implementation",
         "tasks": [
             {
@@ -26,7 +27,7 @@ def valid_plan():
                 "estimated_duration_min": 45
             }
         ]
-    }
+    })
 
 
 def make_harness(*outputs, success=True):

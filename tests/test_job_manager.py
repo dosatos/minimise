@@ -69,6 +69,7 @@ def plan_file(temp_db_dir):
         "post_plan_hook": "",
         "tasks": [
             {
+                "id": "task-1",
                 "name": "Task 1",
                 "description": "First task",
                 "goal": "Complete first task",
@@ -77,6 +78,7 @@ def plan_file(temp_db_dir):
                 "post_task_hook": "",
             },
             {
+                "id": "task-2",
                 "name": "Task 2",
                 "description": "Second task",
                 "goal": "Complete second task",
@@ -597,6 +599,7 @@ def test_pre_plan_hook_failure_persists_job(job_manager, plan_file, temp_db_dir)
         "post_plan_hook": "",
         "tasks": [
             {
+                "id": "task-1",
                 "name": "Task 1",
                 "description": "First task",
                 "goal": "Complete task",
@@ -638,6 +641,7 @@ def test_post_plan_hook_failure_persists_job(job_manager, plan_file):
         "post_plan_hook": "exit 1",  # This will fail
         "tasks": [
             {
+                "id": "task-1",
                 "name": "Task 1",
                 "description": "First task",
                 "goal": "Complete task",
@@ -804,6 +808,7 @@ def test_estimated_duration_min_parsed_from_yaml(job_manager, temp_db_dir):
         "post_plan_hook": "",
         "tasks": [
             {
+                "id": "quick-task",
                 "name": "Quick Task",
                 "description": "A quick task",
                 "goal": "Complete quickly",
@@ -812,6 +817,7 @@ def test_estimated_duration_min_parsed_from_yaml(job_manager, temp_db_dir):
                 "post_task_hook": "",
             },
             {
+                "id": "medium-task",
                 "name": "Medium Task",
                 "description": "A medium task",
                 "goal": "Complete in reasonable time",
@@ -820,6 +826,7 @@ def test_estimated_duration_min_parsed_from_yaml(job_manager, temp_db_dir):
                 "post_task_hook": "",
             },
             {
+                "id": "long-task",
                 "name": "Long Task",
                 "description": "A long task",
                 "goal": "Complete eventually",
@@ -854,6 +861,7 @@ def test_estimated_duration_min_stored_in_database(job_manager, temp_db_dir):
         "post_plan_hook": "",
         "tasks": [
             {
+                "id": "db-task-1",
                 "name": "DB Task 1",
                 "description": "First task",
                 "goal": "Complete first",
@@ -862,6 +870,7 @@ def test_estimated_duration_min_stored_in_database(job_manager, temp_db_dir):
                 "post_task_hook": "",
             },
             {
+                "id": "db-task-2",
                 "name": "DB Task 2",
                 "description": "Second task",
                 "goal": "Complete second",
@@ -898,6 +907,7 @@ def test_estimated_duration_min_survives_job_resume(job_manager, temp_db_dir):
         "post_plan_hook": "",
         "tasks": [
             {
+                "id": "resume-task-1",
                 "name": "Resume Task 1",
                 "description": "First task",
                 "goal": "Complete first",
@@ -906,6 +916,7 @@ def test_estimated_duration_min_survives_job_resume(job_manager, temp_db_dir):
                 "post_task_hook": "",
             },
             {
+                "id": "resume-task-2",
                 "name": "Resume Task 2",
                 "description": "Second task",
                 "goal": "Complete second",
@@ -978,6 +989,7 @@ def test_cached_plan_survives_original_deletion(job_manager, temp_db_dir):
         "post_plan_hook": "",
         "tasks": [
             {
+                "id": "only-task",
                 "name": "Only Task",
                 "description": "Single task",
                 "goal": "Complete task",

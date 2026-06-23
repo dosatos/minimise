@@ -32,12 +32,12 @@ class PlanReviewer:
         """
         self.harness = harness or ClaudeCodeHarness()
 
-    def review(self, plan: dict) -> List[ReviewFinding]:
+    def review(self, plan: "Plan") -> List[ReviewFinding]:
         """
         Review a plan via the agent harness.
 
         Args:
-            plan: Plan dictionary to review
+            plan: Plan object to review
 
         Returns:
             List of ReviewFinding objects
@@ -88,19 +88,20 @@ class PlanReviewer:
             )
         return result
 
-    def _format_plan(self, plan: dict) -> str:
-        """Format plan dict as readable text."""
+    def _format_plan(self, plan: "Plan") -> str:
+        """Format a Plan as readable text."""
         lines = []
-        lines.append(f"Plan: {plan.get('name', 'Unnamed')}")
-        if plan.get('description'):
-            lines.append(f"Description: {plan['description']}")
+        lines.append(f"Plan: {plan.name}")
+        description = getattr(plan, "description", None)
+        if description:
+            lines.append(f"Description: {description}")
 
         lines.append("\nTasks:")
-        for task in plan.get('tasks', []):
-            lines.append(f"\n  Task: {task.get('id')} - {task.get('name')}")
-            lines.append(f"    Description: {task.get('description')}")
-            lines.append(f"    Goal: {task.get('goal')}")
-            lines.append(f"    Est. Duration: {task.get('estimated_duration_min')} min")
+        for task in plan.tasks:
+            lines.append(f"\n  Task: {task.id} - {task.name}")
+            lines.append(f"    Description: {task.description}")
+            lines.append(f"    Goal: {task.goal}")
+            lines.append(f"    Est. Duration: {task.estimated_duration_min} min")
 
         return "\n".join(lines)
 

@@ -796,36 +796,32 @@ def job_show(job_id: str, task_id: Optional[str]):
                 console.print(f"[red]Error: Plan file not found at {plan_path}[/red]")
                 raise SystemExit(1)
 
-            with open(plan_path, 'r') as f:
-                plan_data = yaml.safe_load(f)
-
-            # Handle both nested (plan.xxx) and flat (xxx) formats
-            plan = plan_data.get('plan', plan_data) if isinstance(plan_data, dict) else plan_data
+            plan = Plan.from_yaml(plan_path)
 
             console.print(f"\n[bold]Plan Structure[/bold]")
             console.print(f"[bold]Job:[/bold] {job_obj.name} ({job_id})")
             console.print(f"[bold]Plan Path:[/bold] {plan_path}")
             console.print(f"[bold]Status:[/bold] {job_obj.status.value}\n")
 
-            # Display plan metadata
-            if 'name' in plan:
-                console.print(f"[bold]Plan Name:[/bold] {plan['name']}")
-            if 'briefing' in plan:
-                console.print(f"[bold]Briefing:[/bold] {plan['briefing']}")
-            if 'documentation' in plan:
+            # Display plan metadata (briefing/documentation are pydantic extras)
+            console.print(f"[bold]Plan Name:[/bold] {plan.name}")
+            briefing = getattr(plan, 'briefing', None)
+            if briefing:
+                console.print(f"[bold]Briefing:[/bold] {briefing}")
+            documentation = getattr(plan, 'documentation', None)
+            if documentation:
                 console.print(f"[bold]Documentation:[/bold]")
-                for line in plan['documentation'].strip().split("\n"):
+                for line in documentation.strip().split("\n"):
                     console.print(f"  {line}")
 
             # Display tasks
-            tasks = plan.get('tasks', [])
-            console.print(f"\n[bold]Tasks ({len(tasks)})[/bold]")
+            console.print(f"\n[bold]Tasks ({len(plan.tasks)})[/bold]")
 
             db_tasks = db.list_tasks_for_job(job_id)
 
-            for i, task_plan in enumerate(tasks, 1):
-                task_id = task_plan.get('id', f'task-{i}')
-                task_name = task_plan.get('name', 'Unnamed')
+            for i, task_plan in enumerate(plan.tasks, 1):
+                task_id = task_plan.id
+                task_name = task_plan.name
 
                 # Find corresponding db task to get status
                 db_task = next((t for t in db_tasks if t.id == task_id), None)
@@ -837,15 +833,13 @@ def job_show(job_id: str, task_id: Optional[str]):
                 console.print(f"      [dim]Status:[/dim] {status}")
 
                 # Display goal if present
-                if task_plan.get('goal'):
-                    console.print(f"      [dim]Goal:[/dim] {task_plan['goal'][:70]}")
+                if task_plan.goal:
+                    console.print(f"      [dim]Goal:[/dim] {task_plan.goal[:70]}")
 
-                # Display estimated_duration_min if present
-                if task_plan.get('estimated_duration_min') is not None:
-                    duration = task_plan['estimated_duration_min']
-                    console.print(f"      [dim]Estimated Duration:[/dim] {duration} min")
+                # Display estimated_duration_min
+                console.print(f"      [dim]Estimated Duration:[/dim] {task_plan.estimated_duration_min} min")
 
-                description = task_plan.get('description', 'No description')
+                description = task_plan.description or 'No description'
                 description_lines = description.strip().split("\n")
                 for line in description_lines[:3]:
                     if line.strip():

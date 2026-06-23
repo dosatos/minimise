@@ -9,7 +9,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-from minimise.models import Job, Task, JobStatus, TaskStatus
+from minimise.models import Job, Task, JobStatus, TaskStatus, Plan
 from minimise.database import Database
 from minimise.git_tracker import GitTracker
 from minimise.task_executor import TaskExecutor
@@ -82,56 +82,41 @@ class JobManager:
 
         # Parse plan.yaml
         try:
-            with open(plan_path, "r") as f:
-                plan_file = yaml.safe_load(f)
+            plan = Plan.from_yaml(plan_path)
         except Exception as e:
             print(f"Error reading plan file: {e}")
             return None
 
-        # Handle both nested (plan.xxx) and flat (xxx) formats
-        plan_config = plan_file.get("plan", plan_file) if isinstance(plan_file, dict) else plan_file
-
-        # Extract plan metadata
-        plan_name = plan_config.get("name", "Unnamed Plan")
-        plan_briefing = plan_config.get("briefing", "")
-        pre_plan_hook = plan_config.get("pre_plan_hook", "")
-        post_plan_hook = plan_config.get("post_plan_hook", "")
-        tasks_config = plan_config.get("tasks", [])
+        # Hooks are pydantic extras (extra="allow").
+        pre_plan_hook = getattr(plan, "pre_plan_hook", "")
+        post_plan_hook = getattr(plan, "post_plan_hook", "")
 
         # Create Job object
         job_id = str(uuid.uuid4())
         job = Job(
             id=job_id,
-            name=plan_name,
+            name=plan.name,
             status=JobStatus.PENDING,
             plan_path=str(plan_path),
             base_commit=base_commit,
             created_at=datetime.utcnow(),
         )
 
-        # Create Task objects from config
-        tasks = []
-        for idx, task_config in enumerate(tasks_config):
-            # Validate goal field is present
-            if "goal" not in task_config:
-                print(f"Error: Task {idx + 1} ({task_config.get('name', 'Unnamed')}) is missing 'goal:' field")
-                print("Each task must include 'goal:' field describing the task's objective")
-                return None
-
-            task_id = task_config.get("id", str(uuid.uuid4()))
-            task = Task(
-                id=task_id,
+        # Create Task objects (pydantic guarantees typed, present fields)
+        tasks = [
+            Task(
+                id=pt.id,
                 job_id=job_id,
-                name=task_config.get("name", f"Task {idx + 1}"),
-                description=task_config.get("description", ""),
-                goal=task_config.get("goal", ""),
+                name=pt.name,
+                description=pt.description,
+                goal=pt.goal,
                 status=TaskStatus.PENDING,
                 created_at=datetime.utcnow(),
                 base_commit=base_commit,
-                # The plan validator guarantees this key is present and > 0.
-                estimated_duration_min=task_config["estimated_duration_min"],
+                estimated_duration_min=pt.estimated_duration_min,
             )
-            tasks.append(task)
+            for pt in plan.tasks
+        ]
 
         job.tasks = tasks
 
@@ -144,7 +129,7 @@ class JobManager:
         job_dir = ensure_directory(self.jobs_dir / job_id)
         plan_copy_path = job_dir / "plan.yaml"
         with open(plan_copy_path, "w") as f:
-            yaml.dump(plan_config, f)
+            yaml.dump(plan.model_dump(), f)
 
         # Store plan metadata for later retrieval
         (job_dir / "base_commit.txt").write_text(base_commit)
@@ -181,14 +166,10 @@ class JobManager:
             return False
 
         try:
-            with open(plan_path, "r") as f:
-                plan_file = yaml.safe_load(f)
+            plan = Plan.from_yaml(plan_path)
         except Exception as e:
             print(f"Error reading plan file: {e}")
             return False
-
-        # Handle both nested (plan.xxx) and flat (xxx) formats
-        plan_config = plan_file.get("plan", plan_file) if isinstance(plan_file, dict) else plan_file
 
         # Update job status to RUNNING
         self.db.update_job_status(job_id, JobStatus.RUNNING, started_at=datetime.utcnow())
@@ -213,7 +194,6 @@ class JobManager:
 
         # Load all tasks for this job from database
         tasks = self.db.list_tasks_for_job(job_id)
-        tasks_config = plan_config.get("tasks", [])
 
         # Map tasks to their config by index for hooks
         handover_context = ""
@@ -231,10 +211,10 @@ class JobManager:
                     handover_context = HandoverManager.build_handover_prompt(task.output, diff, next_task)
                 continue
 
-            # Get task config for hooks
-            task_config = tasks_config[idx] if idx < len(tasks_config) else {}
-            pre_task_hook = task_config.get("pre_task_hook", "")
-            post_task_hook = task_config.get("post_task_hook", "")
+            # Per-task hooks live as pydantic extras on the plan task (by index)
+            plan_task = plan.tasks[idx] if idx < len(plan.tasks) else None
+            pre_task_hook = getattr(plan_task, "pre_task_hook", "") or ""
+            post_task_hook = getattr(plan_task, "post_task_hook", "") or ""
 
             # Execute task
             success, output = self.task_executor.execute_task(

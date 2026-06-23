@@ -1132,10 +1132,16 @@ def test_show_plan_structure(db, runner, mock_config_dir, tmp_path):
   documentation: |
     This is documentation
   tasks:
-    - name: Task 1
+    - id: task-1
+      name: Task 1
       description: First task description
-    - name: Task 2
+      goal: Finish task 1
+      estimated_duration_min: 5
+    - id: task-2
+      name: Task 2
       description: Second task description
+      goal: Finish task 2
+      estimated_duration_min: 5
 """
     plan_path.write_text(plan_content)
 
@@ -1527,12 +1533,16 @@ def test_goal_in_job_show_output(db, runner, mock_config_dir, tmp_path):
 name: Test Plan with Goals
 briefing: Test briefing
 tasks:
-  - name: Task 1
+  - id: task-1
+    name: Task 1
     description: First task description
     goal: Implement basic structure
-  - name: Task 2
+    estimated_duration_min: 5
+  - id: task-2
+    name: Task 2
     description: Second task description
     goal: Add advanced features
+    estimated_duration_min: 5
 """
     plan_path.write_text(plan_content)
 
@@ -1687,12 +1697,16 @@ def test_goal_in_job_show_output(runner, mock_config_dir):
         plan_content = """name: Test Job
 briefing: Test briefing
 tasks:
-  - name: Task 1
+  - id: task-1
+    name: Task 1
     description: First task description
     goal: "Complete the first objective"
-  - name: Task 2
+    estimated_duration_min: 5
+  - id: task-2
+    name: Task 2
     description: Second task description
     goal: "Complete the second objective"
+    estimated_duration_min: 5
 """
         plan_path.write_text(plan_content)
 
