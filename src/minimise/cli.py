@@ -17,9 +17,10 @@ from minimise.database import Database
 from minimise.job_manager import JobManager
 from minimise.git_tracker import GitTracker
 from minimise.api_server import APIServer
-from minimise.models import JobStatus, TaskStatus
+import pydantic
+
+from minimise.models import JobStatus, TaskStatus, Plan
 from minimise.terminal_ui import get_status_color, render_task_table_with_gantt
-from minimise.plan_validator import PlanValidator
 from minimise.plan_reviewer import PlanReviewer
 
 
@@ -97,19 +98,12 @@ def job_new(plan: str, skip_review: bool):
 
         # 1. Load and validate plan syntax
         try:
-            with open(plan_path, "r") as f:
-                plan_dict = yaml.safe_load(f)
-        except Exception as e:
-            console.print(f"[red]Error reading plan file: {e}[/red]")
-            raise SystemExit(1)
-
-        validator = PlanValidator()
-        syntax_errors = validator.validate(plan_dict)
-
-        if syntax_errors:
+            plan_obj = Plan.from_yaml(plan_path)
+        except pydantic.ValidationError as e:
             console.print("[red]Syntax validation failed:[/red]")
-            for i, issue in enumerate(syntax_errors, 1):
-                console.print(f"  {i}. {issue.message}")
+            for i, err in enumerate(e.errors(), 1):
+                loc = ".".join(str(p) for p in err["loc"])
+                console.print(f"  {i}. {loc}: {err['msg']}")
             raise SystemExit(1)
 
         console.print("[green]✓[/green] Plan syntax valid")
@@ -118,7 +112,7 @@ def job_new(plan: str, skip_review: bool):
         if not skip_review:
             reviewer = PlanReviewer()
             console.print("[dim]🤖 Reviewing plan quality...[/dim]")
-            findings = reviewer.review(plan_dict)
+            findings = reviewer.review(plan_obj)
 
             if findings:
                 console.print(f"\n[red]📋 Plan review failed ({len(findings)} issue(s) to address):[/red]")
