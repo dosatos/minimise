@@ -1,0 +1,286 @@
+name: "Required estimated_duration_min + Job-Level Duration Totals"
+description: |
+  Make estimated_duration_min a genuinely required positive integer end-to-end
+  (model, plan validator, DB) and surface the job-level total in mini job list /
+  mini job status JSON and the job status table.
+
+  Full design spec: docs/superpowers/specs/2026-06-21-required-duration-and-job-totals-design.md
+  Full implementation plan: docs/superpowers/plans/2026-06-21-required-duration-and-job-totals.md
+
+  GLOBAL CONSTRAINTS (apply to every task):
+  - Python 3.9+ compatible.
+  - The full suite must stay green (baseline: 226 passing). Run `pytest tests/ -q`.
+  - All Task(...) constructions use keyword arguments (verified: 0 positional sites).
+  - estimated_duration_min is always a positive integer (> 0); legacy NULL rows backfill to 5.
+  - JSON job-level total nests inside the `tasks` object for job list; for job status
+    (whose `tasks` is a list) use a sibling `tasks_summary` object.
+  - Strict TDD: write the failing test, run it to confirm it fails, implement minimal code,
+    run to confirm green.
+  - DO NOT run git commit yourself. Leave your changes uncommitted in the working tree;
+    the orchestrator commits each task's work for you. Do not add any co-author trailers.
+
+tasks:
+  - id: "task-1-validator"
+    name: "Plan validator enforces positive-integer duration"
+    description: |
+      Upgrade plan_validator.py:103-108 from a presence-only check to also require that
+      estimated_duration_min is an int > 0 (reject bool, strings, 0, negatives, floats).
+
+      TDD steps:
+      1. Add failing tests to tests/test_plan_validator.py:
+         - test_estimated_duration_must_be_positive_int (value 0 -> ERROR on field
+           "task[0].estimated_duration_min")
+         - test_estimated_duration_rejects_non_int (for bad in ["soon", -5, True, 3.5] -> ERROR)
+         - test_estimated_duration_accepts_positive_int (value 5 -> no error on that field)
+         Each plan dict: {"name":"P","tasks":[{"id":"t1","name":"n","description":"d",
+         "goal":"g","estimated_duration_min": <value>}]}.
+         Ensure ValidationLevel is imported in the test module.
+      2. Run `pytest tests/test_plan_validator.py -k estimated_duration -v`; confirm the
+         positive_int and non_int tests FAIL.
+      3. Replace the block at plan_validator.py:103-108 so that when the key is present,
+         it checks: `if isinstance(dur, bool) or not isinstance(dur, int) or dur <= 0:` ->
+         append ValidationIssue(ValidationLevel.ERROR, f"task[{i}].estimated_duration_min",
+         f"Task {i} 'estimated_duration_min' must be a positive integer (got {dur!r})").
+         Keep the existing "not present" ERROR as the `if "estimated_duration_min" not in task`
+         branch, with the value-check in an `else`.
+      4. Run `pytest tests/test_plan_validator.py -v`; confirm PASS.
+      5. Run `pytest tests/ -q`; confirm the full suite is still green (no downstream import
+         or consumer regressions from the validator change).
+      Note: tests/test_plan_validator.py already imports ValidationLevel (verified) — do
+      not add a duplicate import; just use it.
+      Leave changes uncommitted; the orchestrator commits this task's work.
+    goal: "Plan validator rejects estimated_duration_min that is not a positive int; tests pass."
+    estimated_duration_min: 10
+
+  - id: "task-2-model-required"
+    name: "Make Task.estimated_duration_min a required int and fix all construction sites"
+    description: |
+      Make the model field required (no default) and update every Task(...) construction.
+
+      TDD steps:
+      1. Create/append tests/test_models.py with:
+         - test_task_requires_estimated_duration_min: `with pytest.raises(TypeError):
+           Task(id="t1", job_id="j1", name="n", description="d")`
+         - test_task_accepts_estimated_duration_min: Task(..., estimated_duration_min=5)
+           -> .estimated_duration_min == 5
+      2. Run `pytest tests/test_models.py -v`; confirm the requires test FAILS.
+      3. In src/minimise/models.py, remove the last line
+         `estimated_duration_min: Optional[int] = field(default_factory=lambda: None)` and
+         re-add the field as required `estimated_duration_min: int` positioned IMMEDIATELY
+         AFTER `description` (a no-default field cannot follow defaulted fields). Final order:
+         id, job_id, name, description, estimated_duration_min, status, output, retries,
+         created_at, started_at, completed_at, diff_path, base_commit, goal.
+      4. Fix src construction/mapping sites. There is NO _row_to_task helper — there are TWO
+         separate inline Task(...) constructions in database.py that map a row to a Task, and
+         BOTH need the NULL->5 coalesce (the job list / job status CLI paths call
+         list_tasks_for_job, so missing the second one causes TypeError in tasks 4 & 5):
+         - get_task (~line 305): set
+           estimated_duration_min=(row['estimated_duration_min'] if
+           'estimated_duration_min' in row.keys() and row['estimated_duration_min'] is not None
+           else 5).
+         - list_tasks_for_job (~line 332): identical fix
+           estimated_duration_min=(row['estimated_duration_min'] if
+           'estimated_duration_min' in row.keys() and row['estimated_duration_min'] is not None
+           else 5).
+         - job_manager.py (~line 130): the Task(...) built from the plan currently uses
+           `estimated_duration_min=task_config.get("estimated_duration_min")`, which returns
+           None when absent — and a None would silently violate the now-required int (dataclasses
+           do not enforce types at runtime). Change it to direct-key access
+           `estimated_duration_min=task_config["estimated_duration_min"]` so it raises a clear
+           KeyError if ever called on an unvalidated plan. Add a brief comment: the plan
+           validator guarantees this key is present and > 0.
+      5. Add `estimated_duration_min=5,` to every Task(...) test site missing it across:
+         tests/test_database.py, tests/test_terminal_ui.py, tests/test_api_server.py,
+         tests/test_handover_manager.py, tests/test_task_executor.py, tests/test_cli.py
+         (~58 sites; all keyword-style). Use a specific value only where a test asserts a total.
+         CRITICAL — tests/test_job_manager.py also needs work, but its Tasks are built INDIRECTLY
+         via create_job(plan_file) from plan dicts, so the literal-Task() scanner will NOT catch
+         them. In tests/test_job_manager.py you must:
+           - Add `estimated_duration_min` (a positive int, e.g. 5) to the `plan_file` fixture
+             (~lines 63-92) and to every other inline plan/task dict that omits it (otherwise
+             create_job builds Task(..., estimated_duration_min=None), and after Step 4's direct
+             ["estimated_duration_min"] access in job_manager it raises KeyError).
+           - DELETE test_estimated_duration_min_optional_field (~line 843): it asserts the value
+             is None, which directly contradicts the now-required field.
+           - DELETE test_estimated_duration_min_zero_value (~line 982): it uses value 0 and
+             asserts == 0, both now rejected by the validator and the >0 rule.
+           - Keep the positive-value tests (parsed_from_yaml, stored_in_database,
+             survives_job_resume) — they already pass positive ints.
+         Then run this scanner and confirm "remaining missing: 0". NOTE: this scanner only
+         covers literal Task( calls in tests/ — the two src/ sites (get_task, list_tasks_for_job
+         in database.py) AND the indirect test_job_manager.py constructions above are NOT caught
+         by it; they are verified by the full green suite in Step 6:
+           python3 - <<'PY'
+           import re, glob
+           miss=0
+           for f in glob.glob("tests/*.py"):
+               s=open(f).read()
+               for m in re.finditer(r'(?<![\w.])Task\(', s):
+                   pre=s[max(0,m.start()-6):m.start()]
+                   if pre.endswith(('Status','ecutor')): continue
+                   i=m.end(); d=1; j=i
+                   while d>0 and j<len(s):
+                       d+= s[j]=='('; d-= s[j]==')'; j+=1
+                   if 'estimated_duration_min' not in s[m.start():j]:
+                       miss+=1; print(f"{f}:{s[:m.start()].count(chr(10))+1}")
+           print("remaining missing:", miss)
+           PY
+         Then run a secondary cross-check (the scanner's brace-counter could miss an edge case):
+           grep -n "Task(" tests/*.py | grep -v "estimated_duration_min" | grep -v "TaskStatus" | grep -v "TaskExecutor"
+         Manually review any remaining hits.
+      6. Run `pytest tests/ -q`; confirm all pass (column still nullable until task-3;
+         _row_to_task now coalesces NULL->5). A missed site fails loud as a TypeError at
+         construction, so a green suite confirms all sites are patched.
+      Leave changes uncommitted; the orchestrator commits this task's work.
+    goal: "Task.estimated_duration_min is a required int; constructing without it raises TypeError; full suite green."
+    estimated_duration_min: 25
+
+  - id: "task-3-db-notnull"
+    name: "Database backfill + NOT NULL column for estimated_duration_min"
+    description: |
+      Backfill legacy NULL durations to 5 and make the SQLite column NOT NULL via table rebuild.
+
+      TDD steps:
+      1. Add to tests/test_database.py:
+         - test_existing_null_duration_is_backfilled: model a PRE-migration DB faithfully. Do
+           NOT use Database.init_db() to create the schema for the legacy row (the migrated
+           column is NOT NULL and would reject the NULL INSERT with IntegrityError). Instead:
+           open a raw sqlite3 connection to a fresh db path, manually
+           `CREATE TABLE tasks (... estimated_duration_min INTEGER DEFAULT NULL ...)` plus a
+           minimal `jobs` table, INSERT a job row and a task row with
+           estimated_duration_min = NULL, commit, close. THEN construct Database(that_path) and
+           call init_db() ONCE; assert the task row's estimated_duration_min == 5 afterward
+           (the backfill UPDATE runs before the NOT NULL rebuild within init_db()).
+         - test_duration_column_is_not_null: fresh Database+init_db, read PRAGMA table_info(tasks),
+           assert the estimated_duration_min column's notnull flag (index 3) == 1.
+      2. Run `pytest tests/test_database.py -k "null or not_null" -v`; confirm not_null FAILS.
+      3. Implement in src/minimise/database.py:
+         - FIRST read the current `CREATE TABLE tasks` (~lines 40-58) and copy its columns
+           verbatim. Change the fresh-schema duration column (line ~52) to
+           `estimated_duration_min INTEGER NOT NULL DEFAULT 5`.
+         - Migration block (after the existing add-column step ~line 73). Make the WHOLE
+           sequence below atomic so a failure mid-rebuild rolls back and never leaves the DB
+           without a tasks table. IMPORTANT: init_db uses a bare `sqlite3.connect()` with the
+           default isolation_level and a single `conn.commit()` at the end (~line 87) — the
+           driver already manages an implicit transaction, so `cursor.execute("BEGIN")` would
+           raise "cannot start a transaction within a transaction". Use a SAVEPOINT instead,
+           which is safe inside an already-open transaction:
+             cursor.execute("SAVEPOINT dur_migration")
+             try:
+                 ... steps (a) and (b) ...
+                 cursor.execute("RELEASE SAVEPOINT dur_migration")
+             except Exception:
+                 cursor.execute("ROLLBACK TO SAVEPOINT dur_migration")
+                 raise
+           The existing `conn.commit()` at the end of init_db then commits the released savepoint.
+           Do NOT add a bare BEGIN/COMMIT and do NOT introduce a nested `with conn:`. Steps:
+           a. Backfill: `UPDATE tasks SET estimated_duration_min = 5 WHERE estimated_duration_min IS NULL`.
+           b. Guarded NOT NULL rebuild: `PRAGMA table_info(tasks)`; only if the live
+              estimated_duration_min notnull flag == 0:
+              - CREATE TABLE tasks_new using the EXACT current schema, preserving every NOT NULL
+                that the live `CREATE TABLE tasks` has (job_id, name, status, created_at are
+                NOT NULL today — do NOT weaken them), changing ONLY the duration column to
+                NOT NULL DEFAULT 5. The current schema is (copy verbatim, only the duration line
+                changes):
+                  CREATE TABLE tasks_new (
+                      id TEXT PRIMARY KEY,
+                      job_id TEXT NOT NULL,
+                      name TEXT NOT NULL,
+                      description TEXT,
+                      status TEXT NOT NULL,
+                      output TEXT,
+                      retries INTEGER DEFAULT 0,
+                      created_at TEXT NOT NULL,
+                      started_at TEXT,
+                      completed_at TEXT,
+                      diff_path TEXT,
+                      base_commit TEXT,
+                      goal TEXT,
+                      estimated_duration_min INTEGER NOT NULL DEFAULT 5,
+                      FOREIGN KEY(job_id) REFERENCES jobs(id)
+                  )
+                The block above is a REFERENCE for the intended final state — do NOT blindly
+                paste it. Read the live `CREATE TABLE tasks` from database.py source, copy it
+                verbatim as tasks_new, and change ONLY the estimated_duration_min line to
+                NOT NULL DEFAULT 5. After creating tasks_new and BEFORE the INSERT, assert the
+                preserved constraints: `PRAGMA table_info(tasks_new)` and confirm job_id, name,
+                status, created_at all have notnull == 1 (raise/abort if not).
+              - Derive col_list AFTER creating tasks_new, from the NEW table:
+                  `cursor.execute("PRAGMA table_info(tasks_new)"); col_list = ", ".join(c[1] for c in cursor.fetchall())`
+                then `INSERT INTO tasks_new (<col_list>) SELECT <col_list> FROM tasks`.
+                Do NOT use `SELECT *` and do NOT build col_list from the old tasks PRAGMA.
+              - `DROP TABLE tasks`; `ALTER TABLE tasks_new RENAME TO tasks`.
+           The notnull-flag guard ensures the rebuild runs at most once.
+      4. Run `pytest tests/test_database.py -v`; confirm PASS.
+      5. Run `pytest tests/ -q`; confirm all pass.
+      Leave changes uncommitted; the orchestrator commits this task's work.
+    goal: "tasks.estimated_duration_min column is NOT NULL after init_db; legacy NULL rows backfilled to 5; suite green."
+    estimated_duration_min: 20
+
+  - id: "task-4-joblist-json"
+    name: "Add job-level duration total to job list JSON"
+    description: |
+      Add estimated_duration_min into the per-job `tasks` object in `mini job list --format json`.
+
+      TDD steps:
+      1. Add tests/test_cli.py::test_job_list_json_includes_duration_total following existing
+         fixture style (runner, mock_config_dir, Database, Job, Task): create a job with two
+         tasks (estimated_duration_min 30 and 45), invoke ["job","list","--format","json"],
+         locate the job by matching j["id"] == job.id in the parsed list (defensive lookup,
+         robust to other jobs present), assert its tasks.estimated_duration_min == 75.
+      2. Run `pytest tests/test_cli.py::test_job_list_json_includes_duration_total -v`; confirm
+         FAIL (KeyError).
+      3. In cli.py JSON branch of job_list: the loop at ~line 227 ALREADY fetches
+         `tasks = db.list_tasks_for_job(j.id)` and computes task_count/completed_count from it.
+         REUSE that `tasks` variable — do NOT add a second db.list_tasks_for_job call. Compute
+         `est_total = sum(t.estimated_duration_min for t in tasks)` and add
+         `"estimated_duration_min": est_total` into the EXISTING "tasks" dict (currently
+         {"total": task_count, "completed": completed_count} at ~lines 238-241), so it becomes
+         {"total": task_count, "completed": completed_count, "estimated_duration_min": est_total}.
+      Also add test_job_list_json_duration_zero_when_no_tasks: a job with NO tasks, invoke
+         ["job","list","--format","json"], assert the located job's
+         tasks.estimated_duration_min == 0 (sum over empty is 0; guards against a future
+         regression to None).
+      4. Run the tests; confirm PASS.
+      Leave changes uncommitted; the orchestrator commits this task's work.
+    goal: "job list --format json includes tasks.estimated_duration_min equal to the sum of task estimates; test passes."
+    estimated_duration_min: 12
+
+  - id: "task-5-jobstatus-total"
+    name: "Add job-level duration total to job status JSON and table"
+    description: |
+      Add a sibling tasks_summary object to `mini job status --format json` and an
+      "Estimated Duration: N min" line to the table output. Do NOT mutate the existing
+      `tasks` LIST in the JSON.
+
+      TDD steps:
+      1. Add to tests/test_cli.py:
+         - test_job_status_json_includes_duration_summary: job with two tasks (20, 25),
+           invoke ["job","status",job.id,"--format","json"], assert data["tasks"] is a list
+           (unchanged), data["tasks_summary"]["estimated_duration_min"] == 45, and
+           data["tasks_summary"]["total"] == 2.
+         - test_job_status_table_shows_duration_total: job with one task (40), invoke
+           ["job","status",job.id], assert "Estimated Duration" in output and "40" in output.
+      2. Run `pytest tests/test_cli.py -k "duration_summary or table_shows_duration" -v`;
+         confirm both FAIL. Also FIRST run
+         `pytest tests/test_cli.py::test_job_status_json_includes_timing -v` to record the
+         baseline (it must still pass after implementation — the tasks list shape must not change).
+      3. Implement in cli.py job_status:
+         Note: job_obj.tasks IS valid here — Job has a `tasks: list[Task]` field and
+         job_manager.get_job_status() populates it (cli.py already uses job_obj.tasks at the
+         table branch and len(job_obj.tasks)). Use it directly.
+         FIRST, compute the total ONCE, ABOVE the `if format == "json":` branch split, so both
+         branches share the same in-scope variable (avoids a NameError):
+           est_total = sum(t.estimated_duration_min for t in job_obj.tasks)
+         - JSON branch (~lines 329-338): add a sibling
+           key "tasks_summary": {"total": len(job_obj.tasks), "completed":
+           sum(1 for t in job_obj.tasks if t.status == TaskStatus.COMPLETED),
+           "estimated_duration_min": est_total}. Keep "tasks": tasks_data unchanged.
+         - Table branch (after the Status: line, ~line 344): console.print(
+           f"[bold]Estimated Duration:[/bold] {est_total} min") using that same est_total.
+      4. Run the two new tests; confirm PASS. Also confirm pre-existing
+         test_job_status_json_includes_timing still passes (tasks list shape unchanged).
+      5. Run `pytest tests/ -q`; confirm all pass.
+      Leave changes uncommitted; the orchestrator commits this task's work.
+    goal: "job status JSON has tasks_summary.estimated_duration_min and table shows an Estimated Duration line; full suite green."
+    estimated_duration_min: 15

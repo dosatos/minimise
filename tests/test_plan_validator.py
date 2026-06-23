@@ -141,3 +141,31 @@ class TestSyntaxValidation:
             assert hasattr(issue, 'field')
             assert hasattr(issue, 'message')
             assert issue.level == ValidationLevel.ERROR
+
+
+class TestEstimatedDurationValidation:
+    """estimated_duration_min must be a positive integer."""
+
+    def _plan(self, value):
+        return {
+            "name": "P",
+            "tasks": [
+                {"id": "t1", "name": "n", "description": "d", "goal": "g",
+                 "estimated_duration_min": value},
+            ],
+        }
+
+    def test_estimated_duration_must_be_positive_int(self, validator):
+        issues = validator.validate(self._plan(0))
+        assert any(i.field == "task[0].estimated_duration_min" and i.level == ValidationLevel.ERROR
+                   for i in issues)
+
+    def test_estimated_duration_rejects_non_int(self, validator):
+        for bad in ["soon", -5, True, 3.5]:
+            issues = validator.validate(self._plan(bad))
+            assert any(i.field == "task[0].estimated_duration_min" and i.level == ValidationLevel.ERROR
+                       for i in issues), f"expected error for {bad!r}"
+
+    def test_estimated_duration_accepts_positive_int(self, validator):
+        issues = validator.validate(self._plan(5))
+        assert not any(i.field == "task[0].estimated_duration_min" for i in issues)

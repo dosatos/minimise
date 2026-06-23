@@ -106,6 +106,14 @@ class PlanValidator:
                     f"task[{i}].estimated_duration_min",
                     f"Task {i} must have an 'estimated_duration_min' field"
                 ))
+            else:
+                dur = task["estimated_duration_min"]
+                if isinstance(dur, bool) or not isinstance(dur, int) or dur <= 0:
+                    issues.append(ValidationIssue(
+                        ValidationLevel.ERROR,
+                        f"task[{i}].estimated_duration_min",
+                        f"Task {i} 'estimated_duration_min' must be a positive integer (got {dur!r})"
+                    ))
 
             # Check for duplicate IDs
             if "id" in task:

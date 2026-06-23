@@ -23,6 +23,7 @@ class Task:
     job_id: str
     name: str
     description: str
+    estimated_duration_min: int
     status: TaskStatus = TaskStatus.PENDING
     output: Optional[str] = None
     retries: int = 0
@@ -32,7 +33,6 @@ class Task:
     diff_path: Optional[str] = None
     base_commit: Optional[str] = None
     goal: Optional[str] = None
-    estimated_duration_min: Optional[int] = field(default_factory=lambda: None)
 
 @dataclass
 class Job:

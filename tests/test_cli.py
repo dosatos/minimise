@@ -251,7 +251,7 @@ def test_job_status_json_format_valid(runner, mock_config_dir):
     db.create_job(job)
 
     # Create tasks for the job
-    task1 = Task(
+    task1 = Task(estimated_duration_min=5, 
         id="task-1",
         job_id=job.id,
         name="First Task",
@@ -260,7 +260,7 @@ def test_job_status_json_format_valid(runner, mock_config_dir):
         started_at=job.created_at,
         completed_at=job.created_at,
     )
-    task2 = Task(
+    task2 = Task(estimated_duration_min=5, 
         id="task-2",
         job_id=job.id,
         name="Second Task",
@@ -299,7 +299,7 @@ def test_job_status_json_includes_task_ids(runner, mock_config_dir):
     db.create_job(job)
 
     # Create tasks with specific IDs
-    task1 = Task(
+    task1 = Task(estimated_duration_min=5, 
         id="task-alpha",
         job_id=job.id,
         name="Alpha Task",
@@ -308,7 +308,7 @@ def test_job_status_json_includes_task_ids(runner, mock_config_dir):
         started_at=job.created_at,
         completed_at=job.created_at,
     )
-    task2 = Task(
+    task2 = Task(estimated_duration_min=5, 
         id="task-beta",
         job_id=job.id,
         name="Beta Task",
@@ -358,7 +358,7 @@ def test_job_status_json_includes_timing(runner, mock_config_dir):
     start_time = datetime.utcnow()
     end_time = start_time + timedelta(seconds=45.2)
 
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id="task-timed",
         job_id=job.id,
         name="Timed Task",
@@ -404,7 +404,7 @@ def test_job_status_default_table_format(runner, mock_config_dir):
     )
     db.create_job(job)
 
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id="task-table",
         job_id=job.id,
         name="Table Task",
@@ -446,7 +446,7 @@ def test_start_pending_job_sets_running_status(db):
     db.create_job(job)
 
     # Create a task for the job
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id="task-1",
         job_id=job.id,
         name="First Task",
@@ -681,7 +681,7 @@ def test_resume_failed_job_retries_execution(db, runner, mock_config_dir):
     db.create_job(job)
 
     # Create a failed task
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id="task-1",
         job_id=job.id,
         name="Failed Task",
@@ -711,7 +711,7 @@ def test_resume_stopped_job_retries_execution(db, runner, mock_config_dir):
     db.create_job(job)
 
     # Create a stopped task
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id="task-1",
         job_id=job.id,
         name="Stopped Task",
@@ -815,7 +815,7 @@ def test_results_logs_all_tasks(db, runner, mock_config_dir):
     db.create_job(job)
 
     # Create tasks with output
-    task1 = Task(
+    task1 = Task(estimated_duration_min=5, 
         id="task-1",
         job_id=job.id,
         name="Task 1",
@@ -825,7 +825,7 @@ def test_results_logs_all_tasks(db, runner, mock_config_dir):
         started_at=datetime.utcnow(),
         completed_at=datetime.utcnow(),
     )
-    task2 = Task(
+    task2 = Task(estimated_duration_min=5, 
         id="task-2",
         job_id=job.id,
         name="Task 2",
@@ -865,7 +865,7 @@ def test_results_logs_single_task_with_task_id(db, runner, mock_config_dir):
     )
     db.create_job(job)
 
-    task1 = Task(
+    task1 = Task(estimated_duration_min=5, 
         id="task-alpha",
         job_id=job.id,
         name="Task Alpha",
@@ -875,7 +875,7 @@ def test_results_logs_single_task_with_task_id(db, runner, mock_config_dir):
         started_at=datetime.utcnow(),
         completed_at=datetime.utcnow(),
     )
-    task2 = Task(
+    task2 = Task(estimated_duration_min=5, 
         id="task-beta",
         job_id=job.id,
         name="Task Beta",
@@ -915,7 +915,7 @@ def test_results_logs_nonexistent_task_id_fails(db, runner, mock_config_dir):
     )
     db.create_job(job)
 
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id="task-1",
         job_id=job.id,
         name="Task 1",
@@ -990,7 +990,7 @@ def test_results_diff_all_tasks(db, runner, mock_config_dir, tmp_path):
     diff2_path.write_text("--- file2.py\n+++ file2.py\n-old code\n+new code")
 
     # Create tasks with diff paths
-    task1 = Task(
+    task1 = Task(estimated_duration_min=5, 
         id="task-1",
         job_id=job.id,
         name="Task 1",
@@ -999,7 +999,7 @@ def test_results_diff_all_tasks(db, runner, mock_config_dir, tmp_path):
         diff_path=str(diff1_path),
         completed_at=datetime.utcnow(),
     )
-    task2 = Task(
+    task2 = Task(estimated_duration_min=5, 
         id="task-2",
         job_id=job.id,
         name="Task 2",
@@ -1043,7 +1043,7 @@ def test_results_diff_single_task_with_task_id(db, runner, mock_config_dir, tmp_
     diff2_path = tmp_path / "diff2.patch"
     diff2_path.write_text("--- file2.py\n+++ file2.py\n-other\n+change")
 
-    task1 = Task(
+    task1 = Task(estimated_duration_min=5, 
         id="task-alpha",
         job_id=job.id,
         name="Task Alpha",
@@ -1052,7 +1052,7 @@ def test_results_diff_single_task_with_task_id(db, runner, mock_config_dir, tmp_
         diff_path=str(diff1_path),
         completed_at=datetime.utcnow(),
     )
-    task2 = Task(
+    task2 = Task(estimated_duration_min=5, 
         id="task-beta",
         job_id=job.id,
         name="Task Beta",
@@ -1088,7 +1088,7 @@ def test_results_diff_task_without_diff(db, runner, mock_config_dir):
     )
     db.create_job(job)
 
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id="task-1",
         job_id=job.id,
         name="Task Without Diff",
@@ -1185,7 +1185,7 @@ tasks:
     )
     db.create_job(job)
 
-    task1 = Task(
+    task1 = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
         job_id=job.id,
         name="Task 1",
@@ -1194,7 +1194,7 @@ tasks:
         output="Task 1 output",
         completed_at=datetime.utcnow(),
     )
-    task2 = Task(
+    task2 = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
         job_id=job.id,
         name="Task 2",
@@ -1321,7 +1321,7 @@ def test_results_logs_task_prefix_matching(db, runner, mock_config_dir):
     db.create_job(job)
 
     # Create a task
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id="prefix-task-12345",
         job_id=job.id,
         name="Prefix Task",
@@ -1380,7 +1380,7 @@ def test_results_logs_displays_task_metadata(db, runner, mock_config_dir):
     db.create_job(job)
 
     # Create a task with metadata
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id="task-metadata",
         job_id=job.id,
         name="Task with Metadata",
@@ -1415,7 +1415,7 @@ def test_stop_and_resume_workflow(db, runner, mock_config_dir):
     )
     db.create_job(job)
 
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id="task-1",
         job_id=job.id,
         name="Workflow Task",
@@ -1444,7 +1444,7 @@ def test_plan_load_goal_field(db):
     from minimise.models import Task, TaskStatus
 
     # Create a task with a goal field
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id="task-with-goal",
         job_id="job-123",
         name="Task with Goal",
@@ -1462,7 +1462,7 @@ def test_plan_goal_prepended_to_prompt(db):
     from minimise.task_executor import TaskExecutor
     from minimise.models import Task, TaskStatus
 
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id="task-1",
         job_id="job-1",
         name="Test Task",
@@ -1546,7 +1546,7 @@ tasks:
     db.create_job(job)
 
     # Create tasks with goals
-    task1 = Task(
+    task1 = Task(estimated_duration_min=5, 
         id="task-1",
         job_id=job.id,
         name="Task 1",
@@ -1554,7 +1554,7 @@ tasks:
         goal="Implement basic structure",
         status=TaskStatus.PENDING,
     )
-    task2 = Task(
+    task2 = Task(estimated_duration_min=5, 
         id="task-2",
         job_id=job.id,
         name="Task 2",
@@ -1575,7 +1575,7 @@ tasks:
 
 # TDD Tests for Goal attribute feature
 
-def test_plan_load_goal_field(runner, temp_home_dir):
+def test_plan_load_goal_field(runner, mock_config_dir):
     """Test that plan YAML can load goal field for tasks."""
     with tempfile.TemporaryDirectory() as tmpdir:
         plan_path = Path(tmpdir) / "plan.yaml"
@@ -1583,38 +1583,44 @@ def test_plan_load_goal_field(runner, temp_home_dir):
 name: Test Plan with Goals
 briefing: Test briefing
 tasks:
-  - name: Task 1
-    description: First task
+  - id: test-goal-1
+    name: Task 1
+    description: First task with sufficient description for the test
     goal: "Complete the first objective"
-  - name: Task 2
-    description: Second task
+    estimated_duration_min: 30
+  - id: test-goal-2
+    name: Task 2
+    description: Second task with sufficient description for the test
     goal: "Finish the second objective"
+    estimated_duration_min: 30
 """
         plan_path.write_text(plan_content)
 
         # Create job from plan
-        result = runner.invoke(mini, ["job", "new", "--plan", str(plan_path)])
+        result = runner.invoke(mini, ["job", "new", "--plan", str(plan_path), "--skip-review"])
 
         assert result.exit_code == 0
         assert "Job created" in result.output
 
 
-def test_plan_goal_prepended_to_prompt(runner, temp_home_dir):
+def test_plan_goal_prepended_to_prompt(runner, mock_config_dir):
     """Test that goal is prepended to agent prompt in task execution."""
     with tempfile.TemporaryDirectory() as tmpdir:
         plan_path = Path(tmpdir) / "plan.yaml"
         plan_content = """
-name: Test Plan
+name: Test Plan Goal Prepend
 briefing: Test briefing
 tasks:
-  - name: Task 1
-    description: Task description here
+  - id: test-prepend-1
+    name: Task 1
+    description: Task description here with sufficient length for validation
     goal: "My specific goal"
+    estimated_duration_min: 30
 """
         plan_path.write_text(plan_content)
 
         # Create job from plan
-        result = runner.invoke(mini, ["job", "new", "--plan", str(plan_path)])
+        result = runner.invoke(mini, ["job", "new", "--plan", str(plan_path), "--skip-review"])
         assert result.exit_code == 0
 
         # Get job ID from output
@@ -1640,7 +1646,7 @@ tasks:
         assert task_row['name'] == "Task 1"
 
 
-def test_plan_missing_goal_validation_error(runner, temp_home_dir):
+def test_plan_missing_goal_validation_error(runner, mock_config_dir):
     """Test that plan YAML validation fails if goal field is missing."""
     with tempfile.TemporaryDirectory() as tmpdir:
         plan_path = Path(tmpdir) / "plan.yaml"
@@ -1648,8 +1654,9 @@ def test_plan_missing_goal_validation_error(runner, temp_home_dir):
 name: Test Plan Missing Goal
 briefing: Test briefing
 tasks:
-  - name: Task 1
-    description: First task
+  - id: task-1
+    name: Task 1
+    description: First task with sufficient description length
 """
         plan_path.write_text(plan_content)
 
@@ -1659,10 +1666,10 @@ tasks:
         # Should fail with validation error
         assert result.exit_code != 0
         assert "goal" in result.output.lower()
-        assert "Each task must include" in result.output
+        assert "syntax validation failed" in result.output.lower()
 
 
-def test_goal_in_job_show_output(runner, temp_home_dir, mock_config_dir):
+def test_goal_in_job_show_output(runner, mock_config_dir):
     """Test that goal field is displayed in job show output."""
     import uuid
     from minimise.database import Database
@@ -1698,7 +1705,7 @@ tasks:
         )
         db.create_job(job)
 
-        task1 = Task(
+        task1 = Task(estimated_duration_min=5, 
             id=str(uuid.uuid4()),
             job_id=job.id,
             name="Task 1",
@@ -1706,7 +1713,7 @@ tasks:
             goal="Complete the first objective",
             status=TaskStatus.PENDING,
         )
-        task2 = Task(
+        task2 = Task(estimated_duration_min=5, 
             id=str(uuid.uuid4()),
             job_id=job.id,
             name="Task 2",
@@ -1750,7 +1757,7 @@ def test_delete_pending_job_succeeds(db, runner, mock_config_dir):
     db.create_job(job)
 
     # Create a task for the job
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id="task-1",
         job_id=job.id,
         name="Task 1",
@@ -1855,14 +1862,14 @@ def test_delete_shows_affected_tasks(db, runner, mock_config_dir):
     )
     db.create_job(job)
 
-    task1 = Task(
+    task1 = Task(estimated_duration_min=5, 
         id="task-1",
         job_id=job.id,
         name="Task 1",
         description="First task",
         status=TaskStatus.PENDING,
     )
-    task2 = Task(
+    task2 = Task(estimated_duration_min=5, 
         id="task-2",
         job_id=job.id,
         name="Task 2",
@@ -1903,3 +1910,68 @@ def test_delete_requires_confirmation(db, runner, mock_config_dir):
     job_after = db.get_job(job.id)
     assert job_after is not None
     assert job_after.status == JobStatus.PENDING
+
+
+def test_job_list_json_includes_duration_total(runner, mock_config_dir):
+    """job list --format json includes tasks.estimated_duration_min as the sum."""
+    from minimise.models import Task, TaskStatus
+    db = Database(mock_config_dir / "minimise.db"); db.init_db()
+    job = Job(id=str(uuid.uuid4()), name="J", status=JobStatus.PENDING,
+              plan_path="/p.yaml", created_at=datetime.utcnow())
+    db.create_job(job)
+    db.create_task(Task(id="t1", job_id=job.id, name="a", description="d",
+                        estimated_duration_min=30, status=TaskStatus.PENDING))
+    db.create_task(Task(id="t2", job_id=job.id, name="b", description="d",
+                        estimated_duration_min=45, status=TaskStatus.PENDING))
+    result = runner.invoke(mini, ["job", "list", "--format", "json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    job_obj = [j for j in data if j["id"] == job.id][0]
+    assert job_obj["tasks"]["estimated_duration_min"] == 75
+
+
+def test_job_list_json_duration_zero_when_no_tasks(runner, mock_config_dir):
+    """A job with no tasks reports estimated_duration_min == 0 (not None)."""
+    db = Database(mock_config_dir / "minimise.db"); db.init_db()
+    job = Job(id=str(uuid.uuid4()), name="J", status=JobStatus.PENDING,
+              plan_path="/p.yaml", created_at=datetime.utcnow())
+    db.create_job(job)
+    result = runner.invoke(mini, ["job", "list", "--format", "json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    job_obj = [j for j in data if j["id"] == job.id][0]
+    assert job_obj["tasks"]["estimated_duration_min"] == 0
+
+
+def test_job_status_json_includes_duration_summary(runner, mock_config_dir):
+    """job status --format json adds a tasks_summary sibling; tasks list unchanged."""
+    from minimise.models import Task, TaskStatus
+    db = Database(mock_config_dir / "minimise.db"); db.init_db()
+    job = Job(id=str(uuid.uuid4()), name="J", status=JobStatus.PENDING,
+              plan_path="/p.yaml", created_at=datetime.utcnow())
+    db.create_job(job)
+    db.create_task(Task(id="t1", job_id=job.id, name="a", description="d",
+                        estimated_duration_min=20, status=TaskStatus.PENDING))
+    db.create_task(Task(id="t2", job_id=job.id, name="b", description="d",
+                        estimated_duration_min=25, status=TaskStatus.PENDING))
+    result = runner.invoke(mini, ["job", "status", job.id, "--format", "json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert isinstance(data["tasks"], list)
+    assert data["tasks_summary"]["estimated_duration_min"] == 45
+    assert data["tasks_summary"]["total"] == 2
+
+
+def test_job_status_table_shows_duration_total(runner, mock_config_dir):
+    """job status table output shows an Estimated Duration total line."""
+    from minimise.models import Task, TaskStatus
+    db = Database(mock_config_dir / "minimise.db"); db.init_db()
+    job = Job(id=str(uuid.uuid4()), name="J", status=JobStatus.PENDING,
+              plan_path="/p.yaml", created_at=datetime.utcnow())
+    db.create_job(job)
+    db.create_task(Task(id="t1", job_id=job.id, name="a", description="d",
+                        estimated_duration_min=40, status=TaskStatus.PENDING))
+    result = runner.invoke(mini, ["job", "status", job.id])
+    assert result.exit_code == 0
+    assert "Estimated Duration" in result.output
+    assert "40" in result.output

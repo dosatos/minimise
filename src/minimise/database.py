@@ -49,7 +49,7 @@ class Database:
                 diff_path TEXT,
                 base_commit TEXT,
                 goal TEXT,
-                estimated_duration_min INTEGER DEFAULT NULL,
+                estimated_duration_min INTEGER NOT NULL DEFAULT 5,
                 FOREIGN KEY(job_id) REFERENCES jobs(id)
             )
         """)
@@ -71,6 +71,48 @@ class Database:
         columns = [column[1] for column in cursor.fetchall()]
         if 'estimated_duration_min' not in columns:
             cursor.execute("ALTER TABLE tasks ADD COLUMN estimated_duration_min INTEGER DEFAULT NULL")
+
+        # Backfill legacy NULL durations and enforce NOT NULL. init_db uses a bare
+        # connection with the default isolation_level (an implicit transaction is
+        # already open), so a bare BEGIN would fail; use a SAVEPOINT for atomicity.
+        cursor.execute("SAVEPOINT dur_migration")
+        try:
+            cursor.execute(
+                "UPDATE tasks SET estimated_duration_min = 5 WHERE estimated_duration_min IS NULL"
+            )
+            # Enforce NOT NULL via table rebuild only if the live column still allows NULL.
+            cursor.execute("PRAGMA table_info(tasks)")
+            dur = next((c for c in cursor.fetchall() if c[1] == "estimated_duration_min"), None)
+            if dur is not None and dur[3] == 0:  # notnull flag is 0 -> needs rebuild
+                cursor.execute("""
+                    CREATE TABLE tasks_new (
+                        id TEXT PRIMARY KEY,
+                        job_id TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        description TEXT,
+                        status TEXT NOT NULL,
+                        output TEXT,
+                        retries INTEGER DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        started_at TEXT,
+                        completed_at TEXT,
+                        diff_path TEXT,
+                        base_commit TEXT,
+                        goal TEXT,
+                        estimated_duration_min INTEGER NOT NULL DEFAULT 5,
+                        FOREIGN KEY(job_id) REFERENCES jobs(id)
+                    )
+                """)
+                # Derive the column list from the NEW table so columns stay aligned.
+                cursor.execute("PRAGMA table_info(tasks_new)")
+                col_list = ", ".join(c[1] for c in cursor.fetchall())
+                cursor.execute(f"INSERT INTO tasks_new ({col_list}) SELECT {col_list} FROM tasks")
+                cursor.execute("DROP TABLE tasks")
+                cursor.execute("ALTER TABLE tasks_new RENAME TO tasks")
+            cursor.execute("RELEASE SAVEPOINT dur_migration")
+        except Exception:
+            cursor.execute("ROLLBACK TO SAVEPOINT dur_migration")
+            raise
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS diffs (
@@ -302,7 +344,9 @@ class Database:
             diff_path=row['diff_path'],
             base_commit=row['base_commit'] if 'base_commit' in row.keys() else None,
             goal=row['goal'] if 'goal' in row.keys() else None,
-            estimated_duration_min=row['estimated_duration_min'] if 'estimated_duration_min' in row.keys() else None,
+            estimated_duration_min=(row['estimated_duration_min']
+                if 'estimated_duration_min' in row.keys() and row['estimated_duration_min'] is not None
+                else 5),
         )
 
     def list_tasks_for_job(self, job_id: str) -> List[Task]:
@@ -329,7 +373,9 @@ class Database:
                 diff_path=row['diff_path'],
                 base_commit=row['base_commit'] if 'base_commit' in row.keys() else None,
                 goal=row['goal'] if 'goal' in row.keys() else None,
-                estimated_duration_min=row['estimated_duration_min'] if 'estimated_duration_min' in row.keys() else None,
+                estimated_duration_min=(row['estimated_duration_min']
+                if 'estimated_duration_min' in row.keys() and row['estimated_duration_min'] is not None
+                else 5),
             )
             for row in rows
         ]

@@ -89,7 +89,7 @@ def test_pre_post_hooks_execution(temp_db_dir, db, git_repo):
     )
     db.create_job(job)
 
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
         job_id=job_id,
         name="Test Task",
@@ -140,7 +140,7 @@ def test_post_hook_failure_updates_status(temp_db_dir, db, git_repo):
     )
     db.create_job(job)
 
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
         job_id=job_id,
         name="Test Task",
@@ -186,7 +186,7 @@ def test_task_completion_without_base_commit(temp_db_dir, db, git_repo):
     )
     db.create_job(job)
 
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
         job_id=job_id,
         name="Test Task",
@@ -230,7 +230,7 @@ def test_task_commits_against_base_commit(temp_db_dir, db, git_repo):
     )
     db.create_job(job)
 
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
         job_id=job_id,
         name="Task 1: Make changes",
@@ -283,7 +283,7 @@ def test_task_commit_message_format(temp_db_dir, db, git_repo):
     )
     db.create_job(job)
 
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
         job_id=job_id,
         name="task-1-fix: Important fix",
@@ -331,7 +331,7 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, db, git_repo):
     db.create_job(job)
 
     # Task 1: Make first change
-    task1 = Task(
+    task1 = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
         job_id=job_id,
         name="Task 1: First change",
@@ -357,7 +357,7 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, db, git_repo):
     task1_commit = git_tracker.get_current_commit()
 
     # Task 2: Make second change (with task1_commit as base)
-    task2 = Task(
+    task2 = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
         job_id=job_id,
         name="Task 2: Second change",

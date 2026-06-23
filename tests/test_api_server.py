@@ -111,7 +111,7 @@ def test_get_job_by_id_endpoint(api_server, db):
     db.create_job(job)
 
     # Create tasks for the job
-    task1 = Task(
+    task1 = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
         job_id=job_id,
         name="Task 1",
@@ -119,7 +119,7 @@ def test_get_job_by_id_endpoint(api_server, db):
         status=TaskStatus.COMPLETED,
         output="Task completed",
     )
-    task2 = Task(
+    task2 = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
         job_id=job_id,
         name="Task 2",
@@ -151,7 +151,7 @@ def test_get_task_by_id_endpoint(api_server, db):
     job = Job(id=job_id, name="Test Job", status=JobStatus.RUNNING)
     db.create_job(job)
 
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id=task_id,
         job_id=job_id,
         name="Test Task",

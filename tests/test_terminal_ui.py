@@ -40,7 +40,7 @@ def sample_tasks(base_time):
     tasks = []
 
     # Task 1: completed quickly (100ms)
-    task1 = Task(
+    task1 = Task(estimated_duration_min=5, 
         id="task-001",
         job_id="job-001",
         name="Quick Task",
@@ -52,7 +52,7 @@ def sample_tasks(base_time):
     tasks.append(task1)
 
     # Task 2: completed with 1.2s duration
-    task2 = Task(
+    task2 = Task(estimated_duration_min=5, 
         id="task-002",
         job_id="job-001",
         name="Medium Task",
@@ -64,7 +64,7 @@ def sample_tasks(base_time):
     tasks.append(task2)
 
     # Task 3: completed with 5.5s duration
-    task3 = Task(
+    task3 = Task(estimated_duration_min=5, 
         id="task-003",
         job_id="job-001",
         name="Long Task",
@@ -76,7 +76,7 @@ def sample_tasks(base_time):
     tasks.append(task3)
 
     # Task 4: currently running
-    task4 = Task(
+    task4 = Task(estimated_duration_min=5, 
         id="task-004",
         job_id="job-001",
         name="Running Task",

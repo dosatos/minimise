@@ -238,6 +238,7 @@ def job_list(format, limit):
                     "tasks": {
                         "total": task_count,
                         "completed": completed_count,
+                        "estimated_duration_min": sum(t.estimated_duration_min for t in tasks),
                     },
                 })
             console.print(json.dumps(jobs_data, indent=2))
@@ -248,6 +249,7 @@ def job_list(format, limit):
             table.add_column("Status", style="cyan")
             table.add_column("Created", style="green")
             table.add_column("Progress", style="yellow")
+            table.add_column("Duration (min)", style="blue")
 
             for j in jobs:
                 status_text = Text(j.status.value, style=get_status_color(j.status))
@@ -255,6 +257,8 @@ def job_list(format, limit):
                 task_count = len(tasks)
                 completed_count = sum(1 for t in tasks if t.status == TaskStatus.COMPLETED)
                 created = j.created_at.strftime("%Y-%m-%d %H:%M:%S") if j.created_at else "N/A"
+                estimated_duration_min = sum(t.estimated_duration_min for t in tasks if t.estimated_duration_min)
+                duration_text = str(estimated_duration_min) if estimated_duration_min > 0 else "-"
 
                 progress_text = f"{completed_count}/{task_count}"
                 if completed_count == task_count and task_count > 0:
@@ -270,6 +274,7 @@ def job_list(format, limit):
                     status_text,
                     created,
                     progress,
+                    duration_text,
                 )
 
             console.print(table)
@@ -295,9 +300,13 @@ def job_status(job_id: str, format: str):
             console.print(f"[red]Error: Job {job_id} not found[/red]")
             raise SystemExit(1)
 
+        # Job-level estimated-duration total, shared by both output formats.
+        est_total = sum(t.estimated_duration_min for t in job_obj.tasks)
+
         if format == "json":
             # Build JSON output with task metadata
             tasks_data = []
+            now = datetime.utcnow()
             for task in job_obj.tasks:
                 task_data = {
                     "id": task.id,
@@ -313,6 +322,12 @@ def job_status(job_id: str, format: str):
                 # Add estimated_duration_min if present
                 if task.estimated_duration_min is not None:
                     task_data["estimated_duration_min"] = task.estimated_duration_min
+                    # Add remaining_seconds for running tasks
+                    if task.status.value not in ["completed", "failed", "stopped"] and task.started_at:
+                        elapsed_seconds = (now - task.started_at).total_seconds()
+                        total_seconds = task.estimated_duration_min * 60
+                        remaining_seconds = max(0, total_seconds - elapsed_seconds)
+                        task_data["remaining_seconds"] = remaining_seconds
                 tasks_data.append(task_data)
 
             output = {
@@ -323,6 +338,11 @@ def job_status(job_id: str, format: str):
                 "started_at": job_obj.started_at.isoformat() if job_obj.started_at else None,
                 "completed_at": job_obj.completed_at.isoformat() if job_obj.completed_at else None,
                 "tasks": tasks_data,
+                "tasks_summary": {
+                    "total": len(job_obj.tasks),
+                    "completed": sum(1 for t in job_obj.tasks if t.status == TaskStatus.COMPLETED),
+                    "estimated_duration_min": est_total,
+                },
             }
             console.print(json.dumps(output, indent=2))
         else:
@@ -331,6 +351,7 @@ def job_status(job_id: str, format: str):
             console.print(f"[bold]ID:[/bold] {job_obj.id}")
             console.print(f"[bold]Name:[/bold] {job_obj.name}")
             console.print(f"[bold]Status:[/bold] {job_obj.status.value}")
+            console.print(f"[bold]Estimated Duration:[/bold] {est_total} min")
             console.print(f"[bold]Plan Path:[/bold] {job_obj.plan_path}")
             console.print(f"[bold]Base Commit:[/bold] {job_obj.base_commit or 'N/A'}")
             console.print(

@@ -11,7 +11,7 @@ def test_build_handover_prompt():
 +CREATE TABLE users (id INT PRIMARY KEY);
 +CREATE TABLE posts (id INT PRIMARY KEY);"""
 
-    next_task = Task(
+    next_task = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
         job_id=str(uuid.uuid4()),
         name="Implement API",
@@ -39,7 +39,7 @@ diff --git a/file2.py b/file2.py
 diff --git a/file3.py b/file3.py
 +new content 3"""
 
-    next_task = Task(
+    next_task = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
         job_id=str(uuid.uuid4()),
         name="Next Task",
@@ -62,7 +62,7 @@ def test_build_handover_prompt_counts_lines():
 +new line 2
 +new line 3"""
 
-    next_task = Task(
+    next_task = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
         job_id=str(uuid.uuid4()),
         name="Next Task",
@@ -83,7 +83,7 @@ def test_build_handover_prompt_truncates_large_diff():
     large_diff = "diff --git a/file.py b/file.py\n"
     large_diff += "+large line " * 200  # Add many lines to exceed 2000 chars
 
-    next_task = Task(
+    next_task = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
         job_id=str(uuid.uuid4()),
         name="Next Task",
@@ -104,7 +104,7 @@ def test_build_handover_prompt_includes_next_task_context():
     task_output = "Output from task"
     diff = "diff --git a/file.py b/file.py\n+content"
 
-    next_task = Task(
+    next_task = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
         job_id=str(uuid.uuid4()),
         name="Build Authentication System",
@@ -131,7 +131,7 @@ def test_build_handover_prompt_excludes_diff_metadata():
 +new line 2
 +new line 3"""
 
-    next_task = Task(
+    next_task = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
         job_id=str(uuid.uuid4()),
         name="Next Task",

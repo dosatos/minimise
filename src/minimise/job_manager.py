@@ -128,7 +128,8 @@ class JobManager:
                 status=TaskStatus.PENDING,
                 created_at=datetime.utcnow(),
                 base_commit=base_commit,
-                estimated_duration_min=task_config.get("estimated_duration_min"),
+                # The plan validator guarantees this key is present and > 0.
+                estimated_duration_min=task_config["estimated_duration_min"],
             )
             tasks.append(task)
 
@@ -402,7 +403,7 @@ manager.run_job('{job_id}')
         Stop a running job by sending SIGTERM to its subprocess.
 
         Only works if job status is RUNNING and has an associated PID.
-        Sets job status to STOPPED.
+        Sets job status to STOPPED and updates running/pending tasks to STOPPED.
 
         Args:
             job_id: ID of the job to stop
@@ -433,6 +434,13 @@ manager.run_job('{job_id}')
                 JobStatus.STOPPED,
                 completed_at=datetime.utcnow()
             )
+
+            # Mark any running or pending tasks as STOPPED
+            tasks = self.db.list_tasks_for_job(job_id)
+            for task in tasks:
+                if task.status in [TaskStatus.RUNNING, TaskStatus.PENDING]:
+                    self.db.update_task_status(task.id, TaskStatus.STOPPED)
+
             if self.on_job_update:
                 self.on_job_update(job_id)
 
@@ -445,6 +453,13 @@ manager.run_job('{job_id}')
                 JobStatus.STOPPED,
                 completed_at=datetime.utcnow()
             )
+
+            # Mark any running or pending tasks as STOPPED
+            tasks = self.db.list_tasks_for_job(job_id)
+            for task in tasks:
+                if task.status in [TaskStatus.RUNNING, TaskStatus.PENDING]:
+                    self.db.update_task_status(task.id, TaskStatus.STOPPED)
+
             if self.on_job_update:
                 self.on_job_update(job_id)
             return True

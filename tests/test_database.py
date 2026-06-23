@@ -104,7 +104,7 @@ def test_create_and_get_task(db):
     job = Job(id=str(uuid.uuid4()), name="Test Job", status=JobStatus.PENDING)
     db.create_job(job)
 
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
         job_id=job.id,
         name="Test Task",
@@ -123,7 +123,7 @@ def test_update_task_status(db):
     job = Job(id=str(uuid.uuid4()), name="Test Job", status=JobStatus.PENDING)
     db.create_job(job)
 
-    task = Task(id=str(uuid.uuid4()), job_id=job.id, name="Test Task", description="", status=TaskStatus.PENDING)
+    task = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job.id, name="Test Task", description="", status=TaskStatus.PENDING)
     db.create_task(task)
 
     db.update_task_status(task.id, TaskStatus.COMPLETED, output="Task output", retries=0)
@@ -136,8 +136,8 @@ def test_list_tasks_for_job(db):
     job = Job(id=str(uuid.uuid4()), name="Test Job", status=JobStatus.PENDING)
     db.create_job(job)
 
-    task1 = Task(id=str(uuid.uuid4()), job_id=job.id, name="Task 1", description="", status=TaskStatus.PENDING)
-    task2 = Task(id=str(uuid.uuid4()), job_id=job.id, name="Task 2", description="", status=TaskStatus.PENDING)
+    task1 = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job.id, name="Task 1", description="", status=TaskStatus.PENDING)
+    task2 = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job.id, name="Task 2", description="", status=TaskStatus.PENDING)
 
     db.create_task(task1)
     db.create_task(task2)
@@ -227,7 +227,7 @@ def test_task_timing_preservation(db):
     job = Job(id=str(uuid.uuid4()), name="Test Job", status=JobStatus.PENDING)
     db.create_job(job)
 
-    task = Task(
+    task = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
         job_id=job.id,
         name="Test Task",
@@ -268,3 +268,62 @@ def test_task_timing_preservation(db):
     assert task3.completed_at == end_time
     assert task3.output == "Task output"
     assert task3.completed_at > task3.started_at
+
+
+def test_existing_null_duration_is_backfilled(tmp_path):
+    """A legacy row with NULL estimated_duration_min is backfilled to 5 on init_db."""
+    import sqlite3
+    from minimise.database import Database
+
+    db_path = tmp_path / "legacy.db"
+    # Model a pre-migration DB: create a nullable-column tasks table by hand and
+    # insert a legacy NULL row (init_db's migrated column is NOT NULL and would reject it).
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE jobs (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL,
+            plan_path TEXT, base_commit TEXT, created_at TEXT NOT NULL,
+            started_at TEXT, completed_at TEXT, pid INTEGER
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY, job_id TEXT NOT NULL, name TEXT NOT NULL,
+            description TEXT, status TEXT NOT NULL, output TEXT,
+            retries INTEGER DEFAULT 0, created_at TEXT NOT NULL, started_at TEXT,
+            completed_at TEXT, diff_path TEXT, base_commit TEXT, goal TEXT,
+            estimated_duration_min INTEGER DEFAULT NULL,
+            FOREIGN KEY(job_id) REFERENCES jobs(id)
+        )
+    """)
+    conn.execute("INSERT INTO jobs (id, name, status, created_at) "
+                 "VALUES ('j1','n','pending','2026-01-01T00:00:00')")
+    conn.execute("INSERT INTO tasks (id, job_id, name, status, created_at, estimated_duration_min) "
+                 "VALUES ('t1','j1','n','pending','2026-01-01T00:00:00', NULL)")
+    conn.commit()
+    conn.close()
+
+    Database(db_path).init_db()
+
+    conn = sqlite3.connect(db_path)
+    val = conn.execute("SELECT estimated_duration_min FROM tasks WHERE id='t1'").fetchone()[0]
+    conn.close()
+    assert val == 5
+
+
+def test_duration_column_is_not_null(tmp_path):
+    """After init_db, the estimated_duration_min column is NOT NULL (and others preserved)."""
+    import sqlite3
+    from minimise.database import Database
+
+    db_path = tmp_path / "fresh.db"
+    Database(db_path).init_db()
+
+    conn = sqlite3.connect(db_path)
+    info = {c[1]: c for c in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+    conn.close()
+    # PRAGMA table_info: index 3 is the notnull flag (1 == NOT NULL).
+    assert info["estimated_duration_min"][3] == 1
+    # Pre-existing NOT NULLs must be preserved.
+    for col in ("job_id", "name", "status", "created_at"):
+        assert info[col][3] == 1, f"{col} lost its NOT NULL constraint"

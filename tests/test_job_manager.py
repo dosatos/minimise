@@ -72,6 +72,7 @@ def plan_file(temp_db_dir):
                 "name": "Task 1",
                 "description": "First task",
                 "goal": "Complete first task",
+                "estimated_duration_min": 5,
                 "pre_task_hook": "",
                 "post_task_hook": "",
             },
@@ -79,6 +80,7 @@ def plan_file(temp_db_dir):
                 "name": "Task 2",
                 "description": "Second task",
                 "goal": "Complete second task",
+                "estimated_duration_min": 5,
                 "pre_task_hook": "",
                 "post_task_hook": "",
             }
@@ -598,6 +600,7 @@ def test_pre_plan_hook_failure_persists_job(job_manager, plan_file, temp_db_dir)
                 "name": "Task 1",
                 "description": "First task",
                 "goal": "Complete task",
+                "estimated_duration_min": 5,
                 "pre_task_hook": "",
                 "post_task_hook": "",
             }
@@ -638,6 +641,7 @@ def test_post_plan_hook_failure_persists_job(job_manager, plan_file):
                 "name": "Task 1",
                 "description": "First task",
                 "goal": "Complete task",
+                "estimated_duration_min": 5,
                 "pre_task_hook": "",
                 "post_task_hook": "",
             }
@@ -840,44 +844,6 @@ def test_estimated_duration_min_parsed_from_yaml(job_manager, temp_db_dir):
     assert job.tasks[2].estimated_duration_min == 480
 
 
-def test_estimated_duration_min_optional_field(job_manager, temp_db_dir):
-    """Test that estimated_duration_min is optional and defaults to None."""
-    plan_content = {
-        "name": "Plan Without Durations",
-        "briefing": "Test plan with missing durations",
-        "pre_plan_hook": "",
-        "post_plan_hook": "",
-        "tasks": [
-            {
-                "name": "Task Without Duration",
-                "description": "Task without specified duration",
-                "goal": "Complete task",
-                "pre_task_hook": "",
-                "post_task_hook": "",
-            },
-            {
-                "name": "Task With Duration",
-                "description": "Task with duration",
-                "goal": "Complete task",
-                "estimated_duration_min": 30,
-                "pre_task_hook": "",
-                "post_task_hook": "",
-            },
-        ]
-    }
-
-    plan_path = temp_db_dir / "plan_mixed_durations.yaml"
-    with open(plan_path, "w") as f:
-        yaml.dump(plan_content, f)
-
-    # Create job from plan
-    job = job_manager.create_job(plan_path)
-
-    # Verify task without duration has None
-    assert job.tasks[0].estimated_duration_min is None
-    # Verify task with duration has correct value
-    assert job.tasks[1].estimated_duration_min == 30
-
 
 def test_estimated_duration_min_stored_in_database(job_manager, temp_db_dir):
     """Test that estimated_duration_min is stored in the database."""
@@ -979,40 +945,6 @@ def test_estimated_duration_min_survives_job_resume(job_manager, temp_db_dir):
     assert resumed_job.tasks[1].estimated_duration_min == 90
 
 
-def test_estimated_duration_min_zero_value(job_manager, temp_db_dir):
-    """Test that estimated_duration_min handles zero value correctly."""
-    plan_content = {
-        "name": "Plan with Zero Duration",
-        "briefing": "Test zero duration",
-        "pre_plan_hook": "",
-        "post_plan_hook": "",
-        "tasks": [
-            {
-                "name": "Instant Task",
-                "description": "Should complete instantly",
-                "goal": "Complete immediately",
-                "estimated_duration_min": 0,
-                "pre_task_hook": "",
-                "post_task_hook": "",
-            },
-        ]
-    }
-
-    plan_path = temp_db_dir / "plan_zero_duration.yaml"
-    with open(plan_path, "w") as f:
-        yaml.dump(plan_content, f)
-
-    # Create job from plan
-    job = job_manager.create_job(plan_path)
-
-    # Verify zero value is preserved
-    assert job.tasks[0].estimated_duration_min == 0
-
-    # Verify it's stored in database
-    db_tasks = job_manager.db.list_tasks_for_job(job.id)
-    assert db_tasks[0].estimated_duration_min == 0
-
-
 def test_plan_yaml_cached_on_job_creation(job_manager, plan_file):
     """Test that plan YAML is cached in jobs directory on job creation."""
     # Create job
@@ -1049,6 +981,7 @@ def test_cached_plan_survives_original_deletion(job_manager, temp_db_dir):
                 "name": "Only Task",
                 "description": "Single task",
                 "goal": "Complete task",
+                "estimated_duration_min": 5,
                 "pre_task_hook": "",
                 "post_task_hook": "",
             }

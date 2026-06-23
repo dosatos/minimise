@@ -163,7 +163,7 @@ def render_gantt_bar(
 
 def render_task_table_with_gantt(job: Job, tasks: list[Task], now: Optional[datetime] = None) -> Table:
     """
-    Render task progress table with Duration and Timeline (Gantt) columns.
+    Render task progress table with Duration, Remaining Time, and Timeline (Gantt) columns.
 
     Args:
         job: Job object with timing info
@@ -171,7 +171,7 @@ def render_task_table_with_gantt(job: Job, tasks: list[Task], now: Optional[date
         now: Current time for elapsed calculation
 
     Returns:
-        Rich Table with Task Name, Status, Duration, and Timeline columns
+        Rich Table with Task Name, Status, Duration, Remaining Time, and Timeline columns
     """
     if now is None:
         now = datetime.utcnow()
