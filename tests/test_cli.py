@@ -1728,3 +1728,178 @@ tasks:
         import shutil
         if tmpdir.exists():
             shutil.rmtree(tmpdir)
+
+
+# ============================================================================
+# DELETE COMMAND TESTS (WITH SAFEGUARDS)
+# ============================================================================
+
+def test_delete_pending_job_succeeds(db, runner, mock_config_dir):
+    """Test that deleting a PENDING job succeeds with confirmation."""
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a PENDING job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Pending Job to Delete",
+        status=JobStatus.PENDING,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    # Create a task for the job
+    task = Task(
+        id="task-1",
+        job_id=job.id,
+        name="Task 1",
+        description="Task to delete",
+        status=TaskStatus.PENDING,
+    )
+    db.create_task(task)
+
+    # Delete job with yes confirmation
+    result = runner.invoke(mini, ["job", "delete", job.id], input="y\n")
+
+    assert result.exit_code == 0
+    assert "deleted" in result.output.lower() or "removed" in result.output.lower()
+
+    # Verify job is gone from DB
+    deleted_job = db.get_job(job.id)
+    assert deleted_job is None
+
+
+def test_delete_running_job_fails(db, runner, mock_config_dir):
+    """Test that deleting a RUNNING job returns error (safeguard)."""
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a RUNNING job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Running Job",
+        status=JobStatus.RUNNING,
+        plan_path="/path/to/plan.yaml",
+        pid=12345,
+        started_at=datetime.utcnow()
+    )
+    db.create_job(job)
+
+    # Try to delete it
+    result = runner.invoke(mini, ["job", "delete", job.id])
+
+    assert result.exit_code == 1
+    assert "Error" in result.output or "RUNNING" in result.output or "cannot" in result.output.lower()
+
+
+def test_delete_completed_job_succeeds(db, runner, mock_config_dir):
+    """Test that deleting a COMPLETED job succeeds with confirmation."""
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a COMPLETED job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Completed Job",
+        status=JobStatus.COMPLETED,
+        plan_path="/path/to/plan.yaml",
+        completed_at=datetime.utcnow()
+    )
+    db.create_job(job)
+
+    # Delete job with yes confirmation
+    result = runner.invoke(mini, ["job", "delete", job.id], input="y\n")
+
+    assert result.exit_code == 0
+    assert "deleted" in result.output.lower() or "removed" in result.output.lower()
+
+
+def test_delete_failed_job_succeeds(db, runner, mock_config_dir):
+    """Test that deleting a FAILED job succeeds with confirmation."""
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a FAILED job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Failed Job",
+        status=JobStatus.FAILED,
+        plan_path="/path/to/plan.yaml",
+        completed_at=datetime.utcnow()
+    )
+    db.create_job(job)
+
+    # Delete job with yes confirmation
+    result = runner.invoke(mini, ["job", "delete", job.id], input="y\n")
+
+    assert result.exit_code == 0
+    assert "deleted" in result.output.lower() or "removed" in result.output.lower()
+
+
+def test_delete_shows_affected_tasks(db, runner, mock_config_dir):
+    """Test that delete command shows affected tasks before confirmation."""
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a PENDING job with multiple tasks
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Job with Multiple Tasks",
+        status=JobStatus.PENDING,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    task1 = Task(
+        id="task-1",
+        job_id=job.id,
+        name="Task 1",
+        description="First task",
+        status=TaskStatus.PENDING,
+    )
+    task2 = Task(
+        id="task-2",
+        job_id=job.id,
+        name="Task 2",
+        description="Second task",
+        status=TaskStatus.PENDING,
+    )
+    db.create_task(task1)
+    db.create_task(task2)
+
+    # Delete job (should show tasks before confirmation)
+    result = runner.invoke(mini, ["job", "delete", job.id], input="y\n")
+
+    assert result.exit_code == 0
+    # Should show affected tasks in output
+    assert "2" in result.output or "tasks" in result.output.lower() or "Task 1" in result.output
+
+
+def test_delete_requires_confirmation(db, runner, mock_config_dir):
+    """Test that delete command requires confirmation (no 'yes' input = abort)."""
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    # Create a PENDING job
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Pending Job",
+        status=JobStatus.PENDING,
+        plan_path="/path/to/plan.yaml"
+    )
+    db.create_job(job)
+
+    # Delete job with NO confirmation
+    result = runner.invoke(mini, ["job", "delete", job.id], input="n\n")
+
+    # Should abort (exit code 0 but output says cancelled, or exit code 1)
+    # Job should still exist
+    job_after = db.get_job(job.id)
+    assert job_after is not None
+    assert job_after.status == JobStatus.PENDING

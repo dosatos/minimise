@@ -1011,3 +1011,71 @@ def test_estimated_duration_min_zero_value(job_manager, temp_db_dir):
     # Verify it's stored in database
     db_tasks = job_manager.db.list_tasks_for_job(job.id)
     assert db_tasks[0].estimated_duration_min == 0
+
+
+def test_plan_yaml_cached_on_job_creation(job_manager, plan_file):
+    """Test that plan YAML is cached in jobs directory on job creation."""
+    # Create job
+    job = job_manager.create_job(plan_file)
+    job_id = job.id
+
+    # Verify plan is cached at ~/.minimise/jobs/<job-id>/plan.yaml
+    cached_plan_path = job_manager.jobs_dir / job_id / "plan.yaml"
+    assert cached_plan_path.exists(), f"Plan should be cached at {cached_plan_path}"
+
+    # Verify cached plan content is readable
+    with open(cached_plan_path, 'r') as f:
+        cached_plan = yaml.safe_load(f)
+
+    # Verify cached plan has expected content
+    assert cached_plan is not None
+    assert cached_plan['name'] == "Test Plan"
+    assert cached_plan['briefing'] == "This is a test plan"
+    assert len(cached_plan['tasks']) == 2
+    assert cached_plan['tasks'][0]['name'] == "Task 1"
+    assert cached_plan['tasks'][1]['name'] == "Task 2"
+
+
+def test_cached_plan_survives_original_deletion(job_manager, temp_db_dir):
+    """Test that cached plan survives deletion of original plan file."""
+    # Create a plan file
+    plan_content = {
+        "name": "Deletable Plan",
+        "briefing": "This plan will be deleted",
+        "pre_plan_hook": "",
+        "post_plan_hook": "",
+        "tasks": [
+            {
+                "name": "Only Task",
+                "description": "Single task",
+                "goal": "Complete task",
+                "pre_task_hook": "",
+                "post_task_hook": "",
+            }
+        ]
+    }
+
+    original_plan_path = temp_db_dir / "deletable_plan.yaml"
+    with open(original_plan_path, "w") as f:
+        yaml.dump(plan_content, f)
+
+    # Create job from plan
+    job = job_manager.create_job(original_plan_path)
+    job_id = job.id
+
+    # Verify cached plan exists
+    cached_plan_path = job_manager.jobs_dir / job_id / "plan.yaml"
+    assert cached_plan_path.exists()
+
+    # Delete original plan file
+    original_plan_path.unlink()
+    assert not original_plan_path.exists()
+
+    # Verify cached copy still exists and is readable
+    assert cached_plan_path.exists()
+    with open(cached_plan_path, 'r') as f:
+        cached_plan = yaml.safe_load(f)
+
+    assert cached_plan is not None
+    assert cached_plan['name'] == "Deletable Plan"
+    assert len(cached_plan['tasks']) == 1
