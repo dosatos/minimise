@@ -238,7 +238,7 @@ def test_cancel_job_endpoint(api_server, mock_job_manager, db):
     job = Job(id=job_id, name="Test Job", status=JobStatus.RUNNING)
     db.create_job(job)
 
-    mock_job_manager.cancel_job.return_value = True
+    mock_job_manager.stop_job.return_value = True
 
     with api_server.app.test_client() as client:
         response = client.post(f"/jobs/{job_id}/cancel")
@@ -246,7 +246,7 @@ def test_cancel_job_endpoint(api_server, mock_job_manager, db):
 
         data = response.get_json()
         assert data["success"] is True
-        mock_job_manager.cancel_job.assert_called_once_with(job_id)
+        mock_job_manager.stop_job.assert_called_once_with(job_id)
 
 
 def test_cancel_job_failure(api_server, mock_job_manager, db):
@@ -255,7 +255,7 @@ def test_cancel_job_failure(api_server, mock_job_manager, db):
     job = Job(id=job_id, name="Test Job", status=JobStatus.RUNNING)
     db.create_job(job)
 
-    mock_job_manager.cancel_job.return_value = False
+    mock_job_manager.stop_job.return_value = False
 
     with api_server.app.test_client() as client:
         response = client.post(f"/jobs/{job_id}/cancel")

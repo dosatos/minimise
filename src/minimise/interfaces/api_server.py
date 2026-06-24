@@ -110,7 +110,7 @@ class APIServer:
         def cancel_job(job_id: str):
             """Cancel a job."""
             try:
-                success = self.job_manager.cancel_job(job_id)
+                success = self.job_manager.stop_job(job_id)
                 if not success:
                     return jsonify({"error": "Failed to cancel job"}), 400
 

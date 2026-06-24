@@ -5,6 +5,7 @@ import yaml
 from pathlib import Path
 from datetime import datetime
 from minimise.orchestration.job_manager import JobManager
+from minimise.orchestration.loop import run_job
 from minimise.models import Job, Task, JobStatus, TaskStatus
 from minimise.storage.database import Database
 from minimise.storage.git_tracker import GitTracker
@@ -158,8 +159,8 @@ def test_cancel_job_basic(job_manager, plan_file):
     if len(tasks) > 0:
         job_manager.db.update_task_status(tasks[0].id, TaskStatus.RUNNING)
 
-    # Cancel the job
-    result = job_manager.cancel_job(job_id)
+    # Stop the job (no PID -> just finalizes state)
+    result = job_manager.stop_job(job_id)
     assert result is True
 
     # Verify job status is STOPPED
@@ -194,7 +195,7 @@ def test_run_job_basic(job_manager, plan_file):
 
     try:
         # Run the job
-        success = job_manager.run_job(job_id)
+        success = run_job(job_manager, job_id)
 
         # Verify job completed
         assert success
@@ -263,7 +264,7 @@ def test_task_commits_against_base_commit(job_manager, plan_file, git_repo):
 
     try:
         # Run the job
-        success = job_manager.run_job(job_id)
+        success = run_job(job_manager, job_id)
         assert success
 
         # Verify all tasks completed
@@ -341,7 +342,7 @@ def test_task_commit_message_format(temp_db_dir, git_repo, plan_file):
         assert len(tasks) == 2
 
         # Run the job
-        success = job_manager.run_job(job_id)
+        success = run_job(job_manager, job_id)
         assert success
 
         # Get commit log and verify commit messages
@@ -438,7 +439,7 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, git_repo, plan_file)
         job_id = created_job.id
 
         # Run the job
-        success = job_manager.run_job(job_id)
+        success = run_job(job_manager, job_id)
         assert success
 
         # Verify diffs were collected
@@ -482,7 +483,7 @@ def test_failed_job_persists_in_db(job_manager, plan_file):
         job_id = created_job.id
 
         # Run the job
-        success = job_manager.run_job(job_id)
+        success = run_job(job_manager, job_id)
         assert not success
 
         # Verify job status is FAILED
@@ -521,7 +522,7 @@ def test_failed_job_stores_error_reason(job_manager, plan_file):
         job_id = created_job.id
 
         # Run the job
-        success = job_manager.run_job(job_id)
+        success = run_job(job_manager, job_id)
         assert not success
 
         # Verify job has failed status
@@ -568,7 +569,7 @@ def test_pre_plan_hook_failure_persists_job(job_manager, plan_file, temp_db_dir)
     job_id = created_job.id
 
     # Run the job
-    success = job_manager.run_job(job_id)
+    success = run_job(job_manager, job_id)
     assert not success
 
     # Verify job persists with FAILED status
@@ -622,7 +623,7 @@ def test_post_plan_hook_failure_persists_job(job_manager, plan_file):
             job_id = created_job.id
 
             # Run the job
-            success = job_manager.run_job(job_id)
+            success = run_job(job_manager, job_id)
             assert not success
 
             # Verify job persists with FAILED status (due to post-hook failure)
@@ -636,49 +637,6 @@ def test_post_plan_hook_failure_persists_job(job_manager, plan_file):
 
         finally:
             job_manager.task_executor.execute_task = original_method
-
-
-def test_failed_job_plan_lock_released(job_manager, plan_file):
-    """Test that plan lock is released when a job fails."""
-    execution_count = [0]
-    original_method = job_manager.task_executor.execute_task
-
-    def mock_execute_task(task, job_id, handover_context, pre_task_hook="", post_task_hook=""):
-        execution_count[0] += 1
-        if execution_count[0] == 1:
-            # Fail on first task
-            error_msg = "Task execution failed: simulated failure"
-            job_manager.db.update_task_status(task.id, TaskStatus.FAILED, output=error_msg, completed_at=datetime.utcnow())
-            return False, error_msg
-        return True, f"Executed {task.name}"
-
-    job_manager.task_executor.execute_task = mock_execute_task
-
-    try:
-        # Create job
-        created_job = job_manager.create_job(plan_file)
-        job_id = created_job.id
-
-        # Create a lock file to simulate a lock
-        job_dir = job_manager.jobs_dir / job_id
-        lock_path = job_dir / "plan.lock"
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path.write_text("locked")
-        assert lock_path.exists(), "Lock file should exist before job failure"
-
-        # Run the job - it should fail
-        success = job_manager.run_job(job_id)
-        assert not success
-
-        # Verify job has FAILED status
-        job = job_manager.get_job_status(job_id)
-        assert job.status == JobStatus.FAILED
-
-        # Verify lock is released (file deleted)
-        assert not lock_path.exists(), "Lock file should be released after job failure"
-
-    finally:
-        job_manager.task_executor.execute_task = original_method
 
 
 def test_estimated_duration_min_parsed_from_yaml(job_manager, temp_db_dir):

@@ -3,8 +3,8 @@
 This is the orchestration engine: given a created job, it loads the plan,
 runs the pre/post-plan hooks, executes each task in order while flowing
 handover context from one task to the next, and marks the job COMPLETED or
-FAILED. ``JobManager.run_job`` delegates here, and the background subprocess
-spawned by ``JobManager.start_job`` ultimately calls this.
+FAILED. The background subprocess spawned by ``JobManager.start_job`` calls
+``run_job(manager, job_id)`` here directly.
 """
 
 from datetime import datetime
@@ -14,9 +14,8 @@ from minimise.orchestration.handover_manager import HandoverManager
 from minimise.utils import run_shell_command
 
 
-def _fail_job(manager, job_id, plan_path):
-    """Release the plan lock, mark the job FAILED, and notify."""
-    manager.release_lock(str(plan_path))
+def _fail_job(manager, job_id):
+    """Mark the job FAILED and notify."""
     manager.db.update_job_status(job_id, JobStatus.FAILED, completed_at=datetime.utcnow())
     if manager.on_job_update:
         manager.on_job_update(job_id)
@@ -69,7 +68,7 @@ def run_job(manager, job_id: str) -> bool:
         success, output = run_shell_command(pre_plan_hook)
         if not success:
             print(f"Pre-plan hook failed: {output}")
-            _fail_job(manager, job_id, plan_path)
+            _fail_job(manager, job_id)
             return False
 
     # Load all tasks for this job from database
@@ -95,7 +94,7 @@ def run_job(manager, job_id: str) -> bool:
 
         if not success:
             print(f"Task {task.name} failed: {output}")
-            _fail_job(manager, job_id, plan_path)
+            _fail_job(manager, job_id)
             return False
 
         # Build handover context for next task
@@ -111,7 +110,7 @@ def run_job(manager, job_id: str) -> bool:
         success, output = run_shell_command(post_plan_hook)
         if not success:
             print(f"Post-plan hook failed: {output}")
-            _fail_job(manager, job_id, plan_path)
+            _fail_job(manager, job_id)
             return False
 
     # Mark job as COMPLETED
