@@ -37,6 +37,22 @@ class Task:
     base_commit: Optional[str] = None
     goal: Optional[str] = None
 
+    def to_dict(self) -> dict:
+        """Convert Task object to dictionary for JSON serialization."""
+        return {
+            "id": self.id,
+            "job_id": self.job_id,
+            "name": self.name,
+            "description": self.description,
+            "status": self.status.value,
+            "output": self.output,
+            "retries": self.retries,
+            "created_at": self.created_at.isoformat(),
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "diff_path": self.diff_path,
+        }
+
 @dataclass
 class Job:
     id: str
@@ -49,6 +65,20 @@ class Job:
     completed_at: Optional[datetime] = None
     tasks: list[Task] = field(default_factory=list)
     pid: Optional[int] = None
+
+    def to_dict(self) -> dict:
+        """Convert Job object to dictionary for JSON serialization."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "status": self.status.value,
+            "plan_path": self.plan_path,
+            "base_commit": self.base_commit,
+            "created_at": self.created_at.isoformat(),
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "tasks": [t.to_dict() for t in self.tasks] if self.tasks else [],
+        }
 
 class PlanTask(BaseModel):
     model_config = ConfigDict(extra="allow")  # preserve per-task hooks (pre_task_hook, post_task_hook)

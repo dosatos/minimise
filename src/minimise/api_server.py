@@ -7,41 +7,9 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room
 
-from minimise.models import Job, Task
+from minimise.models import Job
 from minimise.database import Database
 from minimise.job_manager import JobManager
-
-
-def job_to_dict(job: Job) -> dict:
-    """Convert Job object to dictionary for JSON serialization."""
-    return {
-        "id": job.id,
-        "name": job.name,
-        "status": job.status.value,
-        "plan_path": job.plan_path,
-        "base_commit": job.base_commit,
-        "created_at": job.created_at.isoformat(),
-        "started_at": job.started_at.isoformat() if job.started_at else None,
-        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
-        "tasks": [task_to_dict(t) for t in job.tasks] if job.tasks else [],
-    }
-
-
-def task_to_dict(task: Task) -> dict:
-    """Convert Task object to dictionary for JSON serialization."""
-    return {
-        "id": task.id,
-        "job_id": task.job_id,
-        "name": task.name,
-        "description": task.description,
-        "status": task.status.value,
-        "output": task.output,
-        "retries": task.retries,
-        "created_at": task.created_at.isoformat(),
-        "started_at": task.started_at.isoformat() if task.started_at else None,
-        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
-        "diff_path": task.diff_path,
-    }
 
 
 class APIServer:
@@ -92,7 +60,7 @@ class APIServer:
             """Get all jobs."""
             try:
                 jobs = self.db.list_jobs()
-                return jsonify([job_to_dict(job) for job in jobs]), 200
+                return jsonify([job.to_dict() for job in jobs]), 200
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
 
@@ -110,7 +78,7 @@ class APIServer:
                 if job is None:
                     return jsonify({"error": "Failed to create job"}), 500
 
-                return jsonify(job_to_dict(job)), 201
+                return jsonify(job.to_dict()), 201
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
 
@@ -122,7 +90,7 @@ class APIServer:
                 if job is None:
                     return jsonify({"error": "Job not found"}), 404
 
-                return jsonify(job_to_dict(job)), 200
+                return jsonify(job.to_dict()), 200
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
 
@@ -134,7 +102,7 @@ class APIServer:
                 if task is None or task.job_id != job_id:
                     return jsonify({"error": "Task not found"}), 404
 
-                return jsonify(task_to_dict(task)), 200
+                return jsonify(task.to_dict()), 200
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
 
@@ -168,7 +136,7 @@ class APIServer:
                 # Join room for this job
                 join_room(f"job_{job_id}")
 
-                emit("job_update", job_to_dict(job))
+                emit("job_update", job.to_dict())
             except Exception as e:
                 emit("error", {"message": str(e)})
 
@@ -222,7 +190,7 @@ class APIServer:
             if job:
                 self.socketio.emit(
                     "job_update",
-                    job_to_dict(job),
+                    job.to_dict(),
                     room=f"job_{job_id}",
                 )
         except Exception as e:
@@ -239,7 +207,7 @@ class APIServer:
             if task:
                 self.socketio.emit(
                     "task_update",
-                    task_to_dict(task),
+                    task.to_dict(),
                     room=f"job_{job_id}",
                 )
         except Exception as e:
