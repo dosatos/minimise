@@ -1,111 +1,32 @@
-"""CLI interface for Minimise - plan orchestrator for multi-agent execution."""
+"""`mini job` subgroup: create, run, inspect, and manage jobs."""
+
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
 
 import click
-import json
-import os
-import sqlite3
-import time
-from pathlib import Path
-from datetime import datetime
-from typing import Optional
+import pydantic
 from rich.table import Table
-from rich.console import Console
 from rich.text import Text
 
-from minimise.database import Database
-from minimise.job_manager import JobManager
-from minimise.git_tracker import GitTracker
-from minimise.api_server import APIServer
-import pydantic
-
+import minimise.cli as _cli  # patchable constants/PlanReviewer; read at call time
 from minimise.models import JobStatus, TaskStatus, Plan
 from minimise.terminal_ui import get_status_color, render_task_table_with_gantt
-from minimise.plan_reviewer import PlanReviewer
+from minimise.cli._shared import (
+    console,
+    get_db,
+    get_job_manager,
+    resolve_job_id,
+    _error_job_not_found,
+    _format_datetime,
+    _filter_tasks_by_id,
+    _get_and_validate_job,
+)
+from minimise.cli.results import job_results
 
 
-# Global constants (MINIMISE_HOME overrides the default ~/.minimise location)
-CONFIG_DIR = Path(os.environ.get("MINIMISE_HOME") or Path.home() / ".minimise")
-DB_PATH = CONFIG_DIR / "minimise.db"
-JOBS_DIR = CONFIG_DIR / "jobs"
-REPO_PATH = Path.cwd()
-
-
-console = Console()
-
-
-def get_db() -> Database:
-    """Get or create database instance."""
-    db = Database(DB_PATH)
-    db.init_db()
-    return db
-
-
-def get_job_manager(db: Database) -> JobManager:
-    """Get job manager instance."""
-    git_tracker = GitTracker(REPO_PATH)
-    return JobManager(db, git_tracker, JOBS_DIR, REPO_PATH)
-
-
-def resolve_job_id(job_id_or_prefix: str) -> str:
-    """Resolve a job ID from full ID or prefix (e.g., first 8 chars)."""
-    db = get_db()
-
-    conn = sqlite3.connect(db.db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM jobs WHERE id = ? OR id LIKE ?", (job_id_or_prefix, f"{job_id_or_prefix}%"))
-    matches = cursor.fetchall()
-    conn.close()
-
-    if len(matches) == 1:
-        return matches[0][0]
-    elif len(matches) > 1:
-        console.print(f"[red]Error: Multiple jobs match '{job_id_or_prefix}':[/red]")
-        for match in matches:
-            console.print(f"  {match[0]}")
-        console.print("[yellow]Please provide more characters to disambiguate[/yellow]")
-        raise SystemExit(1)
-    else:
-        console.print(f"[red]Error: Job '{job_id_or_prefix}' not found[/red]")
-        raise SystemExit(1)
-
-
-def _error_job_not_found(job_id: str):
-    """Print the standard 'job not found' error and exit non-zero."""
-    console.print(f"[red]Error: Job {job_id} not found[/red]")
-    raise SystemExit(1)
-
-
-def _format_datetime(dt, default: str = "N/A") -> str:
-    """Format a datetime as 'YYYY-MM-DD HH:MM:SS', or return default if None."""
-    return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else default
-
-
-def _filter_tasks_by_id(tasks, task_id_str: str):
-    """Filter tasks by full ID or prefix match."""
-    return [t for t in tasks if t.id == task_id_str or t.id.startswith(task_id_str)]
-
-
-def _get_and_validate_job(job_id: str):
-    """Resolve a job ID/prefix, fetch the job, and exit with the standard
-    'not found' error if it doesn't exist.
-
-    Returns (resolved_job_id, db, job_obj).
-    """
-    job_id = resolve_job_id(job_id)
-    db = get_db()
-    job_obj = db.get_job(job_id)
-    if job_obj is None:
-        _error_job_not_found(job_id)
-    return job_id, db, job_obj
-
-
-@click.group()
-def mini():
-    """Minimise: plan orchestrator for multi-agent execution"""
-    pass
-
-
-@mini.group(name="job")
+@click.group(name="job")
 def job():
     """Manage jobs"""
     pass
@@ -137,7 +58,7 @@ def job_new(plan: str, skip_review: bool):
 
         # 2. Run agent-based review (unless skipped)
         if not skip_review:
-            reviewer = PlanReviewer()
+            reviewer = _cli.PlanReviewer()
             console.print("[dim]🤖 Reviewing plan quality...[/dim]")
             findings = reviewer.review(plan_obj)
 
@@ -465,7 +386,6 @@ def job_delete(job_id: str, force: bool):
         raise SystemExit(1)
 
 
-
 @job.command(name="logs")
 @click.argument("job_id")
 def job_logs(job_id: str):
@@ -498,141 +418,6 @@ def job_logs(job_id: str):
                 console.print(f"  Diff: {task.diff_path}")
 
             console.print()
-
-    except Exception as e:
-        console.print(f"[red]Error: {str(e)}[/red]")
-        raise SystemExit(1)
-
-
-@job.group(name="results")
-def job_results():
-    """Retrieve job results (logs and diffs)"""
-    pass
-
-
-@job_results.command(name="logs")
-@click.argument("job_id")
-@click.option("--task-id", default=None, help="Filter by specific task ID")
-def job_results_logs(job_id: str, task_id: Optional[str]):
-    """Retrieve task output logs for a job."""
-    try:
-        job_id, db, job_obj = _get_and_validate_job(job_id)
-
-        tasks = db.list_tasks_for_job(job_id)
-
-        if not tasks:
-            console.print("[yellow]No tasks for this job[/yellow]")
-            return
-
-        # Filter by task_id if provided
-        if task_id:
-            tasks = _filter_tasks_by_id(tasks, task_id)
-            if not tasks:
-                console.print(f"[red]Error: Task '{task_id}' not found[/red]")
-                raise SystemExit(1)
-
-        console.print(f"\n[bold]Results Logs[/bold]")
-        console.print(f"[bold]Job:[/bold] {job_obj.name} ({job_id})\n")
-
-        for task in tasks:
-            # Task header
-            status_color = "green" if task.status == TaskStatus.COMPLETED else "yellow" if task.status == TaskStatus.RUNNING else "red" if task.status == TaskStatus.FAILED else "cyan"
-            console.print(f"[bold {status_color}]{task.name}[/bold {status_color}]")
-            console.print(f"  [dim]ID:[/dim] {task.id}")
-            console.print(f"  [dim]Status:[/dim] {task.status.value}")
-            console.print(f"  [dim]Created:[/dim] {_format_datetime(task.created_at)}")
-
-            if task.started_at:
-                console.print(f"  [dim]Started:[/dim] {_format_datetime(task.started_at)}")
-
-            if task.completed_at:
-                console.print(f"  [dim]Completed:[/dim] {_format_datetime(task.completed_at)}")
-
-            console.print(f"  [dim]Retries:[/dim] {task.retries}")
-
-            # Output
-            if task.output:
-                console.print(f"\n  [bold]Output:[/bold]")
-                for line in task.output.split("\n"):
-                    if line:
-                        console.print(f"    {line}")
-            else:
-                console.print(f"\n  [dim]Output: (none)[/dim]")
-
-            console.print()
-
-    except Exception as e:
-        console.print(f"[red]Error: {str(e)}[/red]")
-        raise SystemExit(1)
-
-
-@job_results.command(name="diff")
-@click.argument("job_id")
-@click.option("--task-id", default=None, help="Filter by specific task ID")
-def job_results_diff(job_id: str, task_id: Optional[str]):
-    """Retrieve git diffs for tasks in a job."""
-    try:
-        job_id, db, job_obj = _get_and_validate_job(job_id)
-
-        tasks = db.list_tasks_for_job(job_id)
-
-        if not tasks:
-            console.print("[yellow]No tasks for this job[/yellow]")
-            return
-
-        # Filter by task_id if provided
-        if task_id:
-            tasks = _filter_tasks_by_id(tasks, task_id)
-            if not tasks:
-                console.print(f"[red]Error: Task '{task_id}' not found[/red]")
-                raise SystemExit(1)
-
-        console.print(f"\n[bold]Results Diffs[/bold]")
-        console.print(f"[bold]Job:[/bold] {job_obj.name} ({job_id})\n")
-
-        has_diffs = False
-
-        for task in tasks:
-            if task.diff_path:
-                has_diffs = True
-                # Task header
-                status_color = "green" if task.status == TaskStatus.COMPLETED else "yellow" if task.status == TaskStatus.RUNNING else "red" if task.status == TaskStatus.FAILED else "cyan"
-                console.print(f"[bold {status_color}]{task.name}[/bold {status_color}]")
-                console.print(f"  [dim]ID:[/dim] {task.id}")
-                console.print(f"  [dim]Diff Path:[/dim] {task.diff_path}")
-
-                # Try to read and display the diff
-                diff_file = Path(task.diff_path)
-                if diff_file.exists():
-                    console.print(f"\n  [bold]Diff Content:[/bold]")
-                    try:
-                        with open(diff_file, 'r') as f:
-                            content = f.read()
-                            for line in content.split("\n"):
-                                if line:
-                                    if line.startswith("+++") or line.startswith("---"):
-                                        console.print(f"    [cyan]{line}[/cyan]")
-                                    elif line.startswith("+"):
-                                        console.print(f"    [green]{line}[/green]")
-                                    elif line.startswith("-"):
-                                        console.print(f"    [red]{line}[/red]")
-                                    else:
-                                        console.print(f"    {line}")
-                    except Exception as e:
-                        console.print(f"    [yellow]Could not read diff: {str(e)}[/yellow]")
-                else:
-                    console.print(f"    [yellow]Diff file not found at {task.diff_path}[/yellow]")
-
-                console.print()
-            else:
-                # Show tasks without diffs
-                console.print(f"[dim]{task.name}[/dim]")
-                console.print(f"  [dim]ID:[/dim] {task.id}")
-                console.print(f"  [dim]Status:[/dim] No diff available")
-                console.print()
-
-        if not has_diffs:
-            console.print("[yellow]No diffs found for this job[/yellow]")
 
     except Exception as e:
         console.print(f"[red]Error: {str(e)}[/red]")
@@ -726,7 +511,7 @@ def job_show(job_id: str, task_id: Optional[str]):
         else:
             # Show plan structure
             # Try cached plan first, fall back to original path for backward compat
-            cached_plan_path = JOBS_DIR / job_id / "plan.yaml"
+            cached_plan_path = _cli.JOBS_DIR / job_id / "plan.yaml"
             original_plan_path = Path(job_obj.plan_path)
 
             plan_path = cached_plan_path if cached_plan_path.exists() else original_plan_path
@@ -795,64 +580,4 @@ def job_show(job_id: str, task_id: Optional[str]):
         raise SystemExit(1)
 
 
-@mini.group(name="view")
-def view():
-    """Manage web UI"""
-    pass
-
-
-@view.command(name="start")
-@click.option(
-    "--port",
-    default=5000,
-    help="Port to run the web server on (default: 5000)",
-)
-def view_start(port: int):
-    """Launch web UI (and start server if not running)."""
-    try:
-        db = get_db()
-        job_manager = get_job_manager(db)
-
-        api_server = APIServer(db, job_manager, port=port)
-
-        console.print(f"[green]Starting web server on port {port}...[/green]")
-        api_server.start()
-
-        console.print(f"[green]Web UI available at:[/green] http://localhost:{port}")
-        console.print("[yellow]Press Ctrl+C to stop[/yellow]")
-
-        # Keep the process running
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            console.print("\n[yellow]Stopping web server...[/yellow]")
-            api_server.stop()
-            console.print("[green]Web server stopped[/green]")
-
-    except KeyboardInterrupt:
-        pass
-    except Exception as e:
-        console.print(f"[red]Error: {str(e)}[/red]")
-        raise SystemExit(1)
-
-
-@view.command(name="stop")
-def view_stop():
-    """Stop web server."""
-    try:
-        console.print("[yellow]Note: Server stop requires the running server process[/yellow]")
-        console.print("[yellow]Press Ctrl+C in the server terminal or kill the process[/yellow]")
-
-    except Exception as e:
-        console.print(f"[red]Error: {str(e)}[/red]")
-        raise SystemExit(1)
-
-
-def main():
-    """Entry point for the CLI."""
-    mini()
-
-
-if __name__ == "__main__":
-    main()
+job.add_command(job_results)
