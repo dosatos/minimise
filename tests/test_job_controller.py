@@ -252,9 +252,9 @@ def test_task_commits_against_base_commit(job_controller, plan_file, git_repo):
             )
 
             # Store the base_commit for this task before changes
-            job = self.db.get_job(job_id)
+            job = self.store.db.get_job(job_id)
             task.base_commit = job.base_commit  # Should be the job's base_commit
-            self.db.update_task(task)
+            self.store.db.update_task(task)
 
             return True, f"Executed {task.name}"
 
@@ -317,7 +317,7 @@ def test_task_commit_message_format(temp_db_dir, git_repo, plan_file):
             )
 
             # Update status before returning
-            self.db.update_task_status(task.id, TaskStatus.COMPLETED, output=f"Executed {task.name}", completed_at=datetime.utcnow())
+            self.store.db.update_task_status(task.id, TaskStatus.COMPLETED, output=f"Executed {task.name}", completed_at=datetime.utcnow())
             return True, f"Executed {task.name}"
 
     import minimise.orchestration.job_controller
@@ -410,14 +410,14 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, git_repo, plan_file)
             stored_diffs.append(diff_output)
 
             # Store base_commit
-            task_dir = Path(self.jobs_dir) / job_id / "tasks" / task.id
+            task_dir = Path(self.store.jobs_dir) / job_id / "tasks" / task.id
             task_dir.mkdir(parents=True, exist_ok=True)
             diff_path = task_dir / "diff.txt"
             diff_path.write_text(diff_output)
             task.diff_path = str(diff_path)
 
-            self.db.update_task(task)
-            self.db.update_task_status(task.id, TaskStatus.COMPLETED, output=f"Executed {task.name}", completed_at=datetime.utcnow())
+            self.store.db.update_task(task)
+            self.store.db.update_task_status(task.id, TaskStatus.COMPLETED, output=f"Executed {task.name}", completed_at=datetime.utcnow())
 
             return True, f"Executed {task.name}"
 

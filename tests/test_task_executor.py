@@ -8,6 +8,7 @@ from minimise.orchestration.task_executor import TaskExecutor
 from minimise.models import Task, TaskStatus
 from minimise.storage.database import Database
 from minimise.storage.git_tracker import GitTracker
+from minimise.storage.job_store import JobStore
 from minimise.agents.harness import AgentHarness, HarnessResult
 import uuid
 
@@ -63,11 +64,11 @@ def git_repo():
 def test_task_executor_initialization(temp_db_dir, db, git_repo):
     """Test TaskExecutor initialization."""
     git_tracker = GitTracker(git_repo)
-    executor = TaskExecutor(db, git_tracker, temp_db_dir)
+    store = JobStore(db, temp_db_dir)
+    executor = TaskExecutor(store, git_tracker)
 
-    assert executor.db is db
+    assert executor.store is store
     assert executor.git_tracker is git_tracker
-    assert executor.jobs_dir == temp_db_dir
     assert executor.MAX_RETRIES == 3
 
 
@@ -76,7 +77,7 @@ def test_pre_post_hooks_execution(temp_db_dir, db, git_repo):
     from minimise.models import Job, JobStatus
 
     git_tracker = GitTracker(git_repo)
-    executor = TaskExecutor(db, git_tracker, temp_db_dir)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
 
     job_id = str(uuid.uuid4())
 
@@ -127,7 +128,7 @@ def test_post_hook_failure_updates_status(temp_db_dir, db, git_repo):
     from minimise.models import Job, JobStatus
 
     git_tracker = GitTracker(git_repo)
-    executor = TaskExecutor(db, git_tracker, temp_db_dir)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
 
     job_id = str(uuid.uuid4())
 
@@ -174,7 +175,7 @@ def test_task_completion_without_base_commit(temp_db_dir, db, git_repo):
     from minimise.models import Job, JobStatus
 
     git_tracker = GitTracker(git_repo)
-    executor = TaskExecutor(db, git_tracker, temp_db_dir)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
 
     job_id = str(uuid.uuid4())
 
@@ -218,7 +219,7 @@ def test_task_commits_against_base_commit(temp_db_dir, db, git_repo):
     from minimise.models import Job, JobStatus
 
     git_tracker = GitTracker(git_repo)
-    executor = TaskExecutor(db, git_tracker, temp_db_dir)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
 
     job_id = str(uuid.uuid4())
     base_commit = git_tracker.get_current_commit()
@@ -271,7 +272,7 @@ def test_task_commit_message_format(temp_db_dir, db, git_repo):
     from minimise.models import Job, JobStatus
 
     git_tracker = GitTracker(git_repo)
-    executor = TaskExecutor(db, git_tracker, temp_db_dir)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
 
     job_id = str(uuid.uuid4())
     base_commit = git_tracker.get_current_commit()
@@ -318,7 +319,7 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, db, git_repo):
     from minimise.models import Job, JobStatus
 
     git_tracker = GitTracker(git_repo)
-    executor = TaskExecutor(db, git_tracker, temp_db_dir)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
 
     job_id = str(uuid.uuid4())
     base_commit = git_tracker.get_current_commit()
@@ -399,7 +400,7 @@ def test_failed_attempt_handover_injected_into_retry(temp_db_dir, db, git_repo):
     from minimise.models import Job, JobStatus
 
     git_tracker = GitTracker(git_repo)
-    executor = TaskExecutor(db, git_tracker, temp_db_dir)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
 
     job_id = str(uuid.uuid4())
     db.create_job(Job(id=job_id, name="J", status=JobStatus.PENDING,
@@ -431,7 +432,7 @@ def test_default_harness_is_claude_code(temp_db_dir, db, git_repo):
     from minimise.agents.harness import ClaudeCodeHarness
 
     git_tracker = GitTracker(git_repo)
-    executor = TaskExecutor(db, git_tracker, temp_db_dir)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
 
     assert isinstance(executor.harness, ClaudeCodeHarness)
 
@@ -440,7 +441,7 @@ def test_injected_harness_is_stored(temp_db_dir, db, git_repo):
     """An explicitly injected harness is stored on the executor."""
     git_tracker = GitTracker(git_repo)
     fake = Mock(spec=AgentHarness)
-    executor = TaskExecutor(db, git_tracker, temp_db_dir, harness=fake)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
 
     assert executor.harness is fake
 
@@ -450,7 +451,7 @@ def test_invoke_delegates_to_harness_and_propagates_success(temp_db_dir, db, git
     git_tracker = GitTracker(git_repo)
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(success=True, output="agent did the work")
-    executor = TaskExecutor(db, git_tracker, temp_db_dir, harness=fake)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
 
     context = {
         "task_name": "task-7: Build widget",
@@ -467,7 +468,7 @@ def test_invoke_delegates_to_harness_and_propagates_success(temp_db_dir, db, git
     fake.run.assert_called_once()
     args, kwargs = fake.run.call_args
     assert kwargs["allow_edits"] is True
-    assert kwargs["cwd"] == str(temp_db_dir.parent.parent)
+    assert kwargs["cwd"] == str(git_repo)
     # No timeout/model override is passed: harness defaults are preserved.
     assert "timeout" not in kwargs
     assert "model" not in kwargs
@@ -485,7 +486,7 @@ def test_invoke_failure_returns_error_when_present(temp_db_dir, db, git_repo):
     fake.run.return_value = HarnessResult(
         success=False, output="partial stdout", error="boom: it failed"
     )
-    executor = TaskExecutor(db, git_tracker, temp_db_dir, harness=fake)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
 
     success, output = executor._invoke_claude_code({"task_name": "T", "task_description": "D"})
 
@@ -498,7 +499,7 @@ def test_invoke_failure_falls_back_to_output_when_no_error(temp_db_dir, db, git_
     git_tracker = GitTracker(git_repo)
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(success=False, output="just stdout", error=None)
-    executor = TaskExecutor(db, git_tracker, temp_db_dir, harness=fake)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
 
     success, output = executor._invoke_claude_code({"task_name": "T", "task_description": "D"})
 

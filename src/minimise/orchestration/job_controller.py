@@ -28,7 +28,7 @@ class JobController:
         self.jobs_dir = ensure_directory(jobs_dir)
         self.repo_path = Path(repo_path)
         self.store = JobStore(db, jobs_dir)
-        self.task_executor = TaskExecutor(db, git_tracker, jobs_dir)
+        self.task_executor = TaskExecutor(self.store, git_tracker)
         self.hook_executor = HookExecutor()
         self.executor = JobExecutor(self.task_executor, self.hook_executor, git_tracker)
 

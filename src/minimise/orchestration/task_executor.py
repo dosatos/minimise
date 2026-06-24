@@ -1,7 +1,5 @@
-from pathlib import Path
 from typing import Optional
 from minimise.models import Task
-from minimise.storage.database import Database
 from minimise.storage.git_tracker import GitTracker
 from minimise.storage.job_store import JobStore
 from minimise.orchestration.handover_manager import HandoverManager
@@ -16,15 +14,12 @@ class TaskExecutor:
 
     def __init__(
         self,
-        db: Database,
+        store: JobStore,
         git_tracker: GitTracker,
-        jobs_dir: Path,
         harness: Optional[AgentHarness] = None,
     ):
-        self.db = db
+        self.store = store
         self.git_tracker = git_tracker
-        self.jobs_dir = jobs_dir
-        self.store = JobStore(db, jobs_dir)
         self.harness = harness or ClaudeCodeHarness()
 
     def execute_task(
@@ -40,7 +35,7 @@ class TaskExecutor:
         On a failed attempt, the failure report is injected into the next
         attempt's context (learn-from-failure handover).
         """
-        if not self.db.get_job(job_id):
+        if not self.store.load(job_id):
             return False, f"Job {job_id} not found"
 
         # Capture task's base_commit at start (if not already set)
@@ -134,7 +129,7 @@ Execute this task by modifying the codebase as needed. When done, write a summar
         # Delegate to the injected harness. The harness owns env construction,
         # the subprocess invocation, timeout (default 900s / 15 min), and
         # error handling.
-        repo_root = str(self.jobs_dir.parent.parent)  # Run from repo root
+        repo_root = str(self.git_tracker.repo_path)
         result = self.harness.run(prompt, cwd=repo_root, allow_edits=True)
         return result.success, (
             result.output if result.success else (result.error or result.output)

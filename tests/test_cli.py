@@ -1355,6 +1355,7 @@ def test_plan_load_goal_field(db):
 def test_plan_goal_prepended_to_prompt(db):
     """Test that goal is prepended to agent prompt."""
     from minimise.orchestration.task_executor import TaskExecutor
+    from minimise.storage.job_store import JobStore
     from minimise.models import Task, TaskStatus
 
     task = Task(estimated_duration_min=5, 
@@ -1367,9 +1368,7 @@ def test_plan_goal_prepended_to_prompt(db):
     )
 
     # Get the executor
-    git_tracker = None
-    jobs_dir = Path("/tmp/test")
-    executor = TaskExecutor(db, git_tracker, jobs_dir)
+    executor = TaskExecutor(JobStore(db, Path("/tmp/test")), git_tracker=None)
 
     # Build context as executor would
     context = {
