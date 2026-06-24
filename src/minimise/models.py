@@ -54,6 +54,31 @@ class Task:
         }
 
 @dataclass
+class Execution:
+    """One attempt at running a task. Identity is (task_id, attempt)."""
+    task_id: str
+    attempt: int
+    status: TaskStatus = TaskStatus.RUNNING
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    output: Optional[str] = None
+    diff_path: Optional[str] = None
+    commit_sha: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "task_id": self.task_id,
+            "attempt": self.attempt,
+            "status": self.status.value,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "output": self.output,
+            "diff_path": self.diff_path,
+            "commit_sha": self.commit_sha,
+        }
+
+
+@dataclass
 class Job:
     id: str
     name: str

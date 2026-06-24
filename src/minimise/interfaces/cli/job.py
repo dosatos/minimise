@@ -12,7 +12,7 @@ from rich.text import Text
 
 import minimise.interfaces.cli as _cli  # patchable constants/PlanReviewer; read at call time
 from minimise.models import JobStatus, TaskStatus, Plan
-from minimise.interfaces.terminal_ui import get_status_color, render_task_table_with_gantt, humanize_duration
+from minimise.interfaces.terminal_ui import get_status_color, render_task_table_with_gantt, humanize_duration, format_duration
 from minimise.interfaces.cli._shared import (
     console,
     get_db,
@@ -407,6 +407,13 @@ def job_logs(job_id: str):
             console.print(f"[bold cyan]{task.name}[/bold cyan]")
             console.print(f"  Status: {task.status.value}")
             console.print(f"  Retries: {task.retries}")
+
+            for ex in db.list_executions_for_task(task.id):
+                dur = format_duration(ex.started_at, ex.completed_at)
+                console.print(
+                    f"  [dim]Attempt {ex.attempt}:[/dim] {ex.status.value} ({dur})"
+                    + (f" → {ex.commit_sha[:8]}" if ex.commit_sha else "")
+                )
 
             if task.output:
                 console.print(f"  Output:")

@@ -77,13 +77,14 @@ class TaskExecutor:
                 return False, f"Post-task hook failed: {hook_output}"
 
         if final_success:
+            commit_sha = None
             try:
-                self.git_tracker.commit(f"Task {task.id}: {task.name}")
+                commit_sha = self.git_tracker.commit(f"Task {task.id}: {task.name}")
             except Exception as e:
                 # Log commit failure but don't fail the task
                 final_output += f"\n[Note: Git commit failed: {str(e)}]"
             diff = self.git_tracker.get_diff(task.base_commit) if task.base_commit else ""
-            self.store.record_completed(task, final_output, diff)
+            self.store.record_completed(task, final_output, diff, commit_sha=commit_sha)
         else:
             self.store.mark_task_failed(task, final_output)
 

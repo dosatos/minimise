@@ -427,6 +427,43 @@ def test_failed_attempt_handover_injected_into_retry(temp_db_dir, db, git_repo):
     assert "ORIGINAL_HANDOVER" in seen_handovers[1]           # ...without losing prior context
 
 
+def test_executions_recorded_across_retry(temp_db_dir, db, git_repo):
+    """Each attempt writes its own Execution row: a failed attempt 0, then a committed attempt 1."""
+    from minimise.models import Job, JobStatus
+
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
+
+    job_id = str(uuid.uuid4())
+    db.create_job(Job(id=job_id, name="J", status=JobStatus.PENDING,
+                      base_commit=git_tracker.get_current_commit()))
+    task = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
+                name="Flaky", description="d", status=TaskStatus.PENDING)
+    db.create_task(task)
+
+    calls = []
+
+    def mock_invoke(context):
+        calls.append(1)
+        if len(calls) == 1:
+            return False, "boom"
+        # Second attempt makes a real change so a commit (and SHA) is produced.
+        (git_repo / "out.txt").write_text("done by retry")
+        return True, "ok"
+
+    executor._invoke_claude_code = mock_invoke
+    success, _ = executor.execute_task(task, job_id, "")
+    assert success
+
+    execs = db.list_executions_for_task(task.id)
+    assert [e.attempt for e in execs] == [0, 1]
+    assert execs[0].status == TaskStatus.FAILED and "boom" in execs[0].output
+    assert execs[1].status == TaskStatus.COMPLETED
+    assert execs[1].commit_sha and len(execs[1].commit_sha) == 40  # SHA captured from git_tracker.commit
+    assert execs[1].diff_path and Path(execs[1].diff_path).exists()
+    assert all(e.started_at and e.completed_at for e in execs)     # per-attempt timestamps preserved
+
+
 def test_default_harness_is_claude_code(temp_db_dir, db, git_repo):
     """TaskExecutor defaults to ClaudeCodeHarness when no harness injected."""
     from minimise.agents.harness import ClaudeCodeHarness

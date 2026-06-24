@@ -2,7 +2,7 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List
-from minimise.models import Job, Task, JobStatus, TaskStatus
+from minimise.models import Job, Task, Execution, JobStatus, TaskStatus
 
 
 def _column_names(cursor, table: str) -> List[str]:
@@ -50,6 +50,19 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         base_commit=row['base_commit'] if 'base_commit' in keys else None,
         goal=row['goal'] if 'goal' in keys else None,
         estimated_duration_min=dur if dur is not None else 5,
+    )
+
+
+def _row_to_execution(row: sqlite3.Row) -> Execution:
+    return Execution(
+        task_id=row['task_id'],
+        attempt=row['attempt'],
+        status=TaskStatus(row['status']),
+        started_at=_dt(row['started_at']),
+        completed_at=_dt(row['completed_at']),
+        output=row['output'],
+        diff_path=row['diff_path'],
+        commit_sha=row['commit_sha'],
     )
 
 
@@ -161,6 +174,21 @@ class Database:
                 file_count INTEGER,
                 lines_added INTEGER,
                 lines_removed INTEGER,
+                FOREIGN KEY(task_id) REFERENCES tasks(id)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS executions (
+                task_id TEXT NOT NULL,
+                attempt INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                output TEXT,
+                diff_path TEXT,
+                commit_sha TEXT,
+                PRIMARY KEY (task_id, attempt),
                 FOREIGN KEY(task_id) REFERENCES tasks(id)
             )
         """)
@@ -350,6 +378,31 @@ class Database:
 
         return [_row_to_task(row) for row in rows]
 
+    def save_execution(self, execution: Execution) -> None:
+        """Insert or replace an execution row (identity is task_id + attempt)."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO executions
+                (task_id, attempt, status, started_at, completed_at, output, diff_path, commit_sha)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (execution.task_id, execution.attempt, execution.status.value,
+              execution.started_at.isoformat() if execution.started_at else None,
+              execution.completed_at.isoformat() if execution.completed_at else None,
+              execution.output, execution.diff_path, execution.commit_sha))
+        conn.commit()
+        conn.close()
+
+    def list_executions_for_task(self, task_id: str) -> List[Execution]:
+        """Fetch a task's executions in attempt order."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM executions WHERE task_id = ? ORDER BY attempt", (task_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [_row_to_execution(row) for row in rows]
+
     def delete_job(self, job_id: str, jobs_dir: Path = None) -> bool:
         """Delete a job and all its associated tasks, including disk artifacts.
 
@@ -365,6 +418,10 @@ class Database:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
+        cursor.execute(
+            "DELETE FROM executions WHERE task_id IN (SELECT id FROM tasks WHERE job_id = ?)",
+            (job_id,),
+        )
         cursor.execute("DELETE FROM tasks WHERE job_id = ?", (job_id,))
         cursor.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
 

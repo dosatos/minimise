@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from minimise.models import Job, Task, JobStatus, TaskStatus, Plan
+from minimise.models import Job, Task, Execution, JobStatus, TaskStatus, Plan
 from minimise.storage.database import Database
 from minimise.utils import ensure_directory
 
@@ -86,20 +86,28 @@ class JobStore:
         self.db.update_task(task)
 
     def mark_running(self, task: Task, attempt: int) -> None:
-        """Mark a task RUNNING for the given attempt (stamps started_at on attempt 0)."""
+        """Mark a task RUNNING for the given attempt (stamps started_at on attempt 0).
+
+        Also opens an Execution row for this attempt.
+        """
         task.retries = attempt
         self.db.update_task_status(
             task.id, TaskStatus.RUNNING,
             started_at=datetime.utcnow() if attempt == 0 else None,
         )
+        self.db.save_execution(Execution(
+            task_id=task.id, attempt=attempt,
+            status=TaskStatus.RUNNING, started_at=datetime.utcnow(),
+        ))
 
     def record_attempt(self, task: Task, attempt: int, output: str) -> None:
         """Record a failed-but-retrying attempt (back to PENDING with the failure note)."""
         self.db.update_task_status(
             task.id, TaskStatus.PENDING, output=f"Attempt {attempt} failed: {output}"
         )
+        self._close_execution(task, attempt, TaskStatus.FAILED, output=output)
 
-    def record_completed(self, task: Task, output: str, diff: str) -> None:
+    def record_completed(self, task: Task, output: str, diff: str, commit_sha: Optional[str] = None) -> None:
         """Persist a successful task: save its diff and mark it COMPLETED."""
         if task.base_commit:
             self._save_diff(task, diff)
@@ -107,12 +115,34 @@ class JobStore:
             task.id, TaskStatus.COMPLETED, output=output, retries=task.retries,
             completed_at=datetime.utcnow(),
         )
+        self._close_execution(
+            task, task.retries, TaskStatus.COMPLETED,
+            output=output, diff_path=task.diff_path, commit_sha=commit_sha,
+        )
 
     def mark_task_failed(self, task: Task, output: str) -> None:
         self.db.update_task_status(
             task.id, TaskStatus.FAILED, output=output, retries=task.retries,
             completed_at=datetime.utcnow(),
         )
+        self._close_execution(task, task.retries, TaskStatus.FAILED, output=output)
+
+    def _close_execution(
+        self, task: Task, attempt: int, status: TaskStatus,
+        output: Optional[str] = None, diff_path: Optional[str] = None,
+        commit_sha: Optional[str] = None,
+    ) -> None:
+        """Close the open execution for an attempt, preserving its started_at."""
+        existing = next(
+            (e for e in self.db.list_executions_for_task(task.id) if e.attempt == attempt),
+            None,
+        )
+        self.db.save_execution(Execution(
+            task_id=task.id, attempt=attempt, status=status,
+            started_at=existing.started_at if existing else None,
+            completed_at=datetime.utcnow(),
+            output=output, diff_path=diff_path, commit_sha=commit_sha,
+        ))
 
     def mark_task_stopped(self, task: Task) -> None:
         self.db.update_task_status(task.id, TaskStatus.STOPPED, completed_at=datetime.utcnow())
@@ -129,7 +159,8 @@ class JobStore:
     def _save_diff(self, task: Task, diff: str) -> None:
         diff_path = self.task_dir(task.job_id, task.id) / "diff.txt"
         diff_path.write_text(diff)
-        self.db.update_task_diff_path(task.id, str(diff_path))
+        task.diff_path = str(diff_path)
+        self.db.update_task_diff_path(task.id, task.diff_path)
 
 
 def demo():
@@ -154,6 +185,18 @@ def demo():
         assert loaded.base_commit == "abc123"
         assert len(loaded.tasks) == 1 and loaded.tasks[0].id == "t1"
         assert store.load_plan(job.id).name == "Demo"
+
+        # Execution history: a failed attempt then a successful one.
+        task = loaded.tasks[0]
+        store.mark_running(task, 0)
+        store.record_attempt(task, 0, "boom")
+        store.mark_running(task, 1)
+        store.record_completed(task, "done", diff="", commit_sha="deadbeef")
+        execs = db.list_executions_for_task(task.id)
+        assert [e.attempt for e in execs] == [0, 1], execs
+        assert execs[0].status == TaskStatus.FAILED
+        assert execs[1].status == TaskStatus.COMPLETED and execs[1].commit_sha == "deadbeef"
+        assert all(e.started_at and e.completed_at for e in execs), "timestamps preserved on close"
 
         store.mark_job_completed(job.id)
         assert store.load(job.id).status == JobStatus.COMPLETED
