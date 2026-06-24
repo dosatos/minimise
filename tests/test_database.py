@@ -270,6 +270,96 @@ def test_task_timing_preservation(db):
     assert task3.completed_at > task3.started_at
 
 
+def _row(cols, values):
+    """Build a sqlite3.Row over an ad-hoc SELECT (no table needed)."""
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    select = ", ".join(f"? AS {c}" for c in cols)
+    return conn.execute(f"SELECT {select}", values).fetchone()
+
+
+def test_row_to_job_roundtrip(db):
+    """_row_to_job reconstructs a stored job with identical field values."""
+    from minimise.database import _row_to_job
+    job = Job(
+        id=str(uuid.uuid4()), name="Job RT", status=JobStatus.RUNNING,
+        plan_path="/p.yaml", base_commit="abc123", pid=4242,
+    )
+    db.create_job(job)
+
+    import sqlite3
+    conn = sqlite3.connect(db.db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job.id,)).fetchone()
+    conn.close()
+
+    mapped = _row_to_job(row)
+    assert mapped == db.get_job(job.id)
+    assert mapped.name == "Job RT"
+    assert mapped.status == JobStatus.RUNNING
+    assert mapped.base_commit == "abc123"
+    assert mapped.pid == 4242
+
+
+def test_row_to_job_missing_pid_column(db):
+    """Locks the KeyError fix: an absent 'pid' column yields pid=None, not a crash."""
+    from minimise.database import _row_to_job
+    row = _row(
+        ["id", "name", "status", "plan_path", "base_commit", "created_at",
+         "started_at", "completed_at"],
+        ["j1", "n", "pending", "", None, "2026-01-01T00:00:00", None, None],
+    )
+    assert "pid" not in row.keys()
+    job = _row_to_job(row)
+    assert job.pid is None
+
+
+def test_row_to_task_roundtrip(db):
+    """_row_to_task reconstructs a stored task with identical field values."""
+    from minimise.database import _row_to_task
+    job = Job(id=str(uuid.uuid4()), name="J", status=JobStatus.PENDING)
+    db.create_job(job)
+    task = Task(
+        estimated_duration_min=9, id=str(uuid.uuid4()), job_id=job.id,
+        name="Task RT", description="d", status=TaskStatus.COMPLETED,
+        output="out", retries=2, base_commit="def456", goal="ship it",
+    )
+    db.create_task(task)
+
+    import sqlite3
+    conn = sqlite3.connect(db.db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task.id,)).fetchone()
+    conn.close()
+
+    mapped = _row_to_task(row)
+    assert mapped == db.get_task(task.id)
+    assert mapped.name == "Task RT"
+    assert mapped.status == TaskStatus.COMPLETED
+    assert mapped.base_commit == "def456"
+    assert mapped.goal == "ship it"
+    assert mapped.estimated_duration_min == 9
+
+
+def test_row_to_task_missing_optional_columns(db):
+    """Absent base_commit/goal/estimated_duration_min map to None/None/5, not a crash."""
+    from minimise.database import _row_to_task
+    row = _row(
+        ["id", "job_id", "name", "description", "status", "output", "retries",
+         "created_at", "started_at", "completed_at", "diff_path"],
+        ["t1", "j1", "n", "d", "pending", None, 0, "2026-01-01T00:00:00",
+         None, None, None],
+    )
+    keys = row.keys()
+    assert "base_commit" not in keys and "goal" not in keys
+    assert "estimated_duration_min" not in keys
+    task = _row_to_task(row)
+    assert task.base_commit is None
+    assert task.goal is None
+    assert task.estimated_duration_min == 5
+
+
 def test_existing_null_duration_is_backfilled(tmp_path):
     """A legacy row with NULL estimated_duration_min is backfilled to 5 on init_db."""
     import sqlite3

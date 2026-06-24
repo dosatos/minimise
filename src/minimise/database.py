@@ -4,6 +4,55 @@ from datetime import datetime
 from typing import Optional, List
 from minimise.models import Job, Task, JobStatus, TaskStatus
 
+
+def _column_names(cursor, table: str) -> List[str]:
+    """Return the column names of a table (PRAGMA table_info name field)."""
+    cursor.execute(f"PRAGMA table_info({table})")
+    return [column[1] for column in cursor.fetchall()]
+
+
+def _dt(value: Optional[str]) -> Optional[datetime]:
+    return datetime.fromisoformat(value) if value else None
+
+
+def _row_to_job(row: sqlite3.Row) -> Job:
+    keys = row.keys()
+    return Job(
+        id=row['id'],
+        name=row['name'],
+        status=JobStatus(row['status']),
+        plan_path=row['plan_path'],
+        base_commit=row['base_commit'],
+        created_at=datetime.fromisoformat(row['created_at']),
+        started_at=_dt(row['started_at']),
+        completed_at=_dt(row['completed_at']),
+        # sqlite3.Row raises KeyError (not IndexError) on a missing key, so guard
+        # by presence rather than catching the wrong exception.
+        pid=row['pid'] if 'pid' in keys else None,
+    )
+
+
+def _row_to_task(row: sqlite3.Row) -> Task:
+    keys = row.keys()
+    dur = row['estimated_duration_min'] if 'estimated_duration_min' in keys else None
+    return Task(
+        id=row['id'],
+        job_id=row['job_id'],
+        name=row['name'],
+        description=row['description'],
+        status=TaskStatus(row['status']),
+        output=row['output'],
+        retries=row['retries'],
+        created_at=datetime.fromisoformat(row['created_at']),
+        started_at=_dt(row['started_at']),
+        completed_at=_dt(row['completed_at']),
+        diff_path=row['diff_path'],
+        base_commit=row['base_commit'] if 'base_commit' in keys else None,
+        goal=row['goal'] if 'goal' in keys else None,
+        estimated_duration_min=dur if dur is not None else 5,
+    )
+
+
 class Database:
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -29,8 +78,7 @@ class Database:
         """)
 
         # Add pid column if it doesn't exist (migration for existing databases)
-        cursor.execute("PRAGMA table_info(jobs)")
-        columns = [column[1] for column in cursor.fetchall()]
+        columns = _column_names(cursor, "jobs")
         if 'pid' not in columns:
             cursor.execute("ALTER TABLE jobs ADD COLUMN pid INTEGER")
 
@@ -55,8 +103,7 @@ class Database:
         """)
 
         # Add missing columns for existing databases (read schema once).
-        cursor.execute("PRAGMA table_info(tasks)")
-        columns = [column[1] for column in cursor.fetchall()]
+        columns = _column_names(cursor, "tasks")
         if 'base_commit' not in columns:
             cursor.execute("ALTER TABLE tasks ADD COLUMN base_commit TEXT")
         if 'goal' not in columns:
@@ -144,22 +191,7 @@ class Database:
         if not row:
             return None
 
-        try:
-            pid = row['pid']
-        except IndexError:
-            pid = None
-
-        return Job(
-            id=row['id'],
-            name=row['name'],
-            status=JobStatus(row['status']),
-            plan_path=row['plan_path'],
-            base_commit=row['base_commit'],
-            created_at=datetime.fromisoformat(row['created_at']),
-            started_at=datetime.fromisoformat(row['started_at']) if row['started_at'] else None,
-            completed_at=datetime.fromisoformat(row['completed_at']) if row['completed_at'] else None,
-            pid=pid,
-        )
+        return _row_to_job(row)
 
     def list_jobs(self, limit: Optional[int] = None) -> List[Job]:
         """Fetch jobs with optional limit."""
@@ -174,24 +206,7 @@ class Database:
         rows = cursor.fetchall()
         conn.close()
 
-        jobs = []
-        for row in rows:
-            try:
-                pid = row['pid']
-            except IndexError:
-                pid = None
-            jobs.append(Job(
-                id=row['id'],
-                name=row['name'],
-                status=JobStatus(row['status']),
-                plan_path=row['plan_path'],
-                base_commit=row['base_commit'],
-                created_at=datetime.fromisoformat(row['created_at']),
-                started_at=datetime.fromisoformat(row['started_at']) if row['started_at'] else None,
-                completed_at=datetime.fromisoformat(row['completed_at']) if row['completed_at'] else None,
-                pid=pid,
-            ))
-        return jobs
+        return [_row_to_job(row) for row in rows]
 
     def update_job_status(self, job_id: str, status: JobStatus, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, pid: Optional[int] = None) -> None:
         """Update job status.
@@ -322,24 +337,7 @@ class Database:
         if not row:
             return None
 
-        return Task(
-            id=row['id'],
-            job_id=row['job_id'],
-            name=row['name'],
-            description=row['description'],
-            status=TaskStatus(row['status']),
-            output=row['output'],
-            retries=row['retries'],
-            created_at=datetime.fromisoformat(row['created_at']),
-            started_at=datetime.fromisoformat(row['started_at']) if row['started_at'] else None,
-            completed_at=datetime.fromisoformat(row['completed_at']) if row['completed_at'] else None,
-            diff_path=row['diff_path'],
-            base_commit=row['base_commit'] if 'base_commit' in row.keys() else None,
-            goal=row['goal'] if 'goal' in row.keys() else None,
-            estimated_duration_min=(row['estimated_duration_min']
-                if 'estimated_duration_min' in row.keys() and row['estimated_duration_min'] is not None
-                else 5),
-        )
+        return _row_to_task(row)
 
     def list_tasks_for_job(self, job_id: str) -> List[Task]:
         """Fetch all tasks for a job."""
@@ -350,27 +348,7 @@ class Database:
         rows = cursor.fetchall()
         conn.close()
 
-        return [
-            Task(
-                id=row['id'],
-                job_id=row['job_id'],
-                name=row['name'],
-                description=row['description'],
-                status=TaskStatus(row['status']),
-                output=row['output'],
-                retries=row['retries'],
-                created_at=datetime.fromisoformat(row['created_at']),
-                started_at=datetime.fromisoformat(row['started_at']) if row['started_at'] else None,
-                completed_at=datetime.fromisoformat(row['completed_at']) if row['completed_at'] else None,
-                diff_path=row['diff_path'],
-                base_commit=row['base_commit'] if 'base_commit' in row.keys() else None,
-                goal=row['goal'] if 'goal' in row.keys() else None,
-                estimated_duration_min=(row['estimated_duration_min']
-                if 'estimated_duration_min' in row.keys() and row['estimated_duration_min'] is not None
-                else 5),
-            )
-            for row in rows
-        ]
+        return [_row_to_task(row) for row in rows]
 
     def delete_job(self, job_id: str, jobs_dir: Path = None) -> bool:
         """Delete a job and all its associated tasks, including disk artifacts.
