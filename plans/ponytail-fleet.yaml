@@ -1,0 +1,119 @@
+plan:
+  name: "Ponytail refactor fleet: simplify each source file"
+  description: |
+    One task per source file. Each task refactors and simplifies exactly one
+    file under lazy/anti-slop (Ponytail) principles with ZERO behavior change.
+    A pytest gate runs after every task; a task that breaks tests fails and
+    retries, so "simplify" can never silently become "break".
+
+  tasks:
+    - id: "ponytail-cli"
+      name: "Simplify cli.py"
+      description: |
+        Refactor and simplify ONLY src/minimise/cli.py (920 lines — the biggest
+        file and most likely to hide over-engineering).
+
+        Apply lazy/anti-slop principles:
+        - Delete dead code, unused imports, unreachable branches.
+        - Dedupe repeated scaffolding (collapse near-identical command bodies,
+          shared error/output formatting) into the smallest helper that fits.
+        - Replace hand-rolled logic with stdlib or an already-imported helper
+          where one exists. Do NOT add new dependencies.
+        - Flatten nested conditionals into early returns.
+
+        HARD CONSTRAINTS:
+        - Touch ONLY src/minimise/cli.py. Do not edit other source files or tests.
+        - ZERO behavior change: every CLI command keeps its exact args, output,
+          and exit codes. This is cleanup, not redesign.
+        - Do not invent abstractions for single use sites (no interface with one
+          impl, no factory for one product).
+        - Do NOT create or delete mini jobs. Do NOT add co-author trailers to commits.
+      goal: "cli.py is smaller and flatter with identical behavior; all tests pass."
+      estimated_duration_min: 12
+      post_task_hook: "pytest tests/ -q"
+
+    - id: "ponytail-database"
+      name: "Simplify database.py"
+      description: |
+        Refactor and simplify ONLY src/minimise/database.py (419 lines).
+
+        Apply lazy/anti-slop principles:
+        - Delete dead code and unused imports.
+        - Dedupe repeated SQL scaffolding (repeated PRAGMA reads, repeated
+          row->object mapping, repeated connection boilerplate) into the
+          smallest helper that fits.
+        - Use stdlib (sqlite3 row factories, namedtuple/dataclass mapping)
+          before hand-rolling. Do NOT add new dependencies.
+
+        HARD CONSTRAINTS:
+        - Touch ONLY src/minimise/database.py.
+        - ZERO behavior change: schema, queries, and return shapes stay identical.
+        - Do not invent abstractions for single use sites.
+        - Do not create/delete mini jobs. No co-author trailers.
+      goal: "database.py is smaller with identical schema and query results; all tests pass."
+      estimated_duration_min: 8
+      post_task_hook: "pytest tests/ -q"
+
+    - id: "ponytail-api-server"
+      name: "Simplify api_server.py"
+      description: |
+        Refactor and simplify ONLY src/minimise/api_server.py (266 lines).
+
+        Apply lazy/anti-slop principles:
+        - Delete dead code, unused config, unread flags, unused imports.
+        - Dedupe repeated request/response handling and error formatting.
+        - Prefer stdlib / already-installed deps over custom code. Do NOT add
+          new dependencies.
+
+        HARD CONSTRAINTS:
+        - Touch ONLY src/minimise/api_server.py.
+        - ZERO behavior change: routes, status codes, and JSON payloads stay
+          identical. Keep the goal-check validation guard on POST /jobs.
+        - Do not invent abstractions for single use sites.
+        - Do not create/delete mini jobs. No co-author trailers.
+      goal: "api_server.py is smaller with identical routes and payloads; all tests pass."
+      estimated_duration_min: 7
+      post_task_hook: "pytest tests/ -q"
+
+    - id: "ponytail-terminal-ui"
+      name: "Simplify terminal_ui.py"
+      description: |
+        Refactor and simplify ONLY src/minimise/terminal_ui.py (210 lines).
+
+        Apply lazy/anti-slop principles:
+        - Delete dead code and unused imports.
+        - Dedupe repeated rendering/formatting blocks into the smallest helper
+          that fits.
+        - Prefer stdlib / already-imported helpers. Do NOT add new dependencies.
+
+        HARD CONSTRAINTS:
+        - Touch ONLY src/minimise/terminal_ui.py.
+        - ZERO behavior change: rendered output stays identical.
+        - Do not invent abstractions for single use sites.
+        - Do not create/delete mini jobs. No co-author trailers.
+      goal: "terminal_ui.py is smaller with identical rendered output; all tests pass."
+      estimated_duration_min: 6
+      post_task_hook: "pytest tests/ -q"
+
+    - id: "ponytail-task-executor"
+      name: "Simplify task_executor.py"
+      description: |
+        Refactor and simplify ONLY src/minimise/task_executor.py (195 lines).
+
+        Apply lazy/anti-slop principles:
+        - Delete dead code and unused imports.
+        - Dedupe repeated status-update / hook-running scaffolding into the
+          smallest helper that fits.
+        - Flatten the retry loop's nested conditionals into early returns where
+          it reads clearer.
+        - Prefer stdlib / already-imported helpers. Do NOT add new dependencies.
+
+        HARD CONSTRAINTS:
+        - Touch ONLY src/minimise/task_executor.py.
+        - ZERO behavior change: retry count, hook ordering, commit/diff behavior,
+          and return tuples stay identical.
+        - Do not invent abstractions for single use sites.
+        - Do not create/delete mini jobs. No co-author trailers.
+      goal: "task_executor.py is smaller and flatter with identical behavior; all tests pass."
+      estimated_duration_min: 6
+      post_task_hook: "pytest tests/ -q"
