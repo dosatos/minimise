@@ -23,7 +23,7 @@ class AgentHarness(ABC):
         prompt: str,
         *,
         cwd: Optional[str] = None,
-        timeout: int = 300,
+        timeout: int = 900,
         model: Optional[str] = None,
         allow_edits: bool = False,
     ) -> HarnessResult:
@@ -78,7 +78,7 @@ class ClaudeCodeHarness(AgentHarness):
         prompt: str,
         *,
         cwd: Optional[str] = None,
-        timeout: int = 300,
+        timeout: int = 900,
         model: Optional[str] = None,
         allow_edits: bool = False,
     ) -> HarnessResult:

@@ -186,8 +186,8 @@ Context from previous tasks:
 Execute this task by modifying the codebase as needed. When done, write a summary of what you implemented."""
 
         # Delegate to the injected harness. The harness owns env construction,
-        # the subprocess invocation, timeout (default 300s, matching the prior
-        # subprocess timeout), and error handling.
+        # the subprocess invocation, timeout (default 900s / 15 min), and
+        # error handling.
         repo_root = str(self.jobs_dir.parent.parent)  # Run from repo root
         result = self.harness.run(prompt, cwd=repo_root, allow_edits=True)
         return result.success, (
