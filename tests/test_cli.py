@@ -1815,6 +1815,32 @@ def test_delete_running_job_fails(db, runner, mock_config_dir):
     assert "Error" in result.output or "RUNNING" in result.output or "cannot" in result.output.lower()
 
 
+def test_delete_stopped_job_with_force_succeeds(db, runner, mock_config_dir):
+    """A STOPPED job is terminal and must be deletable with --force.
+
+    Regression: the STOPPED guard ran before the --force check, making
+    stopped jobs permanently undeletable (catch-22 with `mini job stop`).
+    """
+    db_path = mock_config_dir / "minimise.db"
+    db = Database(db_path)
+    db.init_db()
+
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Stopped Job",
+        status=JobStatus.STOPPED,
+        plan_path="/path/to/plan.yaml",
+        completed_at=datetime.utcnow()
+    )
+    db.create_job(job)
+
+    result = runner.invoke(mini, ["job", "delete", job.id, "--force"])
+
+    assert result.exit_code == 0
+    assert "deleted" in result.output.lower() or "removed" in result.output.lower()
+    assert db.get_job(job.id) is None
+
+
 def test_delete_completed_job_succeeds(db, runner, mock_config_dir):
     """Test that deleting a COMPLETED job succeeds with confirmation."""
     db_path = mock_config_dir / "minimise.db"

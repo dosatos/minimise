@@ -433,8 +433,8 @@ def job_delete(job_id: str, force: bool):
             console.print(f"[red]Error: Cannot delete RUNNING job. Stop it first with: mini job stop {job_id[:8]}[/red]")
             raise SystemExit(1)
 
-        if job_obj.status == JobStatus.STOPPED:
-            console.print(f"[red]Error: Cannot delete STOPPED job. Resume or mark as FAILED first.[/red]")
+        if job_obj.status == JobStatus.STOPPED and not force:
+            console.print(f"[red]Error: Cannot delete STOPPED job. Resume it, or re-run with --force to delete.[/red]")
             raise SystemExit(1)
 
         tasks = db.list_tasks_for_job(job_id)
