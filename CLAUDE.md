@@ -69,6 +69,7 @@ This keeps the tool dogfood-friendly and ensures CLI/API actually work.
 - Adhere strictly to YAGNI: Use native language features and existing project utils before writing new helpers. Prefer the simplest thing that works — favor one-liner solutions over multi-line scaffolding where it stays readable.
 - Prioritize low cognitive complexity; split nested conditional logic into early-returns.
 - Do not add external dependencies unless explicitly requested.
+- Implement strict Gall's Law: build the simplest working system, completely ignoring future scale or features.
 
 ## Refactoring Workflow
 1. Run local tests before making changes.
