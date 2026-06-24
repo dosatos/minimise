@@ -98,6 +98,39 @@ def test_post_jobs_endpoint(api_server, mock_job_manager, db):
         assert job_data["status"] == JobStatus.PENDING.value
 
 
+def test_post_jobs_missing_plan_path(api_server, mock_job_manager):
+    """POST /jobs with no plan_path is rejected with 400 and exact error payload."""
+    with api_server.app.test_client() as client:
+        # Empty body
+        response = client.post("/jobs", json={}, content_type="application/json")
+        assert response.status_code == 400
+        assert response.get_json() == {"error": "Missing plan_path in request body"}
+
+        # Some other key, still no plan_path
+        response = client.post(
+            "/jobs", json={"foo": "bar"}, content_type="application/json"
+        )
+        assert response.status_code == 400
+        assert response.get_json() == {"error": "Missing plan_path in request body"}
+
+    # Validation guard fires before the manager is ever consulted.
+    mock_job_manager.create_job.assert_not_called()
+
+
+def test_post_jobs_create_failure(api_server, mock_job_manager):
+    """POST /jobs returns 500 when the manager fails to create the job."""
+    mock_job_manager.create_job.return_value = None
+
+    with api_server.app.test_client() as client:
+        response = client.post(
+            "/jobs",
+            json={"plan_path": "/path/to/plan.yaml"},
+            content_type="application/json",
+        )
+        assert response.status_code == 500
+        assert response.get_json() == {"error": "Failed to create job"}
+
+
 def test_get_job_by_id_endpoint(api_server, db):
     """Test GET /jobs/{job_id} endpoint."""
     # Create a test job with tasks

@@ -5,7 +5,7 @@ from typing import Optional
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit, join_room, leave_room
 
 from minimise.models import Job, Task
 from minimise.database import Database
@@ -76,6 +76,13 @@ class APIServer:
         # Register routes
         self._register_routes()
 
+    def _load_job_with_tasks(self, job_id: str) -> Optional[Job]:
+        """Fetch a job and attach its task list, or None if it doesn't exist."""
+        job = self.db.get_job(job_id)
+        if job is not None:
+            job.tasks = self.db.list_tasks_for_job(job_id)
+        return job
+
     def _register_routes(self):
         """Register all API routes and WebSocket handlers."""
 
@@ -111,13 +118,9 @@ class APIServer:
         def get_job(job_id: str):
             """Get job details with task list."""
             try:
-                job = self.db.get_job(job_id)
+                job = self._load_job_with_tasks(job_id)
                 if job is None:
                     return jsonify({"error": "Job not found"}), 404
-
-                # Load tasks for this job
-                tasks = self.db.list_tasks_for_job(job_id)
-                job.tasks = tasks
 
                 return jsonify(job_to_dict(job)), 200
             except Exception as e:
@@ -148,37 +151,22 @@ class APIServer:
                 return jsonify({"error": str(e)}), 500
 
         # WebSocket handlers
-        @self.socketio.on("connect")
-        def handle_connect():
-            """Handle client connection to WebSocket."""
-            pass
-
-        @self.socketio.on("disconnect")
-        def handle_disconnect():
-            """Handle client disconnect from WebSocket."""
-            pass
-
         @self.socketio.on("subscribe_job")
         def handle_subscribe_job(data):
             """Subscribe to job status updates."""
             try:
-                from flask_socketio import join_room
-
                 job_id = data.get("job_id")
                 if not job_id:
                     emit("error", {"message": "job_id required"})
                     return
 
-                job = self.db.get_job(job_id)
+                job = self._load_job_with_tasks(job_id)
                 if not job:
                     emit("error", {"message": "Job not found"})
                     return
 
                 # Join room for this job
                 join_room(f"job_{job_id}")
-
-                tasks = self.db.list_tasks_for_job(job_id)
-                job.tasks = tasks
 
                 emit("job_update", job_to_dict(job))
             except Exception as e:
@@ -188,8 +176,6 @@ class APIServer:
         def handle_unsubscribe_job(data):
             """Unsubscribe from job status updates."""
             try:
-                from flask_socketio import leave_room
-
                 job_id = data.get("job_id")
                 if not job_id:
                     emit("error", {"message": "job_id required"})
@@ -232,10 +218,8 @@ class APIServer:
     def broadcast_job_update(self, job_id: str):
         """Broadcast job status update to all subscribers."""
         try:
-            job = self.db.get_job(job_id)
+            job = self._load_job_with_tasks(job_id)
             if job:
-                tasks = self.db.list_tasks_for_job(job_id)
-                job.tasks = tasks
                 self.socketio.emit(
                     "job_update",
                     job_to_dict(job),
