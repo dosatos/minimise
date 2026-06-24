@@ -9,16 +9,17 @@ per-task work lives in TaskExecutor; persistence lives in JobStore.
 from minimise.storage.git_tracker import GitTracker
 from minimise.storage.job_store import JobStore
 from minimise.orchestration.task_executor import TaskExecutor
+from minimise.orchestration.hook_executor import HookExecutor
 from minimise.orchestration.handover_manager import HandoverManager
-from minimise.orchestration.hooks import Hook
 
 
 class JobExecutor:
     """Runs all of a job's tasks sequentially."""
 
-    def __init__(self, store: JobStore, task_executor: TaskExecutor, git_tracker: GitTracker):
+    def __init__(self, store: JobStore, task_executor: TaskExecutor, hook_executor: HookExecutor, git_tracker: GitTracker):
         self.store = store
         self.task_executor = task_executor
+        self.hook_executor = hook_executor
         self.git_tracker = git_tracker
 
     def execute(self, job_id: str) -> bool:
@@ -36,9 +37,8 @@ class JobExecutor:
 
         self.store.mark_job_running(job_id)
 
-        pre_plan, post_plan = self.store.hooks(job_id)
-        if not self._run_hook(job_id, Hook(pre_plan), "Pre-plan"):
-            return False
+        if not self.hook_executor.run(plan.pre_plan_hook, "Pre-plan"):
+            return self._fail_job(job_id)
 
         handover = ""
         for idx, task in enumerate(job.tasks):
@@ -57,19 +57,10 @@ class JobExecutor:
                 diff = self.git_tracker.get_diff(job.base_commit) if job.base_commit else ""
                 handover = HandoverManager.build_handover_prompt(output, diff, job.tasks[idx + 1])
 
-        if not self._run_hook(job_id, Hook(post_plan), "Post-plan"):
-            return False
+        if not self.hook_executor.run(plan.post_plan_hook, "Post-plan"):
+            return self._fail_job(job_id)
 
         self.store.mark_job_completed(job_id)
-        return True
-
-    def _run_hook(self, job_id, hook: Hook, label: str) -> bool:
-        """Run a plan-level hook; fail the job and return False if it errors."""
-        success, output = hook.run()
-        if not success:
-            print(f"{label} hook failed: {output}")
-            self._fail_job(job_id)
-            return False
         return True
 
     def _fail_job(self, job_id) -> bool:

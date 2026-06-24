@@ -123,11 +123,6 @@ class JobStore:
         """Re-read the cached plan for a job."""
         return Plan.from_yaml(self.jobs_dir / job_id / "plan.yaml")
 
-    def hooks(self, job_id: str) -> tuple[str, str]:
-        """Return (pre_plan_hook, post_plan_hook) from the cached plan (pydantic extras)."""
-        plan = self.load_plan(job_id)
-        return getattr(plan, "pre_plan_hook", "") or "", getattr(plan, "post_plan_hook", "") or ""
-
     def task_dir(self, job_id: str, task_id: str) -> Path:
         return ensure_directory(self.jobs_dir / job_id / "tasks" / task_id)
 
@@ -158,7 +153,6 @@ def demo():
         assert loaded.name == "Demo"
         assert loaded.base_commit == "abc123"
         assert len(loaded.tasks) == 1 and loaded.tasks[0].id == "t1"
-        assert store.hooks(job.id) == ("", "")
         assert store.load_plan(job.id).name == "Demo"
 
         store.mark_job_completed(job.id)

@@ -93,6 +93,8 @@ class Plan(BaseModel):
     model_config = ConfigDict(extra="allow")
     name: str
     tasks: list[PlanTask] = Field(min_length=1)
+    pre_plan_hook: str = ""
+    post_plan_hook: str = ""
 
     @model_validator(mode="after")
     def _unique_task_ids(self):

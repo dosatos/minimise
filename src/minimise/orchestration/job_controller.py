@@ -13,6 +13,7 @@ from minimise.storage.database import Database
 from minimise.storage.git_tracker import GitTracker
 from minimise.storage.job_store import JobStore
 from minimise.orchestration.task_executor import TaskExecutor
+from minimise.orchestration.hook_executor import HookExecutor
 from minimise.orchestration.job_executor import JobExecutor
 from minimise.utils import ensure_directory
 
@@ -27,7 +28,8 @@ class JobController:
         self.repo_path = Path(repo_path)
         self.store = JobStore(db, jobs_dir)
         self.task_executor = TaskExecutor(db, git_tracker, jobs_dir)
-        self.executor = JobExecutor(self.store, self.task_executor, git_tracker)
+        self.hook_executor = HookExecutor()
+        self.executor = JobExecutor(self.store, self.task_executor, self.hook_executor, git_tracker)
 
     @classmethod
     def from_paths(cls, db, repo_path, jobs_dir) -> "JobController":
