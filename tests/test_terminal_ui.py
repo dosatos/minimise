@@ -6,10 +6,10 @@ from minimise.interfaces.terminal_ui import (
     format_duration,
     humanize_duration,
     render_gantt_bar,
-    render_task_table_with_gantt,
+    render_execution_table_with_gantt,
     get_status_color,
 )
-from minimise.models import Job, Task, JobStatus, TaskStatus
+from minimise.models import Job, Task, JobStatus, TaskStatus, Execution
 
 
 @pytest.fixture
@@ -408,11 +408,11 @@ class TestGetStatusColor:
 
 
 class TestRenderTaskTableWithGantt:
-    """Tests for render_task_table_with_gantt function."""
+    """Tests for render_execution_table_with_gantt function."""
 
-    def test_render_task_table_with_gantt_basic(self, sample_job, sample_tasks, base_time):
+    def test_render_execution_table_with_gantt_basic(self, sample_job, sample_tasks, base_time):
         """Test that task table renders with all required columns."""
-        table = render_task_table_with_gantt(sample_job, sample_tasks[:3], now=base_time + timedelta(seconds=10))
+        table = render_execution_table_with_gantt(sample_job, sample_tasks[:3], now=base_time + timedelta(seconds=10))
 
         # Check that table was created
         assert table is not None
@@ -424,44 +424,97 @@ class TestRenderTaskTableWithGantt:
         assert table.columns[3].header == "Expected"
         assert table.columns[4].header == "Timeline (relative)"
 
-    def test_render_task_table_with_gantt_row_count(self, sample_job, sample_tasks, base_time):
+    def test_render_execution_table_with_gantt_row_count(self, sample_job, sample_tasks, base_time):
         """Test that table has correct number of rows."""
-        table = render_task_table_with_gantt(sample_job, sample_tasks, now=base_time + timedelta(seconds=10))
+        table = render_execution_table_with_gantt(sample_job, sample_tasks, now=base_time + timedelta(seconds=10))
 
         # Table should have rows for each task
         assert len(table.rows) == len(sample_tasks)
 
-    def test_render_task_table_with_gantt_empty_tasks(self, sample_job):
+    def test_render_execution_table_with_gantt_empty_tasks(self, sample_job):
         """Test that table renders with empty task list."""
-        table = render_task_table_with_gantt(sample_job, [])
+        table = render_execution_table_with_gantt(sample_job, [])
 
         assert table is not None
         assert len(table.rows) == 0
         assert len(table.columns) == 5
 
-    def test_render_task_table_with_gantt_contains_duration_data(self, sample_job, sample_tasks, base_time):
+    def test_render_execution_table_with_gantt_contains_duration_data(self, sample_job, sample_tasks, base_time):
         """Test that table includes duration information."""
-        table = render_task_table_with_gantt(sample_job, sample_tasks[:1], now=base_time + timedelta(seconds=10))
+        table = render_execution_table_with_gantt(sample_job, sample_tasks[:1], now=base_time + timedelta(seconds=10))
 
         # First task has 100ms duration
         assert len(table.rows) == 1
         # The row should have data for each column
         assert table.rows[0] is not None
 
-    def test_render_task_table_with_gantt_contains_gantt_bars(self, sample_job, sample_tasks, base_time):
+    def test_render_execution_table_with_gantt_contains_gantt_bars(self, sample_job, sample_tasks, base_time):
         """Test that table includes Gantt bar information."""
-        table = render_task_table_with_gantt(sample_job, sample_tasks[:2], now=base_time + timedelta(seconds=10))
+        table = render_execution_table_with_gantt(sample_job, sample_tasks[:2], now=base_time + timedelta(seconds=10))
 
         # Should have 2 rows, each with Gantt bar in last column
         assert len(table.rows) == 2
         for row in table.rows:
             assert row is not None
 
-    def test_render_task_table_with_gantt_running_task_included(self, sample_job, sample_tasks, base_time):
+    def test_render_execution_table_with_gantt_running_task_included(self, sample_job, sample_tasks, base_time):
         """Test that running tasks are included in table."""
         running_task = sample_tasks[3]  # The running task
-        table = render_task_table_with_gantt(sample_job, [running_task], now=base_time + timedelta(seconds=10))
+        table = render_execution_table_with_gantt(sample_job, [running_task], now=base_time + timedelta(seconds=10))
 
         assert len(table.rows) == 1
         # Should still have data for running task
         assert table.rows[0] is not None
+
+    def test_render_one_row_per_execution(self, sample_job, base_time):
+        """A task with 2 executions renders 2 rows with per-execution timing/status."""
+        task = Task(
+            estimated_duration_min=5,
+            id="task-multi",
+            job_id="job-001",
+            name="Retried Task",
+            description="desc",
+            status=TaskStatus.COMPLETED,
+        )
+        # Attempt 0 failed early; attempt 1 completed later. Distinct spans.
+        ex0 = Execution(
+            task_id="task-multi",
+            attempt=0,
+            status=TaskStatus.FAILED,
+            started_at=base_time + timedelta(seconds=1),
+            completed_at=base_time + timedelta(seconds=2),
+        )
+        ex1 = Execution(
+            task_id="task-multi",
+            attempt=1,
+            status=TaskStatus.COMPLETED,
+            started_at=base_time + timedelta(seconds=4),
+            completed_at=base_time + timedelta(seconds=9),
+        )
+        table = render_execution_table_with_gantt(
+            sample_job,
+            [task],
+            now=base_time + timedelta(seconds=10),
+            executions_by_task={"task-multi": [ex0, ex1]},
+        )
+
+        assert len(table.rows) == 2
+
+        # Row labels distinguish attempts
+        assert table.columns[0]._cells == ["Retried Task  · try 1", "Retried Task  · try 2"]
+        # Status cells read failed then completed (per-execution, not task)
+        assert table.columns[1]._cells[0].plain == "failed"
+        assert table.columns[1]._cells[1].plain == "completed"
+        # Timeline bars differ (computed from each execution's own span)
+        assert table.columns[4]._cells[0] != table.columns[4]._cells[1]
+
+    def test_render_no_executions_falls_back_to_single_row(self, sample_job, sample_tasks, base_time):
+        """A task with no executions renders exactly one row (today's behavior)."""
+        table = render_execution_table_with_gantt(
+            sample_job,
+            sample_tasks[:1],
+            now=base_time + timedelta(seconds=10),
+            executions_by_task={},
+        )
+        assert len(table.rows) == 1
+        assert table.columns[0]._cells == ["Quick Task"]

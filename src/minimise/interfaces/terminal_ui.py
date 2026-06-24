@@ -157,19 +157,29 @@ def render_gantt_bar(
     )
 
 
-def render_task_table_with_gantt(job: Job, tasks: list[Task], now: Optional[datetime] = None) -> Table:
+def render_execution_table_with_gantt(
+    job: Job,
+    tasks: list[Task],
+    now: Optional[datetime] = None,
+    executions_by_task: Optional[dict] = None,
+) -> Table:
     """
-    Render task progress table with Duration, Remaining Time, and Timeline (Gantt) columns.
+    Render task progress table with Duration, Expected, and Timeline (Gantt) columns.
 
     Args:
         job: Job object with timing info
         tasks: List of tasks to display
         now: Current time for elapsed calculation
+        executions_by_task: Optional map of task_id -> list[Execution]. When a
+            task has executions, one row is emitted per attempt (timed from the
+            execution's own timestamps). Tasks without executions fall back to a
+            single task-level row.
 
     Returns:
-        Rich Table with Task Name, Status, Duration, Remaining Time, and Timeline columns
+        Rich Table with Task Name, Status, Duration, Expected, and Timeline columns
     """
     now = _now_or_default(now)
+    executions_by_task = executions_by_task or {}
 
     table = Table()
     table.add_column("Task Name", style="cyan")
@@ -178,36 +188,41 @@ def render_task_table_with_gantt(job: Job, tasks: list[Task], now: Optional[date
     table.add_column("Expected", style="dim")
     table.add_column("Timeline (relative)", style="green")
 
-    for task in tasks:
-        is_running = task.status == TaskStatus.RUNNING
-        status_text = Text(task.status.value, style=get_status_color(task.status))
-        duration = format_duration(
-            task.started_at,
-            task.completed_at,
-            is_running=is_running,
-            now=now
-        )
-        gantt_bar = render_gantt_bar(
-            task.started_at,
-            task.completed_at,
-            job.started_at,
-            job.completed_at,
-            is_running=is_running,
-            now=now,
-        )
-
-        expected = (
-            humanize_duration(task.estimated_duration_min * 60)
-            if task.estimated_duration_min
-            else "—"
-        )
-
+    def add_row(name, status, started_at, completed_at, estimated_duration_min):
+        is_running = status == TaskStatus.RUNNING
         table.add_row(
-            task.name,
-            status_text,
-            duration,
-            expected,
-            gantt_bar,
+            name,
+            Text(status.value, style=get_status_color(status)),
+            format_duration(started_at, completed_at, is_running=is_running, now=now),
+            humanize_duration(estimated_duration_min * 60) if estimated_duration_min else "—",
+            render_gantt_bar(
+                started_at,
+                completed_at,
+                job.started_at,
+                job.completed_at,
+                is_running=is_running,
+                now=now,
+            ),
         )
+
+    for task in tasks:
+        executions = executions_by_task.get(task.id)
+        if executions:
+            for i, ex in enumerate(executions, start=1):
+                add_row(
+                    f"{task.name}  · try {i}",
+                    ex.status,
+                    ex.started_at,
+                    ex.completed_at,
+                    task.estimated_duration_min,
+                )
+        else:
+            add_row(
+                task.name,
+                task.status,
+                task.started_at,
+                task.completed_at,
+                task.estimated_duration_min,
+            )
 
     return table

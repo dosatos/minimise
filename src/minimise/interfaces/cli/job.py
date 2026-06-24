@@ -12,7 +12,7 @@ from rich.text import Text
 
 import minimise.interfaces.cli as _cli  # patchable constants/PlanReviewer; read at call time
 from minimise.models import JobStatus, TaskStatus, Plan
-from minimise.interfaces.terminal_ui import get_status_color, render_task_table_with_gantt, humanize_duration, format_duration
+from minimise.interfaces.terminal_ui import get_status_color, render_execution_table_with_gantt, humanize_duration, format_duration
 from minimise.interfaces.cli._shared import (
     console,
     get_db,
@@ -308,7 +308,15 @@ def job_status(job_id: str, format: str):
             # Display task progress with Gantt chart
             if job_obj.tasks:
                 console.print(f"\n[bold]Task Progress[/bold]")
-                table = render_task_table_with_gantt(job_obj, job_obj.tasks, now=datetime.utcnow())
+                executions_by_task = {
+                    t.id: db.list_executions_for_task(t.id) for t in job_obj.tasks
+                }
+                table = render_execution_table_with_gantt(
+                    job_obj,
+                    job_obj.tasks,
+                    now=datetime.utcnow(),
+                    executions_by_task=executions_by_task,
+                )
                 console.print(table)
                 console.print(f"\n[dim]View full output with: mini job logs {job_id[:8]}[/dim]")
             else:
