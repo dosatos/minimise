@@ -1,0 +1,125 @@
+plan:
+  name: "Refactor: to_dict on models + split cli.py into a package"
+  description: |
+    Two pre-vetted, behavior-preserving refactors, one task each, gated on the
+    full pytest suite after every task.
+
+    Shared rules for EVERY task:
+    - ZERO behavior change. Refactor only. No new dependencies.
+    - Do NOT invent abstractions for single use sites.
+    - After editing, run `pytest tests/ -q` yourself and fix anything you broke
+      BEFORE finishing. The orchestrator also runs it as a gate.
+    - Do not create/delete mini jobs. No co-author trailers on commits.
+
+  tasks:
+    - id: "refactor-models-to-dict"
+      name: "Move serializers onto Job/Task as .to_dict()"
+      description: |
+        Goal: api_server should not own serialization. Move the two module-level
+        functions job_to_dict(job) and task_to_dict(task) from
+        src/minimise/api_server.py ONTO the dataclasses in src/minimise/models.py
+        as INSTANCE methods.
+
+        Steps (touch ONLY src/minimise/models.py, src/minimise/api_server.py, and
+        the relevant test files):
+        1. In src/minimise/models.py, add a method `to_dict(self) -> dict` to the
+           `Task` dataclass whose body is EXACTLY the current task_to_dict body
+           (referencing self.* instead of task.*).
+        2. Add a method `to_dict(self) -> dict` to the `Job` dataclass whose body
+           is EXACTLY the current job_to_dict body (self.* instead of job.*), and
+           where the tasks line becomes:
+              "tasks": [t.to_dict() for t in self.tasks] if self.tasks else [],
+        3. In src/minimise/api_server.py: DELETE both job_to_dict and task_to_dict
+           functions and their now-unused `from minimise.models import Job, Task`
+           if those names become unused (check first — keep any still referenced
+           by type hints). Replace ALL call sites:
+              job_to_dict(x)   -> x.to_dict()
+              task_to_dict(x)  -> x.to_dict()
+           There are ~8 call sites (list comp in get_jobs, create_job, get_job,
+           get_task, subscribe emit, and the two broadcast_* methods).
+        4. Keep `from minimise.database import Database` and the JobManager import
+           untouched.
+
+        Naming note: these SERIALIZE an object to a dict, so `.to_dict()` is the
+        correct name. Do NOT add a `from_dict` classmethod — nothing parses dicts
+        back into models (YAGNI).
+
+        TESTS:
+        - Extend tests/test_models.py: assert Job(...).to_dict() and Task(...).to_dict()
+          produce the expected dict shape (datetimes isoformatted, enums .value,
+          None-safe optional fields, nested tasks via t.to_dict()).
+        - tests/test_api_server.py already asserts route JSON payloads — it must
+          still pass UNCHANGED. If any test imported job_to_dict/task_to_dict from
+          api_server directly, update that import to call the new methods instead.
+      goal: "Job.to_dict()/Task.to_dict() exist on the models; api_server uses them; api JSON payloads byte-identical; full suite green."
+      estimated_duration_min: 8
+      post_task_hook: "pytest tests/ -q"
+
+    - id: "refactor-cli-package"
+      name: "Split cli.py into a cli/ package by click group"
+      description: |
+        Split src/minimise/cli.py (~850 lines) into a package src/minimise/cli/
+        WITHOUT changing any CLI behavior, output text, exit codes, or public
+        import paths. This is import-sensitive — be meticulous.
+
+        CRITICAL COMPATIBILITY CONSTRAINTS (verify each at the end):
+        - pyproject.toml entry point is `minimise.cli:main`. So `minimise.cli`
+          (the package __init__) MUST export `main` and `mini`.
+        - Existing tests import these names FROM `minimise.cli` and must keep
+          working with NO test edits:
+            mini, get_db, console, _error_job_not_found, _format_datetime,
+            _filter_tasks_by_id, _get_and_validate_job
+          The package __init__.py MUST re-export all of them.
+
+        Target layout (create src/minimise/cli/ as a package; delete the old
+        single-file src/minimise/cli.py):
+          cli/__init__.py
+            - imports the shared module and the group modules
+            - assembles the `mini` click group and attaches subgroups
+            - defines/owns `main()` (the console-script entry) exactly as today
+            - re-exports the names listed above so `from minimise.cli import X`
+              keeps working
+          cli/_shared.py
+            - module constants: CONFIG_DIR, DB_PATH, JOBS_DIR, REPO_PATH
+              (KEEP the MINIMISE_HOME env override exactly as-is)
+            - console = Console()
+            - get_db, get_job_manager, resolve_job_id, _error_job_not_found,
+              _format_datetime, _filter_tasks_by_id, _get_and_validate_job
+            - all imports those helpers need (Database, JobManager, GitTracker,
+              sqlite3, Path, etc.)
+          cli/job.py
+            - the `@mini.group(name="job")` group object AND its commands:
+              new, start, list, status, stop, delete, logs, show
+            - imports helpers from minimise.cli._shared
+          cli/results.py
+            - the `@job.group(name="results")` group + its commands: logs, diff
+          cli/view.py
+            - the `@mini.group(name="view")` group + commands: start, stop
+
+        GROUP-WIRING APPROACH (pick whichever keeps behavior identical):
+          Because click subgroups are normally declared with `@parent.group(...)`,
+          the cleanest cross-file approach is: define each group with
+          `@click.group(name=...)` in its own module, then in __init__.py wire them
+          with `mini.add_command(job_group)`, `job_group.add_command(results_group)`,
+          etc. Ensure the resulting command tree (mini job ..., mini job results ...,
+          mini view ...) is IDENTICAL to today. Verify with:
+            mini --help, mini job --help, mini job results --help, mini view --help
+          and by running the existing CLI tests.
+
+        Move every command body VERBATIM — do not rewrite logic. The only changes
+        are: which file a function lives in, and where it imports helpers from.
+
+        After splitting, verify NOTHING outside cli/ broke:
+          - `from minimise.cli import mini` (used in tests/test_cli.py,
+            tests/test_plan_review_cli.py)
+          - `from minimise.cli import get_db` (tests/test_cli.py)
+          - `from minimise.cli import _error_job_not_found, console` etc.
+          - entry point: `python -c "from minimise.cli import main; print(main)"`
+
+        TESTS: do NOT add new test files for this — the existing test_cli.py and
+        test_plan_review_cli.py are the regression net. They must pass UNCHANGED.
+        If an import path genuinely must change, that is a behavior change — avoid
+        it; make __init__.py re-export instead.
+      goal: "cli.py is now a cli/ package split by click group; every existing test passes unchanged; `mini` entry point and all import paths work identically."
+      estimated_duration_min: 16
+      post_task_hook: "pytest tests/ -q"

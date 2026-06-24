@@ -184,6 +184,34 @@ class TestHumanizeDuration:
         assert humanize_duration(883380) == "10d 5h 23m"
 
 
+class TestRenderEquivalence:
+    """Byte-identical output checks for the refactored modulo and gantt loop."""
+
+    @pytest.mark.parametrize("seconds,expected", [
+        (155, "2m 35s"),
+        (5400, "1h 30m"),
+        (86400, "1d 0h 0m"),
+        (217800, "2d 12h 30m"),  # exercises the simplified (total % 3600) path
+        (883380, "10d 5h 23m"),
+    ])
+    def test_humanize_duration_exact(self, seconds, expected):
+        assert humanize_duration(seconds) == expected
+
+    @pytest.mark.parametrize("task_secs,expected", [
+        (10, "████████████████████████████"),  # full span
+        (5, "██████████████░░░░░░░░░░░░░░"),   # first half
+        (3, "████████░░░░░░░░░░░░░░░░░░░░"),   # first ~third
+    ])
+    def test_render_gantt_bar_exact(self, base_time, task_secs, expected):
+        job_start = base_time
+        job_end = base_time + timedelta(seconds=10)
+        result = render_gantt_bar(
+            job_start, base_time + timedelta(seconds=task_secs), job_start, job_end
+        )
+        assert result == expected
+        assert len(result) == 28
+
+
 class TestFormatDuration:
     """Tests for format_duration function."""
 

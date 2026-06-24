@@ -7,6 +7,11 @@ from rich.text import Text
 from minimise.models import Job, Task, JobStatus, TaskStatus
 
 
+def _now_or_default(now: Optional[datetime]) -> datetime:
+    """Return now, or the current UTC time if none was supplied."""
+    return now or datetime.utcnow()
+
+
 def humanize_duration(total_seconds: float) -> str:
     """
     Format duration as human-readable string with appropriate units.
@@ -32,13 +37,13 @@ def humanize_duration(total_seconds: float) -> str:
     else:
         days = int(total_seconds // 86400)
         hours = int((total_seconds % 86400) // 3600)
-        minutes = int(((total_seconds % 86400) % 3600) // 60)
+        minutes = int((total_seconds % 3600) // 60)
         return f"{days}d {hours}h {minutes}m"
 
 
 def get_status_color(status) -> str:
     """Get color for status badge."""
-    if isinstance(status, JobStatus) or isinstance(status, TaskStatus):
+    if isinstance(status, (JobStatus, TaskStatus)):
         status_value = status.value
     else:
         status_value = str(status)
@@ -75,8 +80,7 @@ def format_duration(
         return "—"
 
     if is_running and not completed_at:
-        if now is None:
-            now = datetime.utcnow()
+        now = _now_or_default(now)
         elapsed = (now - started_at).total_seconds()
         return humanize_duration(elapsed)
 
@@ -114,8 +118,7 @@ def render_gantt_bar(
     if not started_at or not job_started_at:
         return "—"
 
-    if now is None:
-        now = datetime.utcnow()
+    now = _now_or_default(now)
 
     if is_running and not completed_at:
         task_end = now
@@ -149,16 +152,9 @@ def render_gantt_bar(
         end_pos = min(start_pos + 1, bar_width)
 
     # Build bar
-    bar = []
-    for i in range(bar_width):
-        if i < start_pos:
-            bar.append("░")
-        elif i < end_pos:
-            bar.append("█")
-        else:
-            bar.append("░")
-
-    return "".join(bar)
+    return "".join(
+        "█" if start_pos <= i < end_pos else "░" for i in range(bar_width)
+    )
 
 
 def render_task_table_with_gantt(job: Job, tasks: list[Task], now: Optional[datetime] = None) -> Table:
@@ -173,8 +169,7 @@ def render_task_table_with_gantt(job: Job, tasks: list[Task], now: Optional[date
     Returns:
         Rich Table with Task Name, Status, Duration, Remaining Time, and Timeline columns
     """
-    if now is None:
-        now = datetime.utcnow()
+    now = _now_or_default(now)
 
     table = Table()
     table.add_column("Task Name", style="cyan")
