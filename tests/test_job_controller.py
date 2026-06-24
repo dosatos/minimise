@@ -4,7 +4,7 @@ import subprocess
 import yaml
 from pathlib import Path
 from datetime import datetime
-from minimise.orchestration.job_executor import JobExecutor
+from minimise.orchestration.job_controller import JobController
 from minimise.models import Job, Task, JobStatus, TaskStatus
 from minimise.storage.database import Database
 from minimise.storage.git_tracker import GitTracker
@@ -97,21 +97,21 @@ def plan_file(temp_db_dir):
 
 
 @pytest.fixture
-def job_executor(temp_db_dir, git_repo):
-    """Create a JobExecutor instance."""
+def job_controller(temp_db_dir, git_repo):
+    """Create a JobController instance."""
     db = Database(temp_db_dir / "test.db")
     db.init_db()
 
     git_tracker = GitTracker(git_repo)
     jobs_dir = temp_db_dir / "jobs"
 
-    manager = JobExecutor(db, git_tracker, jobs_dir, git_repo)
+    manager = JobController(db, git_tracker, jobs_dir, git_repo)
     return manager
 
 
-def test_create_job_from_plan(job_executor, plan_file):
+def test_create_job_from_plan(job_controller, plan_file):
     """Test creating a job from a plan.yaml file."""
-    job = job_executor.create_job(plan_file)
+    job = job_controller.create_job(plan_file)
 
     assert job is not None
     assert job.name == "Test Plan"
@@ -122,14 +122,14 @@ def test_create_job_from_plan(job_executor, plan_file):
     assert job.tasks[1].name == "Task 2"
 
 
-def test_get_job_status(job_executor, plan_file):
+def test_get_job_status(job_controller, plan_file):
     """Test retrieving job status with all tasks."""
     # Create job
-    created_job = job_executor.create_job(plan_file)
+    created_job = job_controller.create_job(plan_file)
     job_id = created_job.id
 
     # Retrieve job
-    retrieved_job = job_executor.get_job_status(job_id)
+    retrieved_job = job_controller.get_job_status(job_id)
 
     assert retrieved_job is not None
     assert retrieved_job.id == job_id
@@ -139,31 +139,31 @@ def test_get_job_status(job_executor, plan_file):
     assert all(isinstance(t, Task) for t in retrieved_job.tasks)
 
 
-def test_get_job_status_not_found(job_executor):
+def test_get_job_status_not_found(job_controller):
     """Test retrieving non-existent job returns None."""
-    retrieved_job = job_executor.get_job_status("nonexistent-id")
+    retrieved_job = job_controller.get_job_status("nonexistent-id")
     assert retrieved_job is None
 
 
-def test_cancel_job_basic(job_executor, plan_file):
+def test_cancel_job_basic(job_controller, plan_file):
     """Test cancel job cancels a job and its tasks."""
-    created_job = job_executor.create_job(plan_file)
+    created_job = job_controller.create_job(plan_file)
     job_id = created_job.id
 
     # Simulate job running by marking it as RUNNING
-    job_executor.db.update_job_status(job_id, JobStatus.RUNNING, started_at=datetime.utcnow())
+    job_controller.db.update_job_status(job_id, JobStatus.RUNNING, started_at=datetime.utcnow())
 
     # Mark some tasks as RUNNING
-    tasks = job_executor.db.list_tasks_for_job(job_id)
+    tasks = job_controller.db.list_tasks_for_job(job_id)
     if len(tasks) > 0:
-        job_executor.db.update_task_status(tasks[0].id, TaskStatus.RUNNING)
+        job_controller.db.update_task_status(tasks[0].id, TaskStatus.RUNNING)
 
     # Stop the job (no PID -> just finalizes state)
-    result = job_executor.stop_job(job_id)
+    result = job_controller.stop_job(job_id)
     assert result is True
 
     # Verify job status is STOPPED
-    job = job_executor.get_job_status(job_id)
+    job = job_controller.get_job_status(job_id)
     assert job.status == JobStatus.STOPPED
 
     # Verify tasks are STOPPED
@@ -172,12 +172,12 @@ def test_cancel_job_basic(job_executor, plan_file):
             assert task.status == TaskStatus.STOPPED
 
 
-def test_run_job_basic(job_executor, plan_file):
+def test_run_job_basic(job_controller, plan_file):
     """Test running a job with mocked task execution."""
     from minimise.orchestration.task_executor import TaskExecutor
 
     # Create job
-    created_job = job_executor.create_job(plan_file)
+    created_job = job_controller.create_job(plan_file)
     job_id = created_job.id
 
     # Mock the task executor to avoid actual Claude Code invocation
@@ -189,16 +189,16 @@ def test_run_job_basic(job_executor, plan_file):
             return True, f"Executed {task.name}"
 
     # Monkey patch for this test
-    import minimise.orchestration.job_executor
-    minimise.orchestration.job_executor.TaskExecutor = MockTaskExecutor
+    import minimise.orchestration.job_controller
+    minimise.orchestration.job_controller.TaskExecutor = MockTaskExecutor
 
     try:
         # Run the job
-        success = job_executor.run_job(job_id)
+        success = job_controller.run_job(job_id)
 
         # Verify job completed
         assert success
-        job = job_executor.get_job_status(job_id)
+        job = job_controller.get_job_status(job_id)
         assert job.status == JobStatus.COMPLETED
 
         # Verify all tasks completed
@@ -206,20 +206,20 @@ def test_run_job_basic(job_executor, plan_file):
             assert task.status == TaskStatus.COMPLETED
     finally:
         # Restore original class
-        minimise.orchestration.job_executor.TaskExecutor = original_executor_class
+        minimise.orchestration.job_controller.TaskExecutor = original_executor_class
 
 
-def test_task_commits_against_base_commit(job_executor, plan_file, git_repo):
+def test_task_commits_against_base_commit(job_controller, plan_file, git_repo):
     """Test that each task commits its changes against its base commit, not HEAD."""
     from minimise.orchestration.task_executor import TaskExecutor
 
     # Create job
-    created_job = job_executor.create_job(plan_file)
+    created_job = job_controller.create_job(plan_file)
     job_id = created_job.id
     base_commit = created_job.base_commit
 
     # Get the tasks
-    tasks = job_executor.db.list_tasks_for_job(job_id)
+    tasks = job_controller.db.list_tasks_for_job(job_id)
     assert len(tasks) == 2
 
     # Verify base_commit is captured in job
@@ -258,16 +258,16 @@ def test_task_commits_against_base_commit(job_executor, plan_file, git_repo):
 
             return True, f"Executed {task.name}"
 
-    import minimise.orchestration.job_executor
-    minimise.orchestration.job_executor.TaskExecutor = MockTaskExecutor
+    import minimise.orchestration.job_controller
+    minimise.orchestration.job_controller.TaskExecutor = MockTaskExecutor
 
     try:
         # Run the job
-        success = job_executor.run_job(job_id)
+        success = job_controller.run_job(job_id)
         assert success
 
         # Verify all tasks completed
-        completed_tasks = job_executor.db.list_tasks_for_job(job_id)
+        completed_tasks = job_controller.db.list_tasks_for_job(job_id)
         for task in completed_tasks:
             assert task.status == TaskStatus.COMPLETED
             # Verify base_commit was captured
@@ -276,12 +276,12 @@ def test_task_commits_against_base_commit(job_executor, plan_file, git_repo):
             assert task.base_commit == base_commit
 
     finally:
-        minimise.orchestration.job_executor.TaskExecutor = original_executor_class
+        minimise.orchestration.job_controller.TaskExecutor = original_executor_class
 
 
 def test_task_commit_message_format(temp_db_dir, git_repo, plan_file):
     """Test that task commits use the correct message format: 'Task <id>: <name>'."""
-    from minimise.orchestration.job_executor import JobExecutor
+    from minimise.orchestration.job_controller import JobController
     from minimise.orchestration.task_executor import TaskExecutor
     from minimise.storage.database import Database
     from minimise.storage.git_tracker import GitTracker
@@ -320,8 +320,8 @@ def test_task_commit_message_format(temp_db_dir, git_repo, plan_file):
             self.db.update_task_status(task.id, TaskStatus.COMPLETED, output=f"Executed {task.name}", completed_at=datetime.utcnow())
             return True, f"Executed {task.name}"
 
-    import minimise.orchestration.job_executor
-    minimise.orchestration.job_executor.TaskExecutor = MockTaskExecutor
+    import minimise.orchestration.job_controller
+    minimise.orchestration.job_controller.TaskExecutor = MockTaskExecutor
 
     try:
         db = Database(temp_db_dir / "test.db")
@@ -330,18 +330,18 @@ def test_task_commit_message_format(temp_db_dir, git_repo, plan_file):
         git_tracker = GitTracker(git_repo)
         jobs_dir = temp_db_dir / "jobs"
 
-        job_executor = JobExecutor(db, git_tracker, jobs_dir, git_repo)
+        job_controller = JobController(db, git_tracker, jobs_dir, git_repo)
 
         # Create job
-        created_job = job_executor.create_job(plan_file)
+        created_job = job_controller.create_job(plan_file)
         job_id = created_job.id
 
         # Get tasks first to know the task IDs
-        tasks = job_executor.db.list_tasks_for_job(job_id)
+        tasks = job_controller.db.list_tasks_for_job(job_id)
         assert len(tasks) == 2
 
         # Run the job
-        success = job_executor.run_job(job_id)
+        success = job_controller.run_job(job_id)
         assert success
 
         # Get commit log and verify commit messages
@@ -361,12 +361,12 @@ def test_task_commit_message_format(temp_db_dir, git_repo, plan_file):
             assert any(task_id in msg for msg in commit_messages)
 
     finally:
-        minimise.orchestration.job_executor.TaskExecutor = original_executor_class
+        minimise.orchestration.job_controller.TaskExecutor = original_executor_class
 
 
 def test_task_diff_excludes_prior_task_changes(temp_db_dir, git_repo, plan_file):
     """Test that task diff only includes changes from current task, not prior tasks."""
-    from minimise.orchestration.job_executor import JobExecutor
+    from minimise.orchestration.job_controller import JobController
     from minimise.orchestration.task_executor import TaskExecutor
     from minimise.storage.database import Database
     from minimise.storage.git_tracker import GitTracker
@@ -421,8 +421,8 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, git_repo, plan_file)
 
             return True, f"Executed {task.name}"
 
-    import minimise.orchestration.job_executor
-    minimise.orchestration.job_executor.TaskExecutor = MockTaskExecutor
+    import minimise.orchestration.job_controller
+    minimise.orchestration.job_controller.TaskExecutor = MockTaskExecutor
 
     try:
         db = Database(temp_db_dir / "test.db")
@@ -431,14 +431,14 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, git_repo, plan_file)
         git_tracker = GitTracker(git_repo)
         jobs_dir = temp_db_dir / "jobs"
 
-        job_executor = JobExecutor(db, git_tracker, jobs_dir, git_repo)
+        job_controller = JobController(db, git_tracker, jobs_dir, git_repo)
 
         # Create job
-        created_job = job_executor.create_job(plan_file)
+        created_job = job_controller.create_job(plan_file)
         job_id = created_job.id
 
         # Run the job
-        success = job_executor.run_job(job_id)
+        success = job_controller.run_job(job_id)
         assert success
 
         # Verify diffs were collected
@@ -455,77 +455,77 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, git_repo, plan_file)
         assert "diff_test_2.txt" in diff_2
 
     finally:
-        minimise.orchestration.job_executor.TaskExecutor = original_executor_class
+        minimise.orchestration.job_controller.TaskExecutor = original_executor_class
 
 
-def test_failed_job_persists_in_db(job_executor, plan_file):
+def test_failed_job_persists_in_db(job_controller, plan_file):
     """Test that a failed job is persisted in database and not deleted."""
     execution_count = [0]
-    original_method = job_executor.task_executor.execute_task
+    original_method = job_controller.task_executor.execute_task
 
     def mock_execute_task(task, job_id, handover_context, pre_task_hook="", post_task_hook=""):
         execution_count[0] += 1
         if execution_count[0] == 1:
             # Fail on first task
             error_msg = "Task execution failed: simulated failure"
-            job_executor.db.update_task_status(task.id, TaskStatus.FAILED, output=error_msg, completed_at=datetime.utcnow())
+            job_controller.db.update_task_status(task.id, TaskStatus.FAILED, output=error_msg, completed_at=datetime.utcnow())
             return False, error_msg
         # This shouldn't be reached
         return True, f"Executed {task.name}"
 
     # Patch the execute_task method
-    job_executor.task_executor.execute_task = mock_execute_task
+    job_controller.task_executor.execute_task = mock_execute_task
 
     try:
         # Create job
-        created_job = job_executor.create_job(plan_file)
+        created_job = job_controller.create_job(plan_file)
         job_id = created_job.id
 
         # Run the job
-        success = job_executor.run_job(job_id)
+        success = job_controller.run_job(job_id)
         assert not success
 
         # Verify job status is FAILED
-        job = job_executor.get_job_status(job_id)
+        job = job_controller.get_job_status(job_id)
         assert job is not None
         assert job.status == JobStatus.FAILED
 
         # Verify job is not deleted (can still be retrieved)
-        retrieved_job = job_executor.db.get_job(job_id)
+        retrieved_job = job_controller.db.get_job(job_id)
         assert retrieved_job is not None
         assert retrieved_job.id == job_id
 
         # Verify the failed task is marked as FAILED
-        tasks = job_executor.db.list_tasks_for_job(job_id)
+        tasks = job_controller.db.list_tasks_for_job(job_id)
         assert any(t.status == TaskStatus.FAILED for t in tasks)
 
     finally:
-        job_executor.task_executor.execute_task = original_method
+        job_controller.task_executor.execute_task = original_method
 
 
-def test_failed_job_stores_error_reason(job_executor, plan_file):
+def test_failed_job_stores_error_reason(job_controller, plan_file):
     """Test that failed jobs store error reason in job.output."""
     error_reason = "Database connection timeout"
-    original_method = job_executor.task_executor.execute_task
+    original_method = job_controller.task_executor.execute_task
 
     def mock_execute_task(task, job_id, handover_context, pre_task_hook="", post_task_hook=""):
         error_msg = f"Task execution failed: {error_reason}"
-        job_executor.db.update_task_status(task.id, TaskStatus.FAILED, output=error_msg, completed_at=datetime.utcnow())
+        job_controller.db.update_task_status(task.id, TaskStatus.FAILED, output=error_msg, completed_at=datetime.utcnow())
         return False, error_msg
 
-    job_executor.task_executor.execute_task = mock_execute_task
+    job_controller.task_executor.execute_task = mock_execute_task
 
     try:
         # Create job
-        created_job = job_executor.create_job(plan_file)
+        created_job = job_controller.create_job(plan_file)
         job_id = created_job.id
 
         # Run the job
-        success = job_executor.run_job(job_id)
+        success = job_controller.run_job(job_id)
         assert not success
 
         # Verify job has failed status
-        job = job_executor.get_job_status(job_id)
+        job = job_controller.get_job_status(job_id)
         assert job.status == JobStatus.FAILED
 
         # Verify job has output (error reason would be stored)
@@ -535,10 +535,10 @@ def test_failed_job_stores_error_reason(job_executor, plan_file):
         assert error_reason in failed_tasks[0].output
 
     finally:
-        job_executor.task_executor.execute_task = original_method
+        job_controller.task_executor.execute_task = original_method
 
 
-def test_pre_plan_hook_failure_persists_job(job_executor, plan_file, temp_db_dir):
+def test_pre_plan_hook_failure_persists_job(job_controller, plan_file, temp_db_dir):
     """Test that pre-plan hook failure persists the job with error status."""
     # Create a plan with failing pre-plan hook
     plan_content = {
@@ -564,24 +564,24 @@ def test_pre_plan_hook_failure_persists_job(job_executor, plan_file, temp_db_dir
         yaml.dump(plan_content, f)
 
     # Create job with failing plan
-    created_job = job_executor.create_job(plan_path)
+    created_job = job_controller.create_job(plan_path)
     job_id = created_job.id
 
     # Run the job
-    success = job_executor.run_job(job_id)
+    success = job_controller.run_job(job_id)
     assert not success
 
     # Verify job persists with FAILED status
-    job = job_executor.get_job_status(job_id)
+    job = job_controller.get_job_status(job_id)
     assert job is not None
     assert job.status == JobStatus.FAILED
 
     # Verify no tasks were executed (pre-plan hook failed before tasks)
-    tasks = job_executor.db.list_tasks_for_job(job_id)
+    tasks = job_controller.db.list_tasks_for_job(job_id)
     assert all(t.status == TaskStatus.PENDING for t in tasks)
 
 
-def test_post_plan_hook_failure_persists_job(job_executor, plan_file):
+def test_post_plan_hook_failure_persists_job(job_controller, plan_file):
     """Test that post-plan hook failure marks job as failed but persists it."""
     plan_content = {
         "name": "Test Plan with Post Hook Failure",
@@ -608,37 +608,37 @@ def test_post_plan_hook_failure_persists_job(job_executor, plan_file):
             yaml.dump(plan_content, f)
 
         # Mock task executor to succeed
-        original_method = job_executor.task_executor.execute_task
+        original_method = job_controller.task_executor.execute_task
 
         def mock_execute_task(task, job_id, handover_context, pre_task_hook="", post_task_hook=""):
-            job_executor.db.update_task_status(task.id, TaskStatus.COMPLETED, output=f"Executed {task.name}", completed_at=datetime.utcnow())
+            job_controller.db.update_task_status(task.id, TaskStatus.COMPLETED, output=f"Executed {task.name}", completed_at=datetime.utcnow())
             return True, f"Executed {task.name}"
 
-        job_executor.task_executor.execute_task = mock_execute_task
+        job_controller.task_executor.execute_task = mock_execute_task
 
         try:
             # Create job
-            created_job = job_executor.create_job(plan_path)
+            created_job = job_controller.create_job(plan_path)
             job_id = created_job.id
 
             # Run the job
-            success = job_executor.run_job(job_id)
+            success = job_controller.run_job(job_id)
             assert not success
 
             # Verify job persists with FAILED status (due to post-hook failure)
-            job = job_executor.get_job_status(job_id)
+            job = job_controller.get_job_status(job_id)
             assert job is not None
             assert job.status == JobStatus.FAILED
 
             # Verify tasks completed before failure
-            tasks = job_executor.db.list_tasks_for_job(job_id)
+            tasks = job_controller.db.list_tasks_for_job(job_id)
             assert all(t.status == TaskStatus.COMPLETED for t in tasks)
 
         finally:
-            job_executor.task_executor.execute_task = original_method
+            job_controller.task_executor.execute_task = original_method
 
 
-def test_estimated_duration_min_parsed_from_yaml(job_executor, temp_db_dir):
+def test_estimated_duration_min_parsed_from_yaml(job_controller, temp_db_dir):
     """Test that estimated_duration_min is parsed from YAML task spec."""
     plan_content = {
         "name": "Plan with Durations",
@@ -681,7 +681,7 @@ def test_estimated_duration_min_parsed_from_yaml(job_executor, temp_db_dir):
         yaml.dump(plan_content, f)
 
     # Create job from plan
-    job = job_executor.create_job(plan_path)
+    job = job_controller.create_job(plan_path)
 
     # Verify all tasks have the correct estimated_duration_min values
     assert len(job.tasks) == 3
@@ -691,7 +691,7 @@ def test_estimated_duration_min_parsed_from_yaml(job_executor, temp_db_dir):
 
 
 
-def test_estimated_duration_min_stored_in_database(job_executor, temp_db_dir):
+def test_estimated_duration_min_stored_in_database(job_controller, temp_db_dir):
     """Test that estimated_duration_min is stored in the database."""
     plan_content = {
         "name": "Plan for DB Storage",
@@ -725,11 +725,11 @@ def test_estimated_duration_min_stored_in_database(job_executor, temp_db_dir):
         yaml.dump(plan_content, f)
 
     # Create job from plan
-    created_job = job_executor.create_job(plan_path)
+    created_job = job_controller.create_job(plan_path)
     job_id = created_job.id
 
     # Retrieve tasks directly from database
-    db_tasks = job_executor.db.list_tasks_for_job(job_id)
+    db_tasks = job_controller.db.list_tasks_for_job(job_id)
 
     # Verify tasks have correct estimated_duration_min values in database
     assert len(db_tasks) == 2
@@ -737,7 +737,7 @@ def test_estimated_duration_min_stored_in_database(job_executor, temp_db_dir):
     assert db_tasks[1].estimated_duration_min == 45
 
 
-def test_estimated_duration_min_survives_refetch(job_executor, temp_db_dir):
+def test_estimated_duration_min_survives_refetch(job_controller, temp_db_dir):
     """Test that estimated_duration_min persists across a job re-fetch."""
     plan_content = {
         "name": "Plan for Resume Test",
@@ -771,12 +771,12 @@ def test_estimated_duration_min_survives_refetch(job_executor, temp_db_dir):
         yaml.dump(plan_content, f)
 
     # Create initial job
-    initial_job = job_executor.create_job(plan_path)
+    initial_job = job_controller.create_job(plan_path)
     job_id = initial_job.id
 
     # Simulate first task completion (without actually running)
-    db_tasks = job_executor.db.list_tasks_for_job(job_id)
-    job_executor.db.update_task_status(
+    db_tasks = job_controller.db.list_tasks_for_job(job_id)
+    job_controller.db.update_task_status(
         db_tasks[0].id,
         TaskStatus.COMPLETED,
         output="Completed",
@@ -784,10 +784,10 @@ def test_estimated_duration_min_survives_refetch(job_executor, temp_db_dir):
     )
 
     # Update job to RUNNING to simulate partial execution
-    job_executor.db.update_job_status(job_id, JobStatus.RUNNING, started_at=datetime.utcnow())
+    job_controller.db.update_job_status(job_id, JobStatus.RUNNING, started_at=datetime.utcnow())
 
     # Retrieve job again (simulating resume)
-    resumed_job = job_executor.get_job_status(job_id)
+    resumed_job = job_controller.get_job_status(job_id)
 
     # Verify estimated_duration_min values are still present after resume
     assert len(resumed_job.tasks) == 2
@@ -795,14 +795,14 @@ def test_estimated_duration_min_survives_refetch(job_executor, temp_db_dir):
     assert resumed_job.tasks[1].estimated_duration_min == 90
 
 
-def test_plan_yaml_cached_on_job_creation(job_executor, plan_file):
+def test_plan_yaml_cached_on_job_creation(job_controller, plan_file):
     """Test that plan YAML is cached in jobs directory on job creation."""
     # Create job
-    job = job_executor.create_job(plan_file)
+    job = job_controller.create_job(plan_file)
     job_id = job.id
 
     # Verify plan is cached at ~/.minimise/jobs/<job-id>/plan.yaml
-    cached_plan_path = job_executor.jobs_dir / job_id / "plan.yaml"
+    cached_plan_path = job_controller.jobs_dir / job_id / "plan.yaml"
     assert cached_plan_path.exists(), f"Plan should be cached at {cached_plan_path}"
 
     # Verify cached plan content is readable
@@ -818,7 +818,7 @@ def test_plan_yaml_cached_on_job_creation(job_executor, plan_file):
     assert cached_plan['tasks'][1]['name'] == "Task 2"
 
 
-def test_cached_plan_survives_original_deletion(job_executor, temp_db_dir):
+def test_cached_plan_survives_original_deletion(job_controller, temp_db_dir):
     """Test that cached plan survives deletion of original plan file."""
     # Create a plan file
     plan_content = {
@@ -844,11 +844,11 @@ def test_cached_plan_survives_original_deletion(job_executor, temp_db_dir):
         yaml.dump(plan_content, f)
 
     # Create job from plan
-    job = job_executor.create_job(original_plan_path)
+    job = job_controller.create_job(original_plan_path)
     job_id = job.id
 
     # Verify cached plan exists
-    cached_plan_path = job_executor.jobs_dir / job_id / "plan.yaml"
+    cached_plan_path = job_controller.jobs_dir / job_id / "plan.yaml"
     assert cached_plan_path.exists()
 
     # Delete original plan file

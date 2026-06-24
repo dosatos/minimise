@@ -22,7 +22,7 @@ REPO_PATH = Path.cwd()
 from minimise.interfaces.cli._shared import (  # noqa: E402  (constants must precede this)
     console,
     get_db,
-    get_job_executor,
+    get_job_controller,
     resolve_job_id,
     _error_job_not_found,
     _format_datetime,

@@ -5,7 +5,7 @@ import time
 import click
 
 from minimise.interfaces.api_server import APIServer
-from minimise.interfaces.cli._shared import console, get_db, get_job_executor
+from minimise.interfaces.cli._shared import console, get_db, get_job_controller
 
 
 @click.group(name="view")
@@ -24,9 +24,9 @@ def view_start(port: int):
     """Launch web UI (and start server if not running)."""
     try:
         db = get_db()
-        job_executor = get_job_executor(db)
+        job_controller = get_job_controller(db)
 
-        api_server = APIServer(db, job_executor, port=port)
+        api_server = APIServer(db, job_controller, port=port)
 
         console.print(f"[green]Starting web server on port {port}...[/green]")
         api_server.start()

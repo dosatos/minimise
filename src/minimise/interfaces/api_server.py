@@ -9,23 +9,23 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 
 from minimise.models import Job
 from minimise.storage.database import Database
-from minimise.orchestration.job_executor import JobExecutor
+from minimise.orchestration.job_controller import JobController
 
 
 class APIServer:
     """REST API server with WebSocket support for job/task state exposure."""
 
-    def __init__(self, db: Database, job_executor: JobExecutor, port: int = 5000):
+    def __init__(self, db: Database, job_controller: JobController, port: int = 5000):
         """
         Initialize the API server.
 
         Args:
             db: Database instance for accessing job/task data
-            job_executor: JobExecutor instance for job operations
+            job_controller: JobController instance for job operations
             port: Port to run the server on (default: 5000)
         """
         self.db = db
-        self.job_executor = job_executor
+        self.job_controller = job_controller
         self.port = port
         self.app = Flask(__name__)
 
@@ -37,9 +37,9 @@ class APIServer:
 
         self.server_thread: Optional[threading.Thread] = None
 
-        # Set up broadcast callbacks on JobExecutor
-        self.job_executor.on_job_update = self.broadcast_job_update
-        self.job_executor.on_task_update = self.broadcast_task_update
+        # Set up broadcast callbacks on JobController
+        self.job_controller.on_job_update = self.broadcast_job_update
+        self.job_controller.on_task_update = self.broadcast_task_update
 
         # Register routes
         self._register_routes()
@@ -73,7 +73,7 @@ class APIServer:
                     return jsonify({"error": "Missing plan_path in request body"}), 400
 
                 plan_path = data["plan_path"]
-                job = self.job_executor.create_job(plan_path)
+                job = self.job_controller.create_job(plan_path)
 
                 if job is None:
                     return jsonify({"error": "Failed to create job"}), 500
@@ -110,7 +110,7 @@ class APIServer:
         def cancel_job(job_id: str):
             """Cancel a job."""
             try:
-                success = self.job_executor.stop_job(job_id)
+                success = self.job_controller.stop_job(job_id)
                 if not success:
                     return jsonify({"error": "Failed to cancel job"}), 400
 

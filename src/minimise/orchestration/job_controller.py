@@ -1,4 +1,4 @@
-"""JobExecutor — job lifecycle, the run loop, and process control.
+"""JobController — job lifecycle, the run loop, and process control.
 
 Owns creating jobs, running a plan's tasks sequentially end to end
 (``run_job``), launching/stopping the background process, and status-update
@@ -22,7 +22,7 @@ from minimise.orchestration.hooks import Hook
 from minimise.utils import ensure_directory
 
 
-class JobExecutor:
+class JobController:
     """Orchestrates job creation, process control, and status callbacks."""
 
     def __init__(self, db: Database, git_tracker: GitTracker, jobs_dir: Path, repo_path: Path, on_job_update=None, on_task_update=None):
@@ -34,6 +34,11 @@ class JobExecutor:
         self.task_executor = TaskExecutor(db, git_tracker, jobs_dir)
         self.on_job_update = on_job_update
         self.on_task_update = on_task_update
+
+    @classmethod
+    def from_paths(cls, db, repo_path, jobs_dir, on_job_update=None, on_task_update=None) -> "JobController":
+        """Build a controller, wiring a GitTracker for ``repo_path``."""
+        return cls(db, GitTracker(Path(repo_path)), jobs_dir, repo_path, on_job_update, on_task_update)
 
     def notify_job(self, job_id: str) -> None:
         if self.on_job_update:
@@ -49,7 +54,7 @@ class JobExecutor:
         Loads the job and plan, runs the plan hooks, executes each task in order
         while flowing a handover report from one task to the next, and marks the
         job COMPLETED or FAILED. The detached subprocess from ``start_job`` calls
-        this via ``python -m minimise.orchestration.job_executor``.
+        this via ``python -m minimise.orchestration.job_controller``.
         """
         job = self.store.load(job_id)
         if not job:
@@ -148,7 +153,7 @@ class JobExecutor:
             # stop_job can killpg the whole tree. Args go via argv (see __main__).
             process = subprocess.Popen(
                 [
-                    sys.executable, "-m", "minimise.orchestration.job_executor",
+                    sys.executable, "-m", "minimise.orchestration.job_controller",
                     str(self.db.db_path), str(self.repo_path), str(self.jobs_dir), job_id,
                 ],
                 stdout=subprocess.DEVNULL,
@@ -195,13 +200,8 @@ class JobExecutor:
 def _main() -> None:
     """Detached subprocess entry point: run one job by id (args via argv)."""
     db_path, repo_path, jobs_dir, job_id = sys.argv[1:5]
-    executor = JobExecutor(
-        Database(Path(db_path)),
-        GitTracker(Path(repo_path)),
-        Path(jobs_dir),
-        Path(repo_path),
-    )
-    executor.run_job(job_id)
+    controller = JobController.from_paths(Database(Path(db_path)), repo_path, Path(jobs_dir))
+    controller.run_job(job_id)
 
 
 if __name__ == "__main__":
