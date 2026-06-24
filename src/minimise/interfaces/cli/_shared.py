@@ -12,7 +12,7 @@ from pathlib import Path  # noqa: F401  (kept for parity / type ergonomics)
 from rich.console import Console
 
 from minimise.storage.database import Database
-from minimise.orchestration.job_manager import JobManager
+from minimise.orchestration.job_executor import JobExecutor
 from minimise.storage.git_tracker import GitTracker
 
 import minimise.interfaces.cli as _cli  # patchable constants live here; read at call time
@@ -28,10 +28,10 @@ def get_db() -> Database:
     return db
 
 
-def get_job_manager(db: Database) -> JobManager:
-    """Get job manager instance."""
+def get_job_executor(db: Database) -> JobExecutor:
+    """Get job executor instance."""
     git_tracker = GitTracker(_cli.REPO_PATH)
-    return JobManager(db, git_tracker, _cli.JOBS_DIR, _cli.REPO_PATH)
+    return JobExecutor(db, git_tracker, _cli.JOBS_DIR, _cli.REPO_PATH)
 
 
 def resolve_job_id(job_id_or_prefix: str) -> str:

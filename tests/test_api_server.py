@@ -7,31 +7,31 @@ from unittest.mock import Mock, MagicMock
 
 from minimise.models import Job, Task, JobStatus, TaskStatus
 from minimise.storage.database import Database
-from minimise.orchestration.job_manager import JobManager
+from minimise.orchestration.job_executor import JobExecutor
 from minimise.interfaces.api_server import APIServer
 
 
 @pytest.fixture
-def mock_job_manager():
+def mock_job_executor():
     """Create a mock job manager."""
-    return Mock(spec=JobManager)
+    return Mock(spec=JobExecutor)
 
 
 @pytest.fixture
-def api_server(db, mock_job_manager):
+def api_server(db, mock_job_executor):
     """Create an API server instance for testing."""
-    server = APIServer(db, mock_job_manager, port=5001)
+    server = APIServer(db, mock_job_executor, port=5001)
     yield server
     # Cleanup
     if server.server_thread and server.server_thread.is_alive():
         server.stop()
 
 
-def test_api_server_initialization(db, mock_job_manager):
+def test_api_server_initialization(db, mock_job_executor):
     """Verify API server setup."""
-    server = APIServer(db, mock_job_manager, port=5001)
+    server = APIServer(db, mock_job_executor, port=5001)
     assert server.db is db
-    assert server.job_manager is mock_job_manager
+    assert server.job_executor is mock_job_executor
     assert server.port == 5001
     assert server.app is not None
     assert server.socketio is not None
@@ -71,7 +71,7 @@ def test_get_jobs_endpoint(api_server, db):
         assert jobs_data[1]["status"] == JobStatus.PENDING.value
 
 
-def test_post_jobs_endpoint(api_server, mock_job_manager, db):
+def test_post_jobs_endpoint(api_server, mock_job_executor, db):
     """Test POST /jobs endpoint creates new job."""
     # Mock job manager to return a job
     job_id = str(uuid.uuid4())
@@ -81,7 +81,7 @@ def test_post_jobs_endpoint(api_server, mock_job_manager, db):
         status=JobStatus.PENDING,
         plan_path="/path/to/plan.yaml",
     )
-    mock_job_manager.create_job.return_value = created_job
+    mock_job_executor.create_job.return_value = created_job
 
     # Test the endpoint
     with api_server.app.test_client() as client:
@@ -98,7 +98,7 @@ def test_post_jobs_endpoint(api_server, mock_job_manager, db):
         assert job_data["status"] == JobStatus.PENDING.value
 
 
-def test_post_jobs_missing_plan_path(api_server, mock_job_manager):
+def test_post_jobs_missing_plan_path(api_server, mock_job_executor):
     """POST /jobs with no plan_path is rejected with 400 and exact error payload."""
     with api_server.app.test_client() as client:
         # Empty body
@@ -114,12 +114,12 @@ def test_post_jobs_missing_plan_path(api_server, mock_job_manager):
         assert response.get_json() == {"error": "Missing plan_path in request body"}
 
     # Validation guard fires before the manager is ever consulted.
-    mock_job_manager.create_job.assert_not_called()
+    mock_job_executor.create_job.assert_not_called()
 
 
-def test_post_jobs_create_failure(api_server, mock_job_manager):
+def test_post_jobs_create_failure(api_server, mock_job_executor):
     """POST /jobs returns 500 when the manager fails to create the job."""
-    mock_job_manager.create_job.return_value = None
+    mock_job_executor.create_job.return_value = None
 
     with api_server.app.test_client() as client:
         response = client.post(
@@ -232,13 +232,13 @@ def test_get_nonexistent_task(api_server, db):
         assert response.status_code == 404
 
 
-def test_cancel_job_endpoint(api_server, mock_job_manager, db):
+def test_cancel_job_endpoint(api_server, mock_job_executor, db):
     """Test POST /jobs/{job_id}/cancel endpoint."""
     job_id = str(uuid.uuid4())
     job = Job(id=job_id, name="Test Job", status=JobStatus.RUNNING)
     db.create_job(job)
 
-    mock_job_manager.stop_job.return_value = True
+    mock_job_executor.stop_job.return_value = True
 
     with api_server.app.test_client() as client:
         response = client.post(f"/jobs/{job_id}/cancel")
@@ -246,16 +246,16 @@ def test_cancel_job_endpoint(api_server, mock_job_manager, db):
 
         data = response.get_json()
         assert data["success"] is True
-        mock_job_manager.stop_job.assert_called_once_with(job_id)
+        mock_job_executor.stop_job.assert_called_once_with(job_id)
 
 
-def test_cancel_job_failure(api_server, mock_job_manager, db):
+def test_cancel_job_failure(api_server, mock_job_executor, db):
     """Test POST /jobs/{job_id}/cancel with failed cancel."""
     job_id = str(uuid.uuid4())
     job = Job(id=job_id, name="Test Job", status=JobStatus.RUNNING)
     db.create_job(job)
 
-    mock_job_manager.stop_job.return_value = False
+    mock_job_executor.stop_job.return_value = False
 
     with api_server.app.test_client() as client:
         response = client.post(f"/jobs/{job_id}/cancel")

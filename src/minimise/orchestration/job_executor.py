@@ -1,10 +1,14 @@
-"""Job Manager for orchestrating plan execution and task sequencing."""
+"""JobExecutor — job lifecycle and process control.
+
+Owns creating jobs, launching/stopping the background process that runs them,
+and the status-update callbacks. The per-task work lives in TaskExecutor and
+the sequential run lives in ``loop.run_job``; persistence lives in JobStore.
+"""
 
 import subprocess
 import signal
 import os
 from pathlib import Path
-from datetime import datetime
 from typing import Optional
 
 from minimise.models import Job, JobStatus, TaskStatus, Plan
@@ -15,8 +19,8 @@ from minimise.orchestration.task_executor import TaskExecutor
 from minimise.utils import ensure_directory
 
 
-class JobManager:
-    """Orchestrates plan execution, task sequencing, and handover between tasks."""
+class JobExecutor:
+    """Orchestrates job creation, process control, and status callbacks."""
 
     def __init__(self, db: Database, git_tracker: GitTracker, jobs_dir: Path, repo_path: Path, on_job_update=None, on_task_update=None):
         self.db = db
@@ -27,6 +31,14 @@ class JobManager:
         self.task_executor = TaskExecutor(db, git_tracker, jobs_dir)
         self.on_job_update = on_job_update
         self.on_task_update = on_task_update
+
+    def notify_job(self, job_id: str) -> None:
+        if self.on_job_update:
+            self.on_job_update(job_id)
+
+    def notify_task(self, job_id: str, task_id: str) -> None:
+        if self.on_task_update:
+            self.on_task_update(job_id, task_id)
 
     def create_job(self, plan_path: Path) -> Optional[Job]:
         """Create a job from a plan.yaml file, or return None if creation failed."""
@@ -70,7 +82,7 @@ class JobManager:
 import sys
 sys.path.insert(0, '{str(self.jobs_dir.parent.parent)}')
 from minimise.storage.database import Database
-from minimise.orchestration.job_manager import JobManager
+from minimise.orchestration.job_executor import JobExecutor
 from minimise.orchestration.loop import run_job
 from minimise.storage.git_tracker import GitTracker
 from pathlib import Path
@@ -78,8 +90,8 @@ from pathlib import Path
 db = Database(Path(r'{self.db.db_path}'))
 git_tracker = GitTracker(Path(r'{self.repo_path}'))
 jobs_dir = Path(r'{self.jobs_dir}')
-manager = JobManager(db, git_tracker, jobs_dir, Path(r'{self.repo_path}'))
-run_job(manager, '{job_id}')
+executor = JobExecutor(db, git_tracker, jobs_dir, Path(r'{self.repo_path}'))
+run_job(executor, '{job_id}')
 """
             process = subprocess.Popen(
                 ["python", "-c", script],
@@ -89,9 +101,8 @@ run_job(manager, '{job_id}')
             )
 
             pid = process.pid
-            self.db.update_job_status(job_id, JobStatus.RUNNING, started_at=datetime.utcnow(), pid=pid)
-            if self.on_job_update:
-                self.on_job_update(job_id)
+            self.store.set_job_pid(job_id, pid)
+            self.notify_job(job_id)
             return pid
 
         except Exception as e:
@@ -115,15 +126,11 @@ run_job(manager, '{job_id}')
                 print(f"Error stopping job: {e}")
                 return False
 
-        self.db.update_job_status(job_id, JobStatus.STOPPED, completed_at=datetime.utcnow())
-        tasks = self.db.list_tasks_for_job(job_id)
-        for task in tasks:
+        self.store.mark_job_stopped(job_id)
+        for task in self.db.list_tasks_for_job(job_id):
             if task.status in (TaskStatus.RUNNING, TaskStatus.PENDING):
-                self.db.update_task_status(task.id, TaskStatus.STOPPED, completed_at=datetime.utcnow())
-                if self.on_task_update:
-                    self.on_task_update(job_id, task.id)
+                self.store.mark_task_stopped(task)
+                self.notify_task(job_id, task.id)
 
-        if self.on_job_update:
-            self.on_job_update(job_id)
-
+        self.notify_job(job_id)
         return True

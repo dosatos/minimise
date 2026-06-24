@@ -16,7 +16,7 @@ from minimise.interfaces.terminal_ui import get_status_color, render_task_table_
 from minimise.interfaces.cli._shared import (
     console,
     get_db,
-    get_job_manager,
+    get_job_executor,
     resolve_job_id,
     _error_job_not_found,
     _format_datetime,
@@ -90,9 +90,9 @@ def job_new(plan: str, skip_review: bool):
 
         # 3. Create the job
         db = get_db()
-        job_manager = get_job_manager(db)
+        job_executor = get_job_executor(db)
 
-        job_obj = job_manager.create_job(plan_path)
+        job_obj = job_executor.create_job(plan_path)
 
         if job_obj is None:
             console.print("[red]Error: Failed to create job[/red]")
@@ -118,13 +118,13 @@ def job_start(job_id: str):
     """Start a job (spawns subprocess in background)."""
     try:
         job_id, db, job_obj = _get_and_validate_job(job_id)
-        job_manager = get_job_manager(db)
+        job_executor = get_job_executor(db)
 
         if job_obj.status != JobStatus.PENDING:
             console.print(f"[red]Error: Job must be in PENDING state to start (current: {job_obj.status.value})[/red]")
             raise SystemExit(1)
 
-        pid = job_manager.start_job(job_id)
+        pid = job_executor.start_job(job_id)
 
         if pid is None:
             console.print(f"[red]Error: Failed to start job[/red]")
@@ -227,9 +227,9 @@ def job_status(job_id: str, format: str):
     try:
         job_id = resolve_job_id(job_id)
         db = get_db()
-        job_manager = get_job_manager(db)
+        job_executor = get_job_executor(db)
 
-        job_obj = job_manager.get_job_status(job_id)
+        job_obj = job_executor.get_job_status(job_id)
 
         if job_obj is None:
             _error_job_not_found(job_id)
@@ -320,7 +320,7 @@ def job_stop(job_id: str):
     """Stop a running job (sends SIGTERM to subprocess)."""
     try:
         job_id, db, job_obj = _get_and_validate_job(job_id)
-        job_manager = get_job_manager(db)
+        job_executor = get_job_executor(db)
 
         if job_obj.status != JobStatus.RUNNING:
             console.print(f"[red]Error: Job must be in RUNNING state to stop (current: {job_obj.status.value})[/red]")
@@ -330,7 +330,7 @@ def job_stop(job_id: str):
             console.print(f"[red]Error: Job has no associated process[/red]")
             raise SystemExit(1)
 
-        success = job_manager.stop_job(job_id)
+        success = job_executor.stop_job(job_id)
 
         if success:
             console.print(f"[green]Job {job_id} stopped successfully[/green]")
@@ -434,7 +434,7 @@ def job_show(job_id: str, task_id: Optional[str]):
         import yaml
 
         job_id, db, job_obj = _get_and_validate_job(job_id)
-        job_manager = get_job_manager(db)
+        job_executor = get_job_executor(db)
 
         # If task_id is provided, show full prompt with handover context
         if task_id:
@@ -483,7 +483,7 @@ def job_show(job_id: str, task_id: Optional[str]):
 
                 # Show git diff since job start
                 if job_obj.base_commit:
-                    diff = job_manager.git_tracker.get_diff(job_obj.base_commit)
+                    diff = job_executor.git_tracker.get_diff(job_obj.base_commit)
                     if diff:
                         console.print(f"[bold]Git Changes Summary:[/bold]")
                         file_count = diff.count("diff --git")
