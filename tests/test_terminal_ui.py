@@ -417,11 +417,12 @@ class TestRenderTaskTableWithGantt:
         # Check that table was created
         assert table is not None
         # Check that table has the expected columns
-        assert len(table.columns) == 4
+        assert len(table.columns) == 5
         assert table.columns[0].header == "Task Name"
         assert table.columns[1].header == "Status"
         assert table.columns[2].header == "Duration"
-        assert table.columns[3].header == "Timeline (relative)"
+        assert table.columns[3].header == "Expected"
+        assert table.columns[4].header == "Timeline (relative)"
 
     def test_render_task_table_with_gantt_row_count(self, sample_job, sample_tasks, base_time):
         """Test that table has correct number of rows."""
@@ -436,7 +437,7 @@ class TestRenderTaskTableWithGantt:
 
         assert table is not None
         assert len(table.rows) == 0
-        assert len(table.columns) == 4
+        assert len(table.columns) == 5
 
     def test_render_task_table_with_gantt_contains_duration_data(self, sample_job, sample_tasks, base_time):
         """Test that table includes duration information."""

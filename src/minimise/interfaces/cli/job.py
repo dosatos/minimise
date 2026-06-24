@@ -12,7 +12,7 @@ from rich.text import Text
 
 import minimise.interfaces.cli as _cli  # patchable constants/PlanReviewer; read at call time
 from minimise.models import JobStatus, TaskStatus, Plan
-from minimise.interfaces.terminal_ui import get_status_color, render_task_table_with_gantt
+from minimise.interfaces.terminal_ui import get_status_color, render_task_table_with_gantt, humanize_duration
 from minimise.interfaces.cli._shared import (
     console,
     get_db,
@@ -285,6 +285,9 @@ def job_status(job_id: str, format: str):
             console.print(f"[bold]Name:[/bold] {job_obj.name}")
             console.print(f"[bold]Status:[/bold] {job_obj.status.value}")
             console.print(f"[bold]Estimated Duration:[/bold] {est_total} min")
+            if job_obj.started_at and job_obj.completed_at:
+                elapsed = (job_obj.completed_at - job_obj.started_at).total_seconds()
+                console.print(f"[bold]Total Time:[/bold] {humanize_duration(elapsed)}")
             console.print(f"[bold]Plan Path:[/bold] {job_obj.plan_path}")
             console.print(f"[bold]Base Commit:[/bold] {job_obj.base_commit or 'N/A'}")
             console.print(
@@ -298,6 +301,9 @@ def job_status(job_id: str, format: str):
                 console.print(
                     f"[bold]Completed:[/bold] {_format_datetime(job_obj.completed_at)}"
                 )
+
+            done = sum(1 for t in job_obj.tasks if t.status == TaskStatus.COMPLETED)
+            console.print(f"[bold]Tasks Completed:[/bold] {done}/{len(job_obj.tasks)}")
 
             # Display task progress with Gantt chart
             if job_obj.tasks:

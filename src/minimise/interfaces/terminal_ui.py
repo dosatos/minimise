@@ -175,6 +175,7 @@ def render_task_table_with_gantt(job: Job, tasks: list[Task], now: Optional[date
     table.add_column("Task Name", style="cyan")
     table.add_column("Status", style="cyan")
     table.add_column("Duration", style="yellow")
+    table.add_column("Expected", style="dim")
     table.add_column("Timeline (relative)", style="green")
 
     for task in tasks:
@@ -195,10 +196,17 @@ def render_task_table_with_gantt(job: Job, tasks: list[Task], now: Optional[date
             now=now,
         )
 
+        expected = (
+            humanize_duration(task.estimated_duration_min * 60)
+            if task.estimated_duration_min
+            else "—"
+        )
+
         table.add_row(
             task.name,
             status_text,
             duration,
+            expected,
             gantt_bar,
         )
 
