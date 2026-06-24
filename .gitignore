@@ -58,3 +58,6 @@ worklogs/
 __pycache__/
 .agent-native/
 examples/*.yaml
+
+# Understand-Anything knowledge graph (untracked tooling output)
+.understand-anything/
