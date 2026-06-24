@@ -1,119 +1,127 @@
 plan:
   name: "Ponytail refactor fleet: simplify each source file"
   description: |
-    One task per source file. Each task refactors and simplifies exactly one
-    file under lazy/anti-slop (Ponytail) principles with ZERO behavior change.
-    A pytest gate runs after every task; a task that breaks tests fails and
-    retries, so "simplify" can never silently become "break".
+    One task per source file. Each task applies a set of pre-vetted, behavior-
+    preserving simplifications, adds/extends tests covering the touched code,
+    and must leave the FULL suite green. A pytest gate runs after every task;
+    a task that breaks tests fails and retries, so "simplify" can never silently
+    become "break".
+
+    Shared rules for EVERY task:
+    - Touch ONLY the one named source file (+ its test file when adding tests).
+    - ZERO behavior change. Refactor only.
+    - Do NOT add new dependencies. Do NOT invent abstractions for single use sites.
+    - After editing, run `pytest tests/ -q` yourself and fix anything you broke
+      BEFORE finishing. The orchestrator also runs it as a gate.
+    - Do not create/delete mini jobs. No co-author trailers on commits.
 
   tasks:
     - id: "ponytail-cli"
       name: "Simplify cli.py"
       description: |
-        Refactor and simplify ONLY src/minimise/cli.py (920 lines — the biggest
-        file and most likely to hide over-engineering).
+        Refactor ONLY src/minimise/cli.py (920 lines). Apply these pre-vetted changes:
+        - Delete unused module-level imports: signal, os, yaml (yaml is re-imported
+          locally in job_show where it's actually used) and the deferred `import time`
+          (hoist it to the top instead). Verify each is truly unused before deleting.
+        - Extract `_error_job_not_found(job_id)` for the repeated
+          "Job {id} not found" + SystemExit(1) pattern (~8 sites).
+        - Extract `_format_datetime(dt, default="N/A")` for the repeated
+          `dt.strftime(...) if dt else "N/A"` pattern (~7 sites).
+        - Extract `_filter_tasks_by_id(tasks, task_id_str)` for the repeated
+          full-id-or-prefix task filtering (~3 sites).
+        - Extract `_get_and_validate_job(...)` for the resolve-id -> get-db ->
+          fetch-or-error pattern (~8 sites). CAUTION: this is the biggest change
+          and the most likely to shift an error message or exit code. Preserve the
+          EXACT output text and exit code of every command. If any call site differs
+          even slightly, leave that site inline rather than forcing it through the helper.
+        - Flatten the job_new review-findings nested if/else into early returns.
 
-        Apply lazy/anti-slop principles:
-        - Delete dead code, unused imports, unreachable branches.
-        - Dedupe repeated scaffolding (collapse near-identical command bodies,
-          shared error/output formatting) into the smallest helper that fits.
-        - Replace hand-rolled logic with stdlib or an already-imported helper
-          where one exists. Do NOT add new dependencies.
-        - Flatten nested conditionals into early returns.
-
-        HARD CONSTRAINTS:
-        - Touch ONLY src/minimise/cli.py. Do not edit other source files or tests.
-        - ZERO behavior change: every CLI command keeps its exact args, output,
-          and exit codes. This is cleanup, not redesign.
-        - Do not invent abstractions for single use sites (no interface with one
-          impl, no factory for one product).
-        - Do NOT create or delete mini jobs. Do NOT add co-author trailers to commits.
-      goal: "cli.py is smaller and flatter with identical behavior; all tests pass."
-      estimated_duration_min: 12
+        TESTS: add/extend tests/test_cli.py to cover the new helpers and to assert
+        the "job not found" path still prints the same message and exits non-zero.
+        Use click's CliRunner (already used in that test file) — match existing style.
+      goal: "cli.py is smaller with identical CLI behavior; new helper tests pass; full suite green."
+      estimated_duration_min: 14
       post_task_hook: "pytest tests/ -q"
 
     - id: "ponytail-database"
       name: "Simplify database.py"
       description: |
-        Refactor and simplify ONLY src/minimise/database.py (419 lines).
+        Refactor ONLY src/minimise/database.py (419 lines). Apply these pre-vetted changes:
+        - Extract `_row_to_job(row)` and `_row_to_task(row)` helpers; reuse them in
+          get_job/list_jobs and get_task/list_tasks_for_job respectively.
+        - Fix the dead `try/except IndexError` guards around optional columns (pid,
+          base_commit, etc.): with sqlite3.Row, missing-key access raises KeyError,
+          not IndexError, so those excepts never fire. Replace with a correct
+          presence check (e.g. `row["x"] if "x" in row.keys() else None`). This is a
+          latent-bug fix — keep the resulting value semantics identical (None when absent).
+        - Dedupe the repeated `PRAGMA table_info(...)` reads into one helper.
 
-        Apply lazy/anti-slop principles:
-        - Delete dead code and unused imports.
-        - Dedupe repeated SQL scaffolding (repeated PRAGMA reads, repeated
-          row->object mapping, repeated connection boilerplate) into the
-          smallest helper that fits.
-        - Use stdlib (sqlite3 row factories, namedtuple/dataclass mapping)
-          before hand-rolling. Do NOT add new dependencies.
-
-        HARD CONSTRAINTS:
-        - Touch ONLY src/minimise/database.py.
-        - ZERO behavior change: schema, queries, and return shapes stay identical.
-        - Do not invent abstractions for single use sites.
-        - Do not create/delete mini jobs. No co-author trailers.
-      goal: "database.py is smaller with identical schema and query results; all tests pass."
-      estimated_duration_min: 8
+        TESTS: extend tests/test_database.py to assert _row_to_job/_row_to_task
+        round-trip a stored job/task correctly, including the optional-column-absent
+        case (so the KeyError fix is locked in).
+      goal: "database.py is smaller with identical schema/queries/return shapes; new mapping tests pass; full suite green."
+      estimated_duration_min: 9
       post_task_hook: "pytest tests/ -q"
 
     - id: "ponytail-api-server"
       name: "Simplify api_server.py"
       description: |
-        Refactor and simplify ONLY src/minimise/api_server.py (266 lines).
+        Refactor ONLY src/minimise/api_server.py (266 lines). Apply these pre-vetted changes:
+        - Delete the no-op WebSocket handlers handle_connect/handle_disconnect
+          (bodies are just `pass` + docstring; Flask-SocketIO handles these implicitly).
+        - Hoist the inline `from flask_socketio import join_room/leave_room` up into
+          the module-level flask_socketio import.
+        - Extract a small `_load_job_with_tasks(job_id)` helper for the repeated
+          "fetch job, attach tasks" three-liner.
+        DO NOT add a blanket error-handling decorator. Routes return distinct status
+        codes (200/201/400/404/500) and a catch-all wrapper risks flattening them —
+        leave each handler's try/except as-is. PRESERVE the goal-check validation
+        guard on POST /jobs (it is the only validation on that path).
 
-        Apply lazy/anti-slop principles:
-        - Delete dead code, unused config, unread flags, unused imports.
-        - Dedupe repeated request/response handling and error formatting.
-        - Prefer stdlib / already-installed deps over custom code. Do NOT add
-          new dependencies.
-
-        HARD CONSTRAINTS:
-        - Touch ONLY src/minimise/api_server.py.
-        - ZERO behavior change: routes, status codes, and JSON payloads stay
-          identical. Keep the goal-check validation guard on POST /jobs.
-        - Do not invent abstractions for single use sites.
-        - Do not create/delete mini jobs. No co-author trailers.
-      goal: "api_server.py is smaller with identical routes and payloads; all tests pass."
-      estimated_duration_min: 7
+        TESTS: extend tests/test_api_server.py to assert the routes still return their
+        exact status codes and JSON payloads after the cleanup (especially POST /jobs
+        validation rejecting a missing/invalid plan_path).
+      goal: "api_server.py is smaller with identical routes/codes/payloads; route tests pass; full suite green."
+      estimated_duration_min: 9
       post_task_hook: "pytest tests/ -q"
 
     - id: "ponytail-terminal-ui"
       name: "Simplify terminal_ui.py"
       description: |
-        Refactor and simplify ONLY src/minimise/terminal_ui.py (210 lines).
+        Refactor ONLY src/minimise/terminal_ui.py (210 lines). Apply these pre-vetted changes:
+        - Collapse the double isinstance check to `isinstance(status, (JobStatus, TaskStatus))`.
+        - Replace the explicit gantt bar-building loop with an equivalent
+          "".join(...) comprehension producing the identical string.
+        - Extract `_now_or_default(now)` returning `now or datetime.utcnow()` and use it
+          in the two functions that default `now`.
+        - Fix the redundant modulo in humanize_duration (e.g. `(total_seconds % 3600)`
+          rather than `((total_seconds % 86400) % 3600)`) — same result.
+        Keep datetime.utcnow() (do NOT switch to datetime.now()).
 
-        Apply lazy/anti-slop principles:
-        - Delete dead code and unused imports.
-        - Dedupe repeated rendering/formatting blocks into the smallest helper
-          that fits.
-        - Prefer stdlib / already-imported helpers. Do NOT add new dependencies.
-
-        HARD CONSTRAINTS:
-        - Touch ONLY src/minimise/terminal_ui.py.
-        - ZERO behavior change: rendered output stays identical.
-        - Do not invent abstractions for single use sites.
-        - Do not create/delete mini jobs. No co-author trailers.
-      goal: "terminal_ui.py is smaller with identical rendered output; all tests pass."
-      estimated_duration_min: 6
+        TESTS: extend tests/test_terminal_ui.py (create it if absent, matching existing
+        test style) to assert humanize_duration and the gantt bar render the SAME
+        output as before for a few representative inputs.
+      goal: "terminal_ui.py is smaller with byte-identical rendered output; render tests pass; full suite green."
+      estimated_duration_min: 7
       post_task_hook: "pytest tests/ -q"
 
     - id: "ponytail-task-executor"
       name: "Simplify task_executor.py"
       description: |
-        Refactor and simplify ONLY src/minimise/task_executor.py (195 lines).
+        Refactor ONLY src/minimise/task_executor.py (195 lines). Apply these pre-vetted changes:
+        - Extract `_finalize_task(task_id, status, output, retries)` that wraps the
+          repeated `update_task_status(..., completed_at=datetime.utcnow())` calls in
+          the COMPLETED, FAILED, and post-hook-failure paths. Reuse it in all three.
+        - Remove the now-redundant inline comment(s) left behind.
+        Do NOT merge the COMPLETED and FAILED blocks (COMPLETED has the commit+diff
+        side-effect FAILED lacks). Do NOT touch the started_at handling (the proposed
+        change is a no-op). Keep retry count, hook ordering, commit/diff behavior, and
+        the return tuple identical.
 
-        Apply lazy/anti-slop principles:
-        - Delete dead code and unused imports.
-        - Dedupe repeated status-update / hook-running scaffolding into the
-          smallest helper that fits.
-        - Flatten the retry loop's nested conditionals into early returns where
-          it reads clearer.
-        - Prefer stdlib / already-imported helpers. Do NOT add new dependencies.
-
-        HARD CONSTRAINTS:
-        - Touch ONLY src/minimise/task_executor.py.
-        - ZERO behavior change: retry count, hook ordering, commit/diff behavior,
-          and return tuples stay identical.
-        - Do not invent abstractions for single use sites.
-        - Do not create/delete mini jobs. No co-author trailers.
-      goal: "task_executor.py is smaller and flatter with identical behavior; all tests pass."
-      estimated_duration_min: 6
+        TESTS: extend tests/test_task_executor.py (or test_job_manager.py if that's
+        where executor tests live) to assert a task still ends COMPLETED on success
+        and FAILED on a failing post-task hook, with completed_at set — locking in
+        that _finalize_task preserves the finalization behavior.
+      goal: "task_executor.py is smaller with identical execution/finalization behavior; tests pass; full suite green."
+      estimated_duration_min: 7
       post_task_hook: "pytest tests/ -q"
