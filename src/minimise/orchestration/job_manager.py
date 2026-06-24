@@ -13,7 +13,6 @@ from minimise.models import Job, Task, JobStatus, TaskStatus, Plan
 from minimise.storage.database import Database
 from minimise.storage.git_tracker import GitTracker
 from minimise.orchestration.task_executor import TaskExecutor
-from minimise.orchestration.handover_manager import HandoverManager
 from minimise.utils import ensure_directory
 
 
@@ -139,117 +138,13 @@ class JobManager:
         return job
 
     def run_job(self, job_id: str) -> bool:
+        """Execute an entire job (all tasks sequentially).
+
+        Thin delegate to ``minimise.orchestration.loop.run_job`` — that module
+        holds the execution loop.
         """
-        Execute entire job (all tasks sequentially).
-
-        Loads job and plan, runs pre_plan_hook, executes tasks sequentially with
-        handover context flowing between them, runs post_plan_hook, and marks
-        job as completed or failed.
-
-        Args:
-            job_id: ID of the job to run
-
-        Returns:
-            True if job completed successfully, False otherwise
-        """
-        # Load job from database
-        job = self.db.get_job(job_id)
-        if not job:
-            print(f"Job {job_id} not found")
-            return False
-
-        # Load plan from disk
-        job_dir = self.jobs_dir / job_id
-        plan_path = job_dir / "plan.yaml"
-        if not plan_path.exists():
-            print(f"Plan file not found for job {job_id}")
-            return False
-
-        try:
-            plan = Plan.from_yaml(plan_path)
-        except Exception as e:
-            print(f"Error reading plan file: {e}")
-            return False
-
-        # Update job status to RUNNING
-        self.db.update_job_status(job_id, JobStatus.RUNNING, started_at=datetime.utcnow())
-        if self.on_job_update:
-            self.on_job_update(job_id)
-
-        # Load hooks from disk
-        pre_plan_hook = (job_dir / "pre_plan_hook.txt").read_text() if (job_dir / "pre_plan_hook.txt").exists() else ""
-        post_plan_hook = (job_dir / "post_plan_hook.txt").read_text() if (job_dir / "post_plan_hook.txt").exists() else ""
-
-        # Run pre_plan_hook
-        if pre_plan_hook:
-            from minimise.utils import run_shell_command
-            success, output = run_shell_command(pre_plan_hook)
-            if not success:
-                print(f"Pre-plan hook failed: {output}")
-                self.release_lock(str(plan_path))
-                self.db.update_job_status(job_id, JobStatus.FAILED, completed_at=datetime.utcnow())
-                if self.on_job_update:
-                    self.on_job_update(job_id)
-                return False
-
-        # Load all tasks for this job from database
-        tasks = self.db.list_tasks_for_job(job_id)
-
-        # Map tasks to their config by index for hooks
-        handover_context = ""
-
-        for idx, task in enumerate(tasks):
-            # Per-task hooks live as pydantic extras on the plan task (by index)
-            plan_task = plan.tasks[idx] if idx < len(plan.tasks) else None
-            pre_task_hook = getattr(plan_task, "pre_task_hook", "") or ""
-            post_task_hook = getattr(plan_task, "post_task_hook", "") or ""
-
-            # Execute task
-            success, output = self.task_executor.execute_task(
-                task,
-                job_id,
-                handover_context,
-                pre_task_hook=pre_task_hook,
-                post_task_hook=post_task_hook,
-            )
-
-            if not success:
-                print(f"Task {task.name} failed: {output}")
-                self.release_lock(str(plan_path))
-                self.db.update_job_status(job_id, JobStatus.FAILED, completed_at=datetime.utcnow())
-                if self.on_job_update:
-                    self.on_job_update(job_id)
-                return False
-
-            # Build handover context for next task
-            if job.base_commit:
-                diff = self.git_tracker.get_diff(job.base_commit)
-            else:
-                diff = ""
-
-            # Build handover prompt if there are more tasks
-            if idx < len(tasks) - 1:
-                next_task = tasks[idx + 1]
-                handover_context = HandoverManager.build_handover_prompt(output, diff, next_task)
-
-        # Run post_plan_hook
-        if post_plan_hook:
-            from minimise.utils import run_shell_command
-            success, output = run_shell_command(post_plan_hook)
-            if not success:
-                print(f"Post-plan hook failed: {output}")
-                self.release_lock(str(plan_path))
-                self.db.update_job_status(job_id, JobStatus.FAILED, completed_at=datetime.utcnow())
-                if self.on_job_update:
-                    self.on_job_update(job_id)
-                return False
-
-        # Mark job as COMPLETED
-        self.db.update_job_status(job_id, JobStatus.COMPLETED, completed_at=datetime.utcnow())
-        if self.on_job_update:
-            self.on_job_update(job_id)
-
-        return True
+        from minimise.orchestration.loop import run_job
+        return run_job(self, job_id)
 
     def cancel_job(self, job_id: str) -> bool:
         """
