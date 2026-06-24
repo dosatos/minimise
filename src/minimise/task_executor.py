@@ -102,13 +102,8 @@ class TaskExecutor:
         if post_task_hook:
             hook_success, hook_output = run_shell_command(post_task_hook)
             if not hook_success:
-                # Issue #1 fix: Update status to FAILED before returning
-                self.db.update_task_status(
-                    task.id,
-                    TaskStatus.FAILED,
-                    output=f"Post-task hook failed: {hook_output}",
-                    retries=task.retries,
-                    completed_at=datetime.utcnow(),
+                self._finalize_task(
+                    task.id, TaskStatus.FAILED, f"Post-task hook failed: {hook_output}", task.retries
                 )
                 return False, f"Post-task hook failed: {hook_output}"
 
@@ -130,23 +125,17 @@ class TaskExecutor:
                 # Update only diff_path in database (preserves all other fields)
                 self.db.update_task_diff_path(task.id, str(diff_path))
 
-            self.db.update_task_status(
-                task.id,
-                TaskStatus.COMPLETED,
-                output=final_output,
-                retries=task.retries,
-                completed_at=datetime.utcnow(),
-            )
+            self._finalize_task(task.id, TaskStatus.COMPLETED, final_output, task.retries)
         else:
-            self.db.update_task_status(
-                task.id,
-                TaskStatus.FAILED,
-                output=final_output,
-                retries=task.retries,
-                completed_at=datetime.utcnow(),
-            )
+            self._finalize_task(task.id, TaskStatus.FAILED, final_output, task.retries)
 
         return final_success, final_output
+
+    def _finalize_task(self, task_id: str, status: TaskStatus, output: str, retries: int) -> None:
+        """Record a terminal task status with a completion timestamp."""
+        self.db.update_task_status(
+            task_id, status, output=output, retries=retries, completed_at=datetime.utcnow()
+        )
 
     def _invoke_claude_code(self, context: dict) -> tuple[bool, str]:
         """

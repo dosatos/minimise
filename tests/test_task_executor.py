@@ -166,6 +166,7 @@ def test_post_hook_failure_updates_status(temp_db_dir, db, git_repo):
     updated_task = db.get_task(task.id)
     assert updated_task.status == TaskStatus.FAILED
     assert "Post-task hook failed" in updated_task.output
+    assert updated_task.completed_at is not None
 
 
 def test_task_completion_without_base_commit(temp_db_dir, db, git_repo):
@@ -209,6 +210,7 @@ def test_task_completion_without_base_commit(temp_db_dir, db, git_repo):
     updated_task = db.get_task(task.id)
     assert updated_task.status == TaskStatus.COMPLETED
     assert updated_task.output == "Task completed"
+    assert updated_task.completed_at is not None
 
 
 def test_task_commits_against_base_commit(temp_db_dir, db, git_repo):
