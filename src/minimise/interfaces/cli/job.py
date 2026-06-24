@@ -115,7 +115,7 @@ def job_new(plan: str, skip_review: bool):
 @job.command(name="start")
 @click.argument("job_id")
 def job_start(job_id: str):
-    """Start a job (spawns subprocess in background)."""
+    """Start a job (runs to completion in the foreground)."""
     try:
         job_id, db, job_obj = _get_and_validate_job(job_id)
         job_controller = get_job_controller(db)
@@ -124,15 +124,14 @@ def job_start(job_id: str):
             console.print(f"[red]Error: Job must be in PENDING state to start (current: {job_obj.status.value})[/red]")
             raise SystemExit(1)
 
-        pid = job_controller.start_job(job_id)
+        success = job_controller.start_job(job_id)
 
-        if pid is None:
-            console.print(f"[red]Error: Failed to start job[/red]")
+        if not success:
+            console.print(f"[red]Error: Job failed[/red]")
             raise SystemExit(1)
 
-        console.print(f"[green]Job started successfully[/green]")
+        console.print(f"[green]Job completed successfully[/green]")
         console.print(f"[bold]Job ID:[/bold] {job_id}")
-        console.print(f"[bold]PID:[/bold] {pid}")
         console.print(f"[dim]Check status with: mini job status {job_id[:8]}[/dim]")
 
     except Exception as e:
@@ -317,17 +316,13 @@ def job_status(job_id: str, format: str):
 @job.command(name="stop")
 @click.argument("job_id")
 def job_stop(job_id: str):
-    """Stop a running job (sends SIGTERM to subprocess)."""
+    """Stop a running job (marks it and its tasks STOPPED)."""
     try:
         job_id, db, job_obj = _get_and_validate_job(job_id)
         job_controller = get_job_controller(db)
 
         if job_obj.status != JobStatus.RUNNING:
             console.print(f"[red]Error: Job must be in RUNNING state to stop (current: {job_obj.status.value})[/red]")
-            raise SystemExit(1)
-
-        if job_obj.pid is None:
-            console.print(f"[red]Error: Job has no associated process[/red]")
             raise SystemExit(1)
 
         success = job_controller.stop_job(job_id)

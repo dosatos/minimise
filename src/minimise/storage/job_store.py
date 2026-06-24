@@ -79,9 +79,6 @@ class JobStore:
     def mark_job_stopped(self, job_id: str) -> None:
         self.db.update_job_status(job_id, JobStatus.STOPPED, completed_at=datetime.utcnow())
 
-    def set_job_pid(self, job_id: str, pid: int) -> None:
-        self.db.update_job_status(job_id, JobStatus.RUNNING, started_at=datetime.utcnow(), pid=pid)
-
     # --- task lifecycle --------------------------------------------------
 
     def set_task_base_commit(self, task: Task, base_commit: str) -> None:
