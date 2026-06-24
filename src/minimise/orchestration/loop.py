@@ -59,9 +59,9 @@ def run_job(manager, job_id: str) -> bool:
     if manager.on_job_update:
         manager.on_job_update(job_id)
 
-    # Load hooks from disk
-    pre_plan_hook = (job_dir / "pre_plan_hook.txt").read_text() if (job_dir / "pre_plan_hook.txt").exists() else ""
-    post_plan_hook = (job_dir / "post_plan_hook.txt").read_text() if (job_dir / "post_plan_hook.txt").exists() else ""
+    # Plan-level hooks live as pydantic extras on the parsed plan.
+    pre_plan_hook = getattr(plan, "pre_plan_hook", "") or ""
+    post_plan_hook = getattr(plan, "post_plan_hook", "") or ""
 
     # Run pre_plan_hook
     if pre_plan_hook:

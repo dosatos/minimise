@@ -1,7 +1,5 @@
 """Job Manager for orchestrating plan execution and task sequencing."""
 
-import uuid
-import yaml
 import subprocess
 import signal
 import os
@@ -9,9 +7,10 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-from minimise.models import Job, Task, JobStatus, TaskStatus, Plan
+from minimise.models import Job, JobStatus, TaskStatus, Plan
 from minimise.storage.database import Database
 from minimise.storage.git_tracker import GitTracker
+from minimise.storage.job_store import JobStore
 from minimise.orchestration.task_executor import TaskExecutor
 from minimise.utils import ensure_directory
 
@@ -24,6 +23,7 @@ class JobManager:
         self.git_tracker = git_tracker
         self.jobs_dir = ensure_directory(jobs_dir)
         self.repo_path = Path(repo_path)
+        self.store = JobStore(db, jobs_dir)
         self.task_executor = TaskExecutor(db, git_tracker, jobs_dir)
         self.on_job_update = on_job_update
         self.on_task_update = on_task_update
@@ -46,55 +46,11 @@ class JobManager:
             print(f"Error reading plan file: {e}")
             return None
 
-        # Hooks are pydantic extras (extra="allow").
-        pre_plan_hook = getattr(plan, "pre_plan_hook", "")
-        post_plan_hook = getattr(plan, "post_plan_hook", "")
-
-        job_id = str(uuid.uuid4())
-        job = Job(
-            id=job_id,
-            name=plan.name,
-            status=JobStatus.PENDING,
-            plan_path=str(plan_path),
-            base_commit=base_commit,
-            created_at=datetime.utcnow(),
-        )
-        tasks = [
-            Task(
-                id=pt.id,
-                job_id=job_id,
-                name=pt.name,
-                description=pt.description,
-                goal=pt.goal,
-                status=TaskStatus.PENDING,
-                created_at=datetime.utcnow(),
-                base_commit=base_commit,
-                estimated_duration_min=pt.estimated_duration_min,
-            )
-            for pt in plan.tasks
-        ]
-        job.tasks = tasks
-
-        self.db.create_job(job)
-        for task in tasks:
-            self.db.create_task(task)
-
-        job_dir = ensure_directory(self.jobs_dir / job_id)
-        with open(job_dir / "plan.yaml", "w") as f:
-            yaml.dump(plan.model_dump(), f)
-        (job_dir / "base_commit.txt").write_text(base_commit)
-        (job_dir / "pre_plan_hook.txt").write_text(pre_plan_hook)
-        (job_dir / "post_plan_hook.txt").write_text(post_plan_hook)
-
-        return job
+        return self.store.create(plan, base_commit, str(plan_path))
 
     def get_job_status(self, job_id: str) -> Optional[Job]:
         """Get a job with all its tasks attached, or None if not found."""
-        job = self.db.get_job(job_id)
-        if not job:
-            return None
-        job.tasks = self.db.list_tasks_for_job(job_id)
-        return job
+        return self.store.load(job_id)
 
     def start_job(self, job_id: str) -> Optional[int]:
         """Spawn a PENDING job's execution loop as a detached subprocess; return its PID."""
