@@ -19,14 +19,12 @@ class TaskExecutor:
         db: Database,
         git_tracker: GitTracker,
         jobs_dir: Path,
-        on_task_update=None,
         harness: Optional[AgentHarness] = None,
     ):
         self.db = db
         self.git_tracker = git_tracker
         self.jobs_dir = jobs_dir
         self.store = JobStore(db, jobs_dir)
-        self.on_task_update = on_task_update
         self.harness = harness or ClaudeCodeHarness()
 
     def execute_task(

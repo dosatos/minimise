@@ -20,31 +20,19 @@ from minimise.utils import ensure_directory
 class JobController:
     """Orchestrates job creation, process control, and status callbacks."""
 
-    def __init__(self, db: Database, git_tracker: GitTracker, jobs_dir: Path, repo_path: Path, on_job_update=None, on_task_update=None):
+    def __init__(self, db: Database, git_tracker: GitTracker, jobs_dir: Path, repo_path: Path):
         self.db = db
         self.git_tracker = git_tracker
         self.jobs_dir = ensure_directory(jobs_dir)
         self.repo_path = Path(repo_path)
         self.store = JobStore(db, jobs_dir)
         self.task_executor = TaskExecutor(db, git_tracker, jobs_dir)
-        self.on_job_update = on_job_update
-        self.on_task_update = on_task_update
-        # notify_job is a bound method so callbacks set after construction
-        # (e.g. by APIServer) are honoured at call time.
-        self.executor = JobExecutor(self.store, self.task_executor, git_tracker, self.notify_job)
+        self.executor = JobExecutor(self.store, self.task_executor, git_tracker)
 
     @classmethod
-    def from_paths(cls, db, repo_path, jobs_dir, on_job_update=None, on_task_update=None) -> "JobController":
+    def from_paths(cls, db, repo_path, jobs_dir) -> "JobController":
         """Build a controller, wiring a GitTracker for ``repo_path``."""
-        return cls(db, GitTracker(Path(repo_path)), jobs_dir, repo_path, on_job_update, on_task_update)
-
-    def notify_job(self, job_id: str) -> None:
-        if self.on_job_update:
-            self.on_job_update(job_id)
-
-    def notify_task(self, job_id: str, task_id: str) -> None:
-        if self.on_task_update:
-            self.on_task_update(job_id, task_id)
+        return cls(db, GitTracker(Path(repo_path)), jobs_dir, repo_path)
 
     def create_job(self, plan_path: Path) -> Optional[Job]:
         """Create a job from a plan.yaml file, or return None if creation failed."""
@@ -94,7 +82,5 @@ class JobController:
         for task in self.db.list_tasks_for_job(job_id):
             if task.status in (TaskStatus.RUNNING, TaskStatus.PENDING):
                 self.store.mark_task_stopped(task)
-                self.notify_task(job_id, task.id)
 
-        self.notify_job(job_id)
         return True

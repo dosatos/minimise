@@ -1,11 +1,10 @@
-"""REST API server with WebSocket support for job/task state exposure."""
+"""REST API server exposing read-only job/task state over HTTP."""
 
 import threading
 from typing import Optional
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from flask_socketio import SocketIO, emit, join_room, leave_room
 
 from minimise.models import Job
 from minimise.storage.database import Database
@@ -13,7 +12,7 @@ from minimise.orchestration.job_controller import JobController
 
 
 class APIServer:
-    """REST API server with WebSocket support for job/task state exposure."""
+    """REST API server exposing read-only job/task state over HTTP."""
 
     def __init__(self, db: Database, job_controller: JobController, port: int = 5000):
         """
@@ -32,14 +31,7 @@ class APIServer:
         # Enable CORS
         CORS(self.app, resources={r"/*": {"origins": "*"}})
 
-        # Initialize WebSocket support
-        self.socketio = SocketIO(self.app, cors_allowed_origins="*")
-
         self.server_thread: Optional[threading.Thread] = None
-
-        # Set up broadcast callbacks on JobController
-        self.job_controller.on_job_update = self.broadcast_job_update
-        self.job_controller.on_task_update = self.broadcast_task_update
 
         # Register routes
         self._register_routes()
@@ -52,9 +44,8 @@ class APIServer:
         return job
 
     def _register_routes(self):
-        """Register all API routes and WebSocket handlers."""
+        """Register all REST API routes."""
 
-        # REST API Routes
         @self.app.route("/jobs", methods=["GET"])
         def get_jobs():
             """Get all jobs."""
@@ -118,42 +109,6 @@ class APIServer:
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
 
-        # WebSocket handlers
-        @self.socketio.on("subscribe_job")
-        def handle_subscribe_job(data):
-            """Subscribe to job status updates."""
-            try:
-                job_id = data.get("job_id")
-                if not job_id:
-                    emit("error", {"message": "job_id required"})
-                    return
-
-                job = self._load_job_with_tasks(job_id)
-                if not job:
-                    emit("error", {"message": "Job not found"})
-                    return
-
-                # Join room for this job
-                join_room(f"job_{job_id}")
-
-                emit("job_update", job.to_dict())
-            except Exception as e:
-                emit("error", {"message": str(e)})
-
-        @self.socketio.on("unsubscribe_job")
-        def handle_unsubscribe_job(data):
-            """Unsubscribe from job status updates."""
-            try:
-                job_id = data.get("job_id")
-                if not job_id:
-                    emit("error", {"message": "job_id required"})
-                    return
-
-                leave_room(f"job_{job_id}")
-                emit("unsubscribed", {"job_id": job_id})
-            except Exception as e:
-                emit("error", {"message": str(e)})
-
     def start(self):
         """Start the Flask server in a separate thread (non-blocking)."""
         if self.server_thread is not None and self.server_thread.is_alive():
@@ -161,14 +116,11 @@ class APIServer:
 
         def run_server():
             """Run the server in a thread."""
-            self.socketio.run(
-                self.app,
+            self.app.run(
                 host="0.0.0.0",
                 port=self.port,
                 debug=False,
                 use_reloader=False,
-                log_output=False,
-                allow_unsafe_werkzeug=True,
             )
 
         self.server_thread = threading.Thread(target=run_server, daemon=True)
@@ -176,43 +128,6 @@ class APIServer:
 
     def stop(self):
         """Gracefully shut down the server."""
-        if self.socketio:
-            try:
-                self.socketio.stop()
-            except RuntimeError:
-                # Ignore "Working outside of request context" errors when stopping
-                pass
-
-    def broadcast_job_update(self, job_id: str):
-        """Broadcast job status update to all subscribers."""
-        try:
-            job = self._load_job_with_tasks(job_id)
-            if job:
-                self.socketio.emit(
-                    "job_update",
-                    job.to_dict(),
-                    room=f"job_{job_id}",
-                )
-        except Exception as e:
-            self.socketio.emit(
-                "error",
-                {"message": f"Failed to broadcast job update: {str(e)}"},
-                room=f"job_{job_id}",
-            )
-
-    def broadcast_task_update(self, job_id: str, task_id: str):
-        """Broadcast task status update to job subscribers."""
-        try:
-            task = self.db.get_task(task_id)
-            if task:
-                self.socketio.emit(
-                    "task_update",
-                    task.to_dict(),
-                    room=f"job_{job_id}",
-                )
-        except Exception as e:
-            self.socketio.emit(
-                "error",
-                {"message": f"Failed to broadcast task update: {str(e)}"},
-                room=f"job_{job_id}",
-            )
+        # ponytail: daemon thread dies with the process; no explicit shutdown
+        # hook on Flask's dev server. Revisit if start() moves to a real WSGI server.
+        pass

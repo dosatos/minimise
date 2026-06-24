@@ -34,7 +34,6 @@ def test_api_server_initialization(db, mock_job_controller):
     assert server.job_controller is mock_job_controller
     assert server.port == 5001
     assert server.app is not None
-    assert server.socketio is not None
 
 
 def test_get_jobs_endpoint(api_server, db):

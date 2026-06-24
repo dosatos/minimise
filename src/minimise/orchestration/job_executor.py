@@ -16,11 +16,10 @@ from minimise.orchestration.hooks import Hook
 class JobExecutor:
     """Runs all of a job's tasks sequentially."""
 
-    def __init__(self, store: JobStore, task_executor: TaskExecutor, git_tracker: GitTracker, notify_job=None):
+    def __init__(self, store: JobStore, task_executor: TaskExecutor, git_tracker: GitTracker):
         self.store = store
         self.task_executor = task_executor
         self.git_tracker = git_tracker
-        self.notify_job = notify_job or (lambda job_id: None)
 
     def execute(self, job_id: str) -> bool:
         """Execute an entire job (all tasks sequentially); returns True on success."""
@@ -36,7 +35,6 @@ class JobExecutor:
             return False
 
         self.store.mark_job_running(job_id)
-        self.notify_job(job_id)
 
         pre_plan, post_plan = self.store.hooks(job_id)
         if not self._run_hook(job_id, Hook(pre_plan), "Pre-plan"):
@@ -63,7 +61,6 @@ class JobExecutor:
             return False
 
         self.store.mark_job_completed(job_id)
-        self.notify_job(job_id)
         return True
 
     def _run_hook(self, job_id, hook: Hook, label: str) -> bool:
@@ -76,7 +73,6 @@ class JobExecutor:
         return True
 
     def _fail_job(self, job_id) -> bool:
-        """Mark the job FAILED, notify, and return False (the loop's failure result)."""
+        """Mark the job FAILED and return False (the loop's failure result)."""
         self.store.mark_job_failed(job_id)
-        self.notify_job(job_id)
         return False
