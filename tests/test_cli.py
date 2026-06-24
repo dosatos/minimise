@@ -1989,3 +1989,57 @@ def test_job_status_table_shows_duration_total(runner, mock_config_dir):
     assert result.exit_code == 0
     assert "Estimated Duration" in result.output
     assert "40" in result.output
+
+
+# --- Helper unit tests (refactor extraction) ------------------------------
+
+
+def test_error_job_not_found_message_and_exit():
+    """_error_job_not_found prints the standard message and raises SystemExit(1)."""
+    from minimise.cli import _error_job_not_found, console
+    with console.capture() as cap:
+        with pytest.raises(SystemExit) as exc:
+            _error_job_not_found("abc123")
+    assert exc.value.code == 1
+    assert "Error: Job abc123 not found" in cap.get()
+
+
+def test_format_datetime_formats_and_defaults():
+    """_format_datetime formats a datetime and returns the default for None."""
+    from minimise.cli import _format_datetime
+    dt = datetime(2026, 6, 23, 14, 5, 9)
+    assert _format_datetime(dt) == "2026-06-23 14:05:09"
+    assert _format_datetime(None) == "N/A"
+    assert _format_datetime(None, default="-") == "-"
+
+
+def test_filter_tasks_by_id_full_and_prefix():
+    """_filter_tasks_by_id matches on full id or prefix."""
+    from minimise.cli import _filter_tasks_by_id
+    tasks = [
+        Task(id="task-abc", job_id="j", name="A", description="d", estimated_duration_min=5),
+        Task(id="task-xyz", job_id="j", name="B", description="d", estimated_duration_min=5),
+    ]
+    assert [t.id for t in _filter_tasks_by_id(tasks, "task-abc")] == ["task-abc"]
+    assert {t.id for t in _filter_tasks_by_id(tasks, "task-")} == {"task-abc", "task-xyz"}
+    assert _filter_tasks_by_id(tasks, "nope") == []
+
+
+def test_get_and_validate_job_returns_resolved_job(runner, mock_config_dir):
+    """_get_and_validate_job resolves an id prefix and returns (id, db, job)."""
+    from minimise.cli import _get_and_validate_job
+    db = Database(mock_config_dir / "minimise.db"); db.init_db()
+    job = Job(id=str(uuid.uuid4()), name="J", status=JobStatus.PENDING,
+              plan_path="/p.yaml", created_at=datetime.utcnow())
+    db.create_job(job)
+    resolved_id, returned_db, job_obj = _get_and_validate_job(job.id[:8])
+    assert resolved_id == job.id
+    assert job_obj.id == job.id
+
+
+def test_job_not_found_path_prints_message_and_exits_nonzero(runner, mock_config_dir):
+    """A bogus job id surfaces the standard not-found message and a non-zero exit."""
+    # resolve_job_id reports the prefix it couldn't match.
+    result = runner.invoke(mini, ["job", "status", "deadbeef"])
+    assert result.exit_code != 0
+    assert "Error: Job 'deadbeef' not found" in result.output

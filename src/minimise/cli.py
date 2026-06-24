@@ -3,9 +3,7 @@
 import click
 import json
 import sqlite3
-import signal
-import os
-import yaml
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -70,6 +68,34 @@ def resolve_job_id(job_id_or_prefix: str) -> str:
         raise SystemExit(1)
 
 
+def _error_job_not_found(job_id: str):
+    """Print the standard 'job not found' error and exit non-zero."""
+    console.print(f"[red]Error: Job {job_id} not found[/red]")
+    raise SystemExit(1)
+
+
+def _format_datetime(dt, default: str = "N/A") -> str:
+    """Format a datetime as 'YYYY-MM-DD HH:MM:SS', or return default if None."""
+    return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else default
+
+
+def _filter_tasks_by_id(tasks, task_id_str: str):
+    """Filter tasks by full ID or prefix match."""
+    return [t for t in tasks if t.id == task_id_str or t.id.startswith(task_id_str)]
+
+
+def _get_and_validate_job(job_id: str):
+    """Resolve a job ID/prefix, fetch the job, and exit with the standard
+    'not found' error if it doesn't exist.
+
+    Returns (resolved_job_id, db, job_obj).
+    """
+    job_id = resolve_job_id(job_id)
+    db = get_db()
+    job_obj = db.get_job(job_id)
+    if job_obj is None:
+        _error_job_not_found(job_id)
+    return job_id, db, job_obj
 
 
 @click.group()
@@ -138,8 +164,7 @@ def job_new(plan: str, skip_review: bool):
                 )
                 raise SystemExit(1)
 
-            else:
-                console.print("[green]✓[/green] Plan review passed")
+            console.print("[green]✓[/green] Plan review passed")
 
         # 3. Create the job
         db = get_db()
@@ -170,14 +195,8 @@ def job_new(plan: str, skip_review: bool):
 def job_start(job_id: str):
     """Start a job (spawns subprocess in background)."""
     try:
-        job_id = resolve_job_id(job_id)
-        db = get_db()
+        job_id, db, job_obj = _get_and_validate_job(job_id)
         job_manager = get_job_manager(db)
-
-        job_obj = db.get_job(job_id)
-        if job_obj is None:
-            console.print(f"[red]Error: Job {job_id} not found[/red]")
-            raise SystemExit(1)
 
         if job_obj.status != JobStatus.PENDING:
             console.print(f"[red]Error: Job must be in PENDING state to start (current: {job_obj.status.value})[/red]")
@@ -250,7 +269,7 @@ def job_list(format, limit):
                 tasks = db.list_tasks_for_job(j.id)
                 task_count = len(tasks)
                 completed_count = sum(1 for t in tasks if t.status == TaskStatus.COMPLETED)
-                created = j.created_at.strftime("%Y-%m-%d %H:%M:%S") if j.created_at else "N/A"
+                created = _format_datetime(j.created_at)
                 estimated_duration_min = sum(t.estimated_duration_min for t in tasks if t.estimated_duration_min)
                 duration_text = str(estimated_duration_min) if estimated_duration_min > 0 else "-"
 
@@ -291,8 +310,7 @@ def job_status(job_id: str, format: str):
         job_obj = job_manager.get_job_status(job_id)
 
         if job_obj is None:
-            console.print(f"[red]Error: Job {job_id} not found[/red]")
-            raise SystemExit(1)
+            _error_job_not_found(job_id)
 
         # Job-level estimated-duration total, shared by both output formats.
         est_total = sum(t.estimated_duration_min for t in job_obj.tasks)
@@ -349,15 +367,15 @@ def job_status(job_id: str, format: str):
             console.print(f"[bold]Plan Path:[/bold] {job_obj.plan_path}")
             console.print(f"[bold]Base Commit:[/bold] {job_obj.base_commit or 'N/A'}")
             console.print(
-                f"[bold]Created:[/bold] {job_obj.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
+                f"[bold]Created:[/bold] {_format_datetime(job_obj.created_at)}"
             )
             if job_obj.started_at:
                 console.print(
-                    f"[bold]Started:[/bold] {job_obj.started_at.strftime('%Y-%m-%d %H:%M:%S')}"
+                    f"[bold]Started:[/bold] {_format_datetime(job_obj.started_at)}"
                 )
             if job_obj.completed_at:
                 console.print(
-                    f"[bold]Completed:[/bold] {job_obj.completed_at.strftime('%Y-%m-%d %H:%M:%S')}"
+                    f"[bold]Completed:[/bold] {_format_datetime(job_obj.completed_at)}"
                 )
 
             # Display task progress with Gantt chart
@@ -379,14 +397,8 @@ def job_status(job_id: str, format: str):
 def job_stop(job_id: str):
     """Stop a running job (sends SIGTERM to subprocess)."""
     try:
-        job_id = resolve_job_id(job_id)
-        db = get_db()
+        job_id, db, job_obj = _get_and_validate_job(job_id)
         job_manager = get_job_manager(db)
-
-        job_obj = db.get_job(job_id)
-        if job_obj is None:
-            console.print(f"[red]Error: Job {job_id} not found[/red]")
-            raise SystemExit(1)
 
         if job_obj.status != JobStatus.RUNNING:
             console.print(f"[red]Error: Job must be in RUNNING state to stop (current: {job_obj.status.value})[/red]")
@@ -415,13 +427,7 @@ def job_stop(job_id: str):
 def job_delete(job_id: str, force: bool):
     """Delete a job and all its tasks (safeguards: only PENDING/COMPLETED/FAILED)."""
     try:
-        job_id = resolve_job_id(job_id)
-        db = get_db()
-
-        job_obj = db.get_job(job_id)
-        if job_obj is None:
-            console.print(f"[red]Error: Job {job_id} not found[/red]")
-            raise SystemExit(1)
+        job_id, db, job_obj = _get_and_validate_job(job_id)
 
         if job_obj.status == JobStatus.RUNNING:
             console.print(f"[red]Error: Cannot delete RUNNING job. Stop it first with: mini job stop {job_id[:8]}[/red]")
@@ -467,15 +473,8 @@ def job_delete(job_id: str, force: bool):
 def job_resume(job_id: str):
     """Resume a stopped or failed job from checkpoint."""
     try:
-        job_id = resolve_job_id(job_id)
-        db = get_db()
+        job_id, db, job_obj = _get_and_validate_job(job_id)
         job_manager = get_job_manager(db)
-
-        job_obj = db.get_job(job_id)
-
-        if job_obj is None:
-            console.print(f"[red]Error: Job {job_id} not found[/red]")
-            raise SystemExit(1)
 
         if job_obj.status not in [JobStatus.FAILED, JobStatus.STOPPED]:
             console.print(
@@ -504,14 +503,7 @@ def job_resume(job_id: str):
 def job_logs(job_id: str):
     """View job output and logs."""
     try:
-        job_id = resolve_job_id(job_id)
-        db = get_db()
-
-        job_obj = db.get_job(job_id)
-
-        if job_obj is None:
-            console.print(f"[red]Error: Job {job_id} not found[/red]")
-            raise SystemExit(1)
+        job_id, db, job_obj = _get_and_validate_job(job_id)
 
         tasks = db.list_tasks_for_job(job_id)
 
@@ -556,14 +548,7 @@ def job_results():
 def job_results_logs(job_id: str, task_id: Optional[str]):
     """Retrieve task output logs for a job."""
     try:
-        job_id = resolve_job_id(job_id)
-        db = get_db()
-
-        job_obj = db.get_job(job_id)
-
-        if job_obj is None:
-            console.print(f"[red]Error: Job {job_id} not found[/red]")
-            raise SystemExit(1)
+        job_id, db, job_obj = _get_and_validate_job(job_id)
 
         tasks = db.list_tasks_for_job(job_id)
 
@@ -573,7 +558,7 @@ def job_results_logs(job_id: str, task_id: Optional[str]):
 
         # Filter by task_id if provided
         if task_id:
-            tasks = [t for t in tasks if t.id == task_id or t.id.startswith(task_id)]
+            tasks = _filter_tasks_by_id(tasks, task_id)
             if not tasks:
                 console.print(f"[red]Error: Task '{task_id}' not found[/red]")
                 raise SystemExit(1)
@@ -587,13 +572,13 @@ def job_results_logs(job_id: str, task_id: Optional[str]):
             console.print(f"[bold {status_color}]{task.name}[/bold {status_color}]")
             console.print(f"  [dim]ID:[/dim] {task.id}")
             console.print(f"  [dim]Status:[/dim] {task.status.value}")
-            console.print(f"  [dim]Created:[/dim] {task.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+            console.print(f"  [dim]Created:[/dim] {_format_datetime(task.created_at)}")
 
             if task.started_at:
-                console.print(f"  [dim]Started:[/dim] {task.started_at.strftime('%Y-%m-%d %H:%M:%S')}")
+                console.print(f"  [dim]Started:[/dim] {_format_datetime(task.started_at)}")
 
             if task.completed_at:
-                console.print(f"  [dim]Completed:[/dim] {task.completed_at.strftime('%Y-%m-%d %H:%M:%S')}")
+                console.print(f"  [dim]Completed:[/dim] {_format_datetime(task.completed_at)}")
 
             console.print(f"  [dim]Retries:[/dim] {task.retries}")
 
@@ -619,14 +604,7 @@ def job_results_logs(job_id: str, task_id: Optional[str]):
 def job_results_diff(job_id: str, task_id: Optional[str]):
     """Retrieve git diffs for tasks in a job."""
     try:
-        job_id = resolve_job_id(job_id)
-        db = get_db()
-
-        job_obj = db.get_job(job_id)
-
-        if job_obj is None:
-            console.print(f"[red]Error: Job {job_id} not found[/red]")
-            raise SystemExit(1)
+        job_id, db, job_obj = _get_and_validate_job(job_id)
 
         tasks = db.list_tasks_for_job(job_id)
 
@@ -636,7 +614,7 @@ def job_results_diff(job_id: str, task_id: Optional[str]):
 
         # Filter by task_id if provided
         if task_id:
-            tasks = [t for t in tasks if t.id == task_id or t.id.startswith(task_id)]
+            tasks = _filter_tasks_by_id(tasks, task_id)
             if not tasks:
                 console.print(f"[red]Error: Task '{task_id}' not found[/red]")
                 raise SystemExit(1)
@@ -702,20 +680,13 @@ def job_show(job_id: str, task_id: Optional[str]):
         from minimise.handover_manager import HandoverManager
         import yaml
 
-        job_id = resolve_job_id(job_id)
-        db = get_db()
+        job_id, db, job_obj = _get_and_validate_job(job_id)
         job_manager = get_job_manager(db)
-
-        job_obj = db.get_job(job_id)
-
-        if job_obj is None:
-            console.print(f"[red]Error: Job {job_id} not found[/red]")
-            raise SystemExit(1)
 
         # If task_id is provided, show full prompt with handover context
         if task_id:
             tasks = db.list_tasks_for_job(job_id)
-            matching_tasks = [t for t in tasks if t.id == task_id or t.id.startswith(task_id)]
+            matching_tasks = _filter_tasks_by_id(tasks, task_id)
 
             if not matching_tasks:
                 console.print(f"[red]Error: Task '{task_id}' not found[/red]")
@@ -884,7 +855,6 @@ def view_start(port: int):
 
         # Keep the process running
         try:
-            import time
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
