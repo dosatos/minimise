@@ -1585,7 +1585,7 @@ tasks:
 
 # TDD Tests for Goal attribute feature
 
-def test_plan_load_goal_field(runner, mock_config_dir):
+def test_plan_load_goal_field(runner, mock_config_dir, isolated_repo):
     """Test that plan YAML can load goal field for tasks."""
     with tempfile.TemporaryDirectory() as tmpdir:
         plan_path = Path(tmpdir) / "plan.yaml"
@@ -1613,7 +1613,7 @@ tasks:
         assert "Job created" in result.output
 
 
-def test_plan_goal_prepended_to_prompt(runner, mock_config_dir):
+def test_plan_goal_prepended_to_prompt(runner, mock_config_dir, isolated_repo):
     """Test that goal is prepended to agent prompt in task execution."""
     with tempfile.TemporaryDirectory() as tmpdir:
         plan_path = Path(tmpdir) / "plan.yaml"

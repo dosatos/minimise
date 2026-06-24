@@ -1,4 +1,6 @@
+import os
 import pytest
+import subprocess
 import tempfile
 from pathlib import Path
 from minimise.database import Database
@@ -29,3 +31,22 @@ def mock_config_dir(temp_db_dir, monkeypatch):
     monkeypatch.setattr("minimise.cli.JOBS_DIR", config_dir / "jobs")
 
     yield config_dir
+
+
+@pytest.fixture
+def isolated_repo(monkeypatch, tmp_path):
+    """Point cli.REPO_PATH at a clean, committed temp git repo.
+
+    `mini job new` validates a clean git tree against cli.REPO_PATH (frozen to
+    cwd at import). Without this, tests that invoke `job new` fail whenever the
+    real working tree is dirty. This gives them a hermetic, always-clean repo.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    (repo / "README.md").write_text("test repo\n")
+    for args in (["init", "-q"], ["add", "."], ["commit", "-qm", "init"]):
+        subprocess.run(["git", *args], cwd=repo, check=True, env=env)
+    monkeypatch.setattr("minimise.cli.REPO_PATH", repo)
+    yield repo
