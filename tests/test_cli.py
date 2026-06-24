@@ -68,7 +68,6 @@ def test_mini_job_help(runner):
     assert "list" in result.output
     assert "status" in result.output
     assert "stop" in result.output
-    assert "resume" in result.output
     assert "logs" in result.output
 
 
@@ -665,133 +664,6 @@ def test_stop_running_job_without_pid_fails(db, runner, mock_config_dir):
 # ============================================================================
 # RESUME COMMAND TESTS
 # ============================================================================
-
-def test_resume_failed_job_retries_execution(db, runner, mock_config_dir):
-    """Test that resuming a FAILED job attempts re-execution."""
-    from minimise.models import Task, TaskStatus
-
-    # Create a FAILED job with tasks
-    job = Job(
-        id=str(uuid.uuid4()),
-        name="Failed Job to Resume",
-        status=JobStatus.FAILED,
-        plan_path="/path/to/plan.yaml",
-        completed_at=datetime.utcnow()
-    )
-    db.create_job(job)
-
-    # Create a failed task
-    task = Task(estimated_duration_min=5, 
-        id="task-1",
-        job_id=job.id,
-        name="Failed Task",
-        description="Task that failed",
-        status=TaskStatus.FAILED,
-        completed_at=datetime.utcnow()
-    )
-    db.create_task(task)
-
-    # Verify initial state
-    job_before = db.get_job(job.id)
-    assert job_before.status == JobStatus.FAILED
-
-
-def test_resume_stopped_job_retries_execution(db, runner, mock_config_dir):
-    """Test that resuming a STOPPED job attempts re-execution."""
-    from minimise.models import Task, TaskStatus
-
-    # Create a STOPPED job with tasks
-    job = Job(
-        id=str(uuid.uuid4()),
-        name="Stopped Job to Resume",
-        status=JobStatus.STOPPED,
-        plan_path="/path/to/plan.yaml",
-        completed_at=datetime.utcnow()
-    )
-    db.create_job(job)
-
-    # Create a stopped task
-    task = Task(estimated_duration_min=5, 
-        id="task-1",
-        job_id=job.id,
-        name="Stopped Task",
-        description="Task that was stopped",
-        status=TaskStatus.STOPPED,
-        completed_at=datetime.utcnow()
-    )
-    db.create_task(task)
-
-    # Try to resume via CLI
-    result = runner.invoke(mini, ["job", "resume", job.id])
-
-    # Should indicate job is not in FAILED state
-    assert result.exit_code in [0, 1]  # Either succeed or indicate not failed
-
-
-def test_resume_pending_job_fails(db, runner, mock_config_dir):
-    """Test that resuming a PENDING job returns error or no-op."""
-    # Create a PENDING job
-    job = Job(
-        id=str(uuid.uuid4()),
-        name="Pending Job",
-        status=JobStatus.PENDING,
-        plan_path="/path/to/plan.yaml"
-    )
-    db.create_job(job)
-
-    # Try to resume it via CLI
-    result = runner.invoke(mini, ["job", "resume", job.id])
-
-    # Should indicate job is not in FAILED state
-    assert "not in FAILED" in result.output or result.exit_code in [0, 1]
-
-
-def test_resume_running_job_fails(db, runner, mock_config_dir):
-    """Test that resuming a RUNNING job returns error or no-op."""
-    # Create a RUNNING job
-    job = Job(
-        id=str(uuid.uuid4()),
-        name="Running Job",
-        status=JobStatus.RUNNING,
-        plan_path="/path/to/plan.yaml",
-        pid=99999
-    )
-    db.create_job(job)
-
-    # Try to resume it via CLI
-    result = runner.invoke(mini, ["job", "resume", job.id])
-
-    # Should indicate job is not in FAILED state
-    assert "not in FAILED" in result.output or result.exit_code in [0, 1]
-
-
-def test_resume_completed_job_fails(db, runner, mock_config_dir):
-    """Test that resuming a COMPLETED job returns error or no-op."""
-    # Create a COMPLETED job
-    job = Job(
-        id=str(uuid.uuid4()),
-        name="Completed Job",
-        status=JobStatus.COMPLETED,
-        plan_path="/path/to/plan.yaml",
-        completed_at=datetime.utcnow()
-    )
-    db.create_job(job)
-
-    # Try to resume it via CLI
-    result = runner.invoke(mini, ["job", "resume", job.id])
-
-    # Should indicate job is not in FAILED state
-    assert "not in FAILED" in result.output or result.exit_code in [0, 1]
-
-
-def test_resume_nonexistent_job_fails(runner, mock_config_dir):
-    """Test that resuming a nonexistent job returns error."""
-    result = runner.invoke(mini, ["job", "resume", "nonexistent-job-id"])
-
-    # Should fail with error message
-    assert result.exit_code == 1
-    assert "Error" in result.output or "not found" in result.output
-
 
 # ============================================================================
 # RESULTS LOGS COMMAND TESTS
@@ -1408,8 +1280,8 @@ def test_results_logs_displays_task_metadata(db, runner, mock_config_dir):
     assert "Status" in result.output or "Retries" in result.output or "metadata" in result.output
 
 
-def test_stop_and_resume_workflow(db, runner, mock_config_dir):
-    """Test complete workflow: start -> stop -> resume."""
+def test_start_and_stop_workflow(db, runner, mock_config_dir):
+    """Test complete workflow: start -> stop."""
     from minimise.models import Task, TaskStatus
 
     # Create PENDING job
@@ -1815,11 +1687,11 @@ def test_delete_running_job_fails(db, runner, mock_config_dir):
     assert "Error" in result.output or "RUNNING" in result.output or "cannot" in result.output.lower()
 
 
-def test_delete_stopped_job_with_force_succeeds(db, runner, mock_config_dir):
-    """A STOPPED job is terminal and must be deletable with --force.
+def test_delete_stopped_job_succeeds(db, runner, mock_config_dir):
+    """A STOPPED job is terminal and deletes like FAILED/COMPLETED.
 
-    Regression: the STOPPED guard ran before the --force check, making
-    stopped jobs permanently undeletable (catch-22 with `mini job stop`).
+    Regression: a guard made stopped jobs permanently undeletable
+    (catch-22 with `mini job stop`).
     """
     db_path = mock_config_dir / "minimise.db"
     db = Database(db_path)
@@ -1834,7 +1706,7 @@ def test_delete_stopped_job_with_force_succeeds(db, runner, mock_config_dir):
     )
     db.create_job(job)
 
-    result = runner.invoke(mini, ["job", "delete", job.id, "--force"])
+    result = runner.invoke(mini, ["job", "delete", job.id], input="y\n")
 
     assert result.exit_code == 0
     assert "deleted" in result.output.lower() or "removed" in result.output.lower()

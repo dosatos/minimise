@@ -425,16 +425,12 @@ def job_stop(job_id: str):
 @click.argument("job_id")
 @click.option("--force", is_flag=True, help="Skip confirmation prompt")
 def job_delete(job_id: str, force: bool):
-    """Delete a job and all its tasks (safeguards: only PENDING/COMPLETED/FAILED)."""
+    """Delete a job and all its tasks (any status except RUNNING)."""
     try:
         job_id, db, job_obj = _get_and_validate_job(job_id)
 
         if job_obj.status == JobStatus.RUNNING:
             console.print(f"[red]Error: Cannot delete RUNNING job. Stop it first with: mini job stop {job_id[:8]}[/red]")
-            raise SystemExit(1)
-
-        if job_obj.status == JobStatus.STOPPED and not force:
-            console.print(f"[red]Error: Cannot delete STOPPED job. Resume it, or re-run with --force to delete.[/red]")
             raise SystemExit(1)
 
         tasks = db.list_tasks_for_job(job_id)
@@ -467,35 +463,6 @@ def job_delete(job_id: str, force: bool):
         console.print(f"[red]Error: {str(e)}[/red]")
         raise SystemExit(1)
 
-
-@job.command(name="resume")
-@click.argument("job_id")
-def job_resume(job_id: str):
-    """Resume a stopped or failed job from checkpoint."""
-    try:
-        job_id, db, job_obj = _get_and_validate_job(job_id)
-        job_manager = get_job_manager(db)
-
-        if job_obj.status not in [JobStatus.FAILED, JobStatus.STOPPED]:
-            console.print(
-                f"[yellow]Job must be in FAILED or STOPPED state. Current status: {job_obj.status.value}[/yellow]"
-            )
-            return
-
-        # Re-run the job
-        success = job_manager.run_job(job_id)
-
-        if success:
-            console.print(f"[green]Job {job_id} resumed and completed successfully[/green]")
-        else:
-            console.print(f"[red]Error: Job {job_id} failed during resume[/red]")
-            raise SystemExit(1)
-
-    except SystemExit:
-        raise
-    except Exception as e:
-        console.print(f"[red]Error: {str(e)}[/red]")
-        raise SystemExit(1)
 
 
 @job.command(name="logs")

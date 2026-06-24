@@ -199,18 +199,6 @@ class JobManager:
         handover_context = ""
 
         for idx, task in enumerate(tasks):
-            # Skip completed tasks (for resume)
-            if task.status == TaskStatus.COMPLETED:
-                # Still build handover context from completed task output
-                if task.output and idx < len(tasks) - 1:
-                    if job.base_commit:
-                        diff = self.git_tracker.get_diff(job.base_commit)
-                    else:
-                        diff = ""
-                    next_task = tasks[idx + 1]
-                    handover_context = HandoverManager.build_handover_prompt(task.output, diff, next_task)
-                continue
-
             # Per-task hooks live as pydantic extras on the plan task (by index)
             plan_task = plan.tasks[idx] if idx < len(plan.tasks) else None
             pre_task_hook = getattr(plan_task, "pre_task_hook", "") or ""
