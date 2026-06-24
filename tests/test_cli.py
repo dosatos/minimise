@@ -1793,8 +1793,8 @@ def test_delete_failed_job_succeeds(db, runner, mock_config_dir):
     assert "deleted" in result.output.lower() or "removed" in result.output.lower()
 
 
-def test_delete_shows_affected_tasks(db, runner, mock_config_dir):
-    """Test that delete command shows affected tasks before confirmation."""
+def test_delete_reports_task_count(db, runner, mock_config_dir):
+    """Test that delete reports how many tasks were removed."""
     db_path = mock_config_dir / "minimise.db"
     db = Database(db_path)
     db.init_db()
@@ -1808,14 +1808,14 @@ def test_delete_shows_affected_tasks(db, runner, mock_config_dir):
     )
     db.create_job(job)
 
-    task1 = Task(estimated_duration_min=5, 
+    task1 = Task(estimated_duration_min=5,
         id="task-1",
         job_id=job.id,
         name="Task 1",
         description="First task",
         status=TaskStatus.PENDING,
     )
-    task2 = Task(estimated_duration_min=5, 
+    task2 = Task(estimated_duration_min=5,
         id="task-2",
         job_id=job.id,
         name="Task 2",
@@ -1825,37 +1825,11 @@ def test_delete_shows_affected_tasks(db, runner, mock_config_dir):
     db.create_task(task1)
     db.create_task(task2)
 
-    # Delete job (should show tasks before confirmation)
-    result = runner.invoke(mini, ["job", "delete", job.id], input="y\n")
+    result = runner.invoke(mini, ["job", "delete", job.id])
 
     assert result.exit_code == 0
-    # Should show affected tasks in output
-    assert "2" in result.output or "tasks" in result.output.lower() or "Task 1" in result.output
-
-
-def test_delete_requires_confirmation(db, runner, mock_config_dir):
-    """Test that delete command requires confirmation (no 'yes' input = abort)."""
-    db_path = mock_config_dir / "minimise.db"
-    db = Database(db_path)
-    db.init_db()
-
-    # Create a PENDING job
-    job = Job(
-        id=str(uuid.uuid4()),
-        name="Pending Job",
-        status=JobStatus.PENDING,
-        plan_path="/path/to/plan.yaml"
-    )
-    db.create_job(job)
-
-    # Delete job with NO confirmation
-    result = runner.invoke(mini, ["job", "delete", job.id], input="n\n")
-
-    # Should abort (exit code 0 but output says cancelled, or exit code 1)
-    # Job should still exist
-    job_after = db.get_job(job.id)
-    assert job_after is not None
-    assert job_after.status == JobStatus.PENDING
+    assert "2" in result.output
+    assert db.get_job(job.id) is None
 
 
 def test_job_list_json_includes_duration_total(runner, mock_config_dir):

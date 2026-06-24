@@ -346,8 +346,7 @@ def job_stop(job_id: str):
 
 @job.command(name="delete")
 @click.argument("job_id")
-@click.option("--force", is_flag=True, help="Skip confirmation prompt")
-def job_delete(job_id: str, force: bool):
+def job_delete(job_id: str):
     """Delete a job and all its tasks (any status except RUNNING)."""
     try:
         job_id, db, job_obj = _get_and_validate_job(job_id)
@@ -356,26 +355,10 @@ def job_delete(job_id: str, force: bool):
             console.print(f"[red]Error: Cannot delete RUNNING job. Stop it first with: mini job stop {job_id[:8]}[/red]")
             raise SystemExit(1)
 
-        tasks = db.list_tasks_for_job(job_id)
-        task_count = len(tasks)
+        task_count = len(db.list_tasks_for_job(job_id))
 
-        console.print(f"[yellow]Delete job: {job_obj.name} (Status: {job_obj.status.value})[/yellow]")
-        console.print(f"[yellow]This will remove {task_count} task(s)[/yellow]")
-
-        if task_count > 0:
-            console.print(f"[dim]Tasks:[/dim]")
-            for task in tasks:
-                console.print(f"  - {task.name} ({task.status.value})")
-
-        if not force:
-            if not click.confirm("Are you sure you want to delete this job?"):
-                console.print("[yellow]Cancelled[/yellow]")
-                return
-
-        success = db.delete_job(job_id)
-
-        if success:
-            console.print(f"[green]Job {job_id} deleted successfully[/green]")
+        if db.delete_job(job_id):
+            console.print(f"[green]Deleted job {job_id} and {task_count} task(s)[/green]")
         else:
             console.print(f"[red]Error: Failed to delete job[/red]")
             raise SystemExit(1)
