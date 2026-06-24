@@ -1551,6 +1551,24 @@ tasks:
         assert "syntax validation failed" in result.output.lower()
 
 
+def test_empty_plan_creates_no_job(runner, mock_config_dir):
+    """bug-2 (test-plan pollution): a 0-task plan is rejected by `mini job new`
+    and leaves no job behind to pollute history."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        plan_path = Path(tmpdir) / "plan.yaml"
+        plan_path.write_text("name: Test Plan\ntasks: []\n")
+
+        result = runner.invoke(mini, ["job", "new", "--plan", str(plan_path)])
+
+        assert result.exit_code != 0
+        assert "syntax validation failed" in result.output.lower()
+
+        # No polluting job was created
+        db = Database(mock_config_dir / "minimise.db")
+        db.init_db()
+        assert db.list_jobs() == []
+
+
 def test_goal_in_job_show_output(runner, mock_config_dir):
     """Test that goal field is displayed in job show output."""
     import uuid
