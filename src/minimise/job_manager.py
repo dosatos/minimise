@@ -335,10 +335,10 @@ from minimise.job_manager import JobManager
 from minimise.git_tracker import GitTracker
 from pathlib import Path
 
-db = Database(Path.home() / '.minimise' / 'minimise.db')
-git_tracker = GitTracker(Path.cwd())
-jobs_dir = Path.home() / '.minimise' / 'jobs'
-manager = JobManager(db, git_tracker, jobs_dir, Path.cwd())
+db = Database(Path(r'{self.db.db_path}'))
+git_tracker = GitTracker(Path(r'{self.repo_path}'))
+jobs_dir = Path(r'{self.jobs_dir}')
+manager = JobManager(db, git_tracker, jobs_dir, Path(r'{self.repo_path}'))
 manager.run_job('{job_id}')
 """
             process = subprocess.Popen(

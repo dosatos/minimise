@@ -2,6 +2,7 @@
 
 import click
 import json
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -22,8 +23,8 @@ from minimise.terminal_ui import get_status_color, render_task_table_with_gantt
 from minimise.plan_reviewer import PlanReviewer
 
 
-# Global constants
-CONFIG_DIR = Path.home() / ".minimise"
+# Global constants (MINIMISE_HOME overrides the default ~/.minimise location)
+CONFIG_DIR = Path(os.environ.get("MINIMISE_HOME") or Path.home() / ".minimise")
 DB_PATH = CONFIG_DIR / "minimise.db"
 JOBS_DIR = CONFIG_DIR / "jobs"
 REPO_PATH = Path.cwd()

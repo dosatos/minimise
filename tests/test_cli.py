@@ -27,6 +27,23 @@ def runner():
     return CliRunner()
 
 
+def test_minimise_home_env_override(monkeypatch, tmp_path):
+    """MINIMISE_HOME overrides the default ~/.minimise config location."""
+    import importlib
+    import minimise.cli as cli
+
+    custom = tmp_path / "custom-home"
+    monkeypatch.setenv("MINIMISE_HOME", str(custom))
+    importlib.reload(cli)
+    try:
+        assert cli.CONFIG_DIR == custom
+        assert cli.DB_PATH == custom / "minimise.db"
+        assert cli.JOBS_DIR == custom / "jobs"
+    finally:
+        monkeypatch.delenv("MINIMISE_HOME", raising=False)
+        importlib.reload(cli)
+
+
 def test_mini_job_list_empty(runner, temp_home_dir):
     """Test that mini job list works with empty job list."""
     result = runner.invoke(mini, ["job", "list"])
