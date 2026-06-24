@@ -5,7 +5,6 @@ import yaml
 from pathlib import Path
 from datetime import datetime
 from minimise.orchestration.job_executor import JobExecutor
-from minimise.orchestration.loop import run_job
 from minimise.models import Job, Task, JobStatus, TaskStatus
 from minimise.storage.database import Database
 from minimise.storage.git_tracker import GitTracker
@@ -195,7 +194,7 @@ def test_run_job_basic(job_executor, plan_file):
 
     try:
         # Run the job
-        success = run_job(job_executor, job_id)
+        success = job_executor.run_job(job_id)
 
         # Verify job completed
         assert success
@@ -264,7 +263,7 @@ def test_task_commits_against_base_commit(job_executor, plan_file, git_repo):
 
     try:
         # Run the job
-        success = run_job(job_executor, job_id)
+        success = job_executor.run_job(job_id)
         assert success
 
         # Verify all tasks completed
@@ -342,7 +341,7 @@ def test_task_commit_message_format(temp_db_dir, git_repo, plan_file):
         assert len(tasks) == 2
 
         # Run the job
-        success = run_job(job_executor, job_id)
+        success = job_executor.run_job(job_id)
         assert success
 
         # Get commit log and verify commit messages
@@ -439,7 +438,7 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, git_repo, plan_file)
         job_id = created_job.id
 
         # Run the job
-        success = run_job(job_executor, job_id)
+        success = job_executor.run_job(job_id)
         assert success
 
         # Verify diffs were collected
@@ -483,7 +482,7 @@ def test_failed_job_persists_in_db(job_executor, plan_file):
         job_id = created_job.id
 
         # Run the job
-        success = run_job(job_executor, job_id)
+        success = job_executor.run_job(job_id)
         assert not success
 
         # Verify job status is FAILED
@@ -522,7 +521,7 @@ def test_failed_job_stores_error_reason(job_executor, plan_file):
         job_id = created_job.id
 
         # Run the job
-        success = run_job(job_executor, job_id)
+        success = job_executor.run_job(job_id)
         assert not success
 
         # Verify job has failed status
@@ -569,7 +568,7 @@ def test_pre_plan_hook_failure_persists_job(job_executor, plan_file, temp_db_dir
     job_id = created_job.id
 
     # Run the job
-    success = run_job(job_executor, job_id)
+    success = job_executor.run_job(job_id)
     assert not success
 
     # Verify job persists with FAILED status
@@ -623,7 +622,7 @@ def test_post_plan_hook_failure_persists_job(job_executor, plan_file):
             job_id = created_job.id
 
             # Run the job
-            success = run_job(job_executor, job_id)
+            success = job_executor.run_job(job_id)
             assert not success
 
             # Verify job persists with FAILED status (due to post-hook failure)
