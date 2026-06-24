@@ -66,7 +66,7 @@ This keeps the tool dogfood-friendly and ensures CLI/API actually work.
 
 ## Anti-Slop Guidelines
 - Never generate speculative code, placeholder interfaces, or "future-proofing" abstractions.
-- Adhere strictly to YAGNI: Use native language features and existing project utils before writing new helpers.
+- Adhere strictly to YAGNI: Use native language features and existing project utils before writing new helpers. Prefer the simplest thing that works — favor one-liner solutions over multi-line scaffolding where it stays readable.
 - Prioritize low cognitive complexity; split nested conditional logic into early-returns.
 - Do not add external dependencies unless explicitly requested.
 
