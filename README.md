@@ -199,8 +199,7 @@ mini job results diff <ID> --task-id <TASK>   # Filter by task ID
 ### UI & Server
 
 ```bash
-mini view start                # Launch web UI
-mini view stop                 # Stop server
+mini view start                # Launch web UI (Ctrl+C to stop)
 ```
 
 ## Job Lifecycle

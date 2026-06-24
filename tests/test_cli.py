@@ -93,7 +93,6 @@ def test_mini_view_help(runner):
     result = runner.invoke(mini, ["view", "--help"])
     assert result.exit_code == 0
     assert "start" in result.output
-    assert "stop" in result.output
 
 
 def test_mini_main_help(runner):

@@ -48,15 +48,3 @@ def view_start(port: int):
     except Exception as e:
         console.print(f"[red]Error: {str(e)}[/red]")
         raise SystemExit(1)
-
-
-@view.command(name="stop")
-def view_stop():
-    """Stop web server."""
-    try:
-        console.print("[yellow]Note: Server stop requires the running server process[/yellow]")
-        console.print("[yellow]Press Ctrl+C in the server terminal or kill the process[/yellow]")
-
-    except Exception as e:
-        console.print(f"[red]Error: {str(e)}[/red]")
-        raise SystemExit(1)
