@@ -3,7 +3,7 @@ import pytest
 import subprocess
 import tempfile
 from pathlib import Path
-from minimise.database import Database
+from minimise.storage.database import Database
 
 @pytest.fixture
 def temp_db_dir():
@@ -26,9 +26,9 @@ def mock_config_dir(temp_db_dir, monkeypatch):
     config_dir.mkdir(parents=True, exist_ok=True)
 
     # Patch the CLI module's CONFIG_DIR, DB_PATH, JOBS_DIR
-    monkeypatch.setattr("minimise.cli.CONFIG_DIR", config_dir)
-    monkeypatch.setattr("minimise.cli.DB_PATH", config_dir / "minimise.db")
-    monkeypatch.setattr("minimise.cli.JOBS_DIR", config_dir / "jobs")
+    monkeypatch.setattr("minimise.interfaces.cli.CONFIG_DIR", config_dir)
+    monkeypatch.setattr("minimise.interfaces.cli.DB_PATH", config_dir / "minimise.db")
+    monkeypatch.setattr("minimise.interfaces.cli.JOBS_DIR", config_dir / "jobs")
 
     yield config_dir
 
@@ -48,5 +48,5 @@ def isolated_repo(monkeypatch, tmp_path):
     (repo / "README.md").write_text("test repo\n")
     for args in (["init", "-q"], ["add", "."], ["commit", "-qm", "init"]):
         subprocess.run(["git", *args], cwd=repo, check=True, env=env)
-    monkeypatch.setattr("minimise.cli.REPO_PATH", repo)
+    monkeypatch.setattr("minimise.interfaces.cli.REPO_PATH", repo)
     yield repo

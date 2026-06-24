@@ -1,9 +1,9 @@
 """CLI interface for Minimise - plan orchestrator for multi-agent execution.
 
 The package __init__ owns the config constants (CONFIG_DIR / DB_PATH / JOBS_DIR /
-REPO_PATH) so that ``monkeypatch.setattr("minimise.cli.DB_PATH", ...)`` (conftest)
-and ``importlib.reload(minimise.cli)`` (MINIMISE_HOME override test) keep working.
-Command modules read them lazily through ``import minimise.cli as _cli`` so a
+REPO_PATH) so that ``monkeypatch.setattr("minimise.interfaces.cli.DB_PATH", ...)`` (conftest)
+and ``importlib.reload(minimise.interfaces.cli)`` (MINIMISE_HOME override test) keep working.
+Command modules read them lazily through ``import minimise.interfaces.cli as _cli`` so a
 patched/reloaded value is always honored.
 """
 
@@ -18,8 +18,8 @@ DB_PATH = CONFIG_DIR / "minimise.db"
 JOBS_DIR = CONFIG_DIR / "jobs"
 REPO_PATH = Path.cwd()
 
-# Re-exported so existing imports (`from minimise.cli import get_db`, etc.) work.
-from minimise.cli._shared import (  # noqa: E402  (constants must precede this)
+# Re-exported so existing imports (`from minimise.interfaces.cli import get_db`, etc.) work.
+from minimise.interfaces.cli._shared import (  # noqa: E402  (constants must precede this)
     console,
     get_db,
     get_job_manager,
@@ -29,11 +29,11 @@ from minimise.cli._shared import (  # noqa: E402  (constants must precede this)
     _filter_tasks_by_id,
     _get_and_validate_job,
 )
-from minimise.cli.job import job  # noqa: E402
-from minimise.cli.view import view  # noqa: E402
+from minimise.interfaces.cli.job import job  # noqa: E402
+from minimise.interfaces.cli.view import view  # noqa: E402
 
-# PlanReviewer re-exported so tests can patch `minimise.cli.PlanReviewer`.
-from minimise.plan_reviewer import PlanReviewer  # noqa: E402,F401
+# PlanReviewer re-exported so tests can patch `minimise.interfaces.cli.PlanReviewer`.
+from minimise.agents.plan_reviewer import PlanReviewer  # noqa: E402,F401
 
 
 @click.group()

@@ -2,7 +2,7 @@
 
 import pytest
 from datetime import datetime, timedelta
-from minimise.terminal_ui import (
+from minimise.interfaces.terminal_ui import (
     format_duration,
     humanize_duration,
     render_gantt_bar,

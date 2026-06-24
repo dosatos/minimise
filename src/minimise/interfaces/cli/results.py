@@ -6,7 +6,7 @@ from typing import Optional
 import click
 
 from minimise.models import TaskStatus
-from minimise.cli._shared import (
+from minimise.interfaces.cli._shared import (
     console,
     _get_and_validate_job,
     _format_datetime,

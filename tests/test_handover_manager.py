@@ -1,5 +1,5 @@
 import pytest
-from minimise.handover_manager import HandoverManager
+from minimise.orchestration.handover_manager import HandoverManager
 from minimise.models import Task, TaskStatus
 import uuid
 

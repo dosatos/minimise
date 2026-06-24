@@ -5,7 +5,7 @@ import os
 from typing import List, Optional
 from dataclasses import dataclass
 
-from minimise.harness import AgentHarness, ClaudeCodeHarness, HarnessResult
+from minimise.agents.harness import AgentHarness, ClaudeCodeHarness, HarnessResult
 
 
 @dataclass

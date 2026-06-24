@@ -4,8 +4,8 @@ import time
 
 import click
 
-from minimise.api_server import APIServer
-from minimise.cli._shared import console, get_db, get_job_manager
+from minimise.interfaces.api_server import APIServer
+from minimise.interfaces.cli._shared import console, get_db, get_job_manager
 
 
 @click.group(name="view")

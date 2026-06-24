@@ -6,9 +6,9 @@ from datetime import datetime
 from unittest.mock import Mock, MagicMock
 
 from minimise.models import Job, Task, JobStatus, TaskStatus
-from minimise.database import Database
-from minimise.job_manager import JobManager
-from minimise.api_server import APIServer
+from minimise.storage.database import Database
+from minimise.orchestration.job_manager import JobManager
+from minimise.interfaces.api_server import APIServer
 
 
 @pytest.fixture

@@ -3,8 +3,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from click.testing import CliRunner
-from minimise.cli import mini
-from minimise.database import Database
+from minimise.interfaces.cli import mini
+from minimise.storage.database import Database
 
 
 @pytest.fixture
@@ -98,12 +98,12 @@ tasks:
             plan_path.write_text(plan_content)
 
             # Mock the reviewer to return findings
-            with patch('minimise.cli.PlanReviewer') as MockReviewer:
+            with patch('minimise.interfaces.cli.PlanReviewer') as MockReviewer:
                 mock_reviewer = MagicMock()
                 MockReviewer.return_value = mock_reviewer
 
                 # Return some findings
-                from minimise.plan_reviewer import ReviewFinding
+                from minimise.agents.plan_reviewer import ReviewFinding
                 mock_reviewer.review.return_value = [
                     ReviewFinding(
                         task_id="task-1",
@@ -141,7 +141,7 @@ tasks:
 """
             plan_path.write_text(plan_content)
 
-            with patch('minimise.plan_reviewer.PlanReviewer') as MockReviewer:
+            with patch('minimise.agents.plan_reviewer.PlanReviewer') as MockReviewer:
                 mock_reviewer = MagicMock()
                 MockReviewer.return_value = mock_reviewer
                 mock_reviewer.review.return_value = []

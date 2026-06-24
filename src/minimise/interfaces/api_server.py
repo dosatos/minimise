@@ -8,8 +8,8 @@ from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room
 
 from minimise.models import Job
-from minimise.database import Database
-from minimise.job_manager import JobManager
+from minimise.storage.database import Database
+from minimise.orchestration.job_manager import JobManager
 
 
 class APIServer:

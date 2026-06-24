@@ -8,8 +8,8 @@ import uuid
 from pathlib import Path
 from datetime import datetime
 from click.testing import CliRunner
-from minimise.cli import mini
-from minimise.database import Database
+from minimise.interfaces.cli import mini
+from minimise.storage.database import Database
 from minimise.models import Job, JobStatus, Task, TaskStatus
 
 
@@ -30,7 +30,7 @@ def runner():
 def test_minimise_home_env_override(monkeypatch, tmp_path):
     """MINIMISE_HOME overrides the default ~/.minimise config location."""
     import importlib
-    import minimise.cli as cli
+    import minimise.interfaces.cli as cli
 
     custom = tmp_path / "custom-home"
     monkeypatch.setenv("MINIMISE_HOME", str(custom))
@@ -107,7 +107,7 @@ def test_mini_main_help(runner):
 
 def test_mini_job_list_with_default_limit(db):
     """Test that mini job list shows default 10 jobs when limit not specified."""
-    from minimise.cli import mini
+    from minimise.interfaces.cli import mini
     from click.testing import CliRunner
 
     # Use the db fixture which is already set up with a test database
@@ -1354,7 +1354,7 @@ def test_plan_load_goal_field(db):
 
 def test_plan_goal_prepended_to_prompt(db):
     """Test that goal is prepended to agent prompt."""
-    from minimise.task_executor import TaskExecutor
+    from minimise.orchestration.task_executor import TaskExecutor
     from minimise.models import Task, TaskStatus
 
     task = Task(estimated_duration_min=5, 
@@ -1523,7 +1523,7 @@ tasks:
         assert result.exit_code == 0
 
         # Get job ID from output
-        from minimise.cli import get_db
+        from minimise.interfaces.cli import get_db
         db = get_db()
         jobs = db.list_jobs(limit=1)
         assert len(jobs) > 0
@@ -1589,7 +1589,7 @@ def test_empty_plan_creates_no_job(runner, mock_config_dir):
 def test_goal_in_job_show_output(runner, mock_config_dir):
     """Test that goal field is displayed in job show output."""
     import uuid
-    from minimise.database import Database
+    from minimise.storage.database import Database
 
     db_path = mock_config_dir / "minimise.db"
     db = Database(db_path)
@@ -1929,7 +1929,7 @@ def test_job_status_table_shows_duration_total(runner, mock_config_dir):
 
 def test_error_job_not_found_message_and_exit():
     """_error_job_not_found prints the standard message and raises SystemExit(1)."""
-    from minimise.cli import _error_job_not_found, console
+    from minimise.interfaces.cli import _error_job_not_found, console
     with console.capture() as cap:
         with pytest.raises(SystemExit) as exc:
             _error_job_not_found("abc123")
@@ -1939,7 +1939,7 @@ def test_error_job_not_found_message_and_exit():
 
 def test_format_datetime_formats_and_defaults():
     """_format_datetime formats a datetime and returns the default for None."""
-    from minimise.cli import _format_datetime
+    from minimise.interfaces.cli import _format_datetime
     dt = datetime(2026, 6, 23, 14, 5, 9)
     assert _format_datetime(dt) == "2026-06-23 14:05:09"
     assert _format_datetime(None) == "N/A"
@@ -1948,7 +1948,7 @@ def test_format_datetime_formats_and_defaults():
 
 def test_filter_tasks_by_id_full_and_prefix():
     """_filter_tasks_by_id matches on full id or prefix."""
-    from minimise.cli import _filter_tasks_by_id
+    from minimise.interfaces.cli import _filter_tasks_by_id
     tasks = [
         Task(id="task-abc", job_id="j", name="A", description="d", estimated_duration_min=5),
         Task(id="task-xyz", job_id="j", name="B", description="d", estimated_duration_min=5),
@@ -1960,7 +1960,7 @@ def test_filter_tasks_by_id_full_and_prefix():
 
 def test_get_and_validate_job_returns_resolved_job(runner, mock_config_dir):
     """_get_and_validate_job resolves an id prefix and returns (id, db, job)."""
-    from minimise.cli import _get_and_validate_job
+    from minimise.interfaces.cli import _get_and_validate_job
     db = Database(mock_config_dir / "minimise.db"); db.init_db()
     job = Job(id=str(uuid.uuid4()), name="J", status=JobStatus.PENDING,
               plan_path="/p.yaml", created_at=datetime.utcnow())

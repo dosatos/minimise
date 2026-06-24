@@ -1,8 +1,8 @@
 import pytest
 from unittest.mock import Mock
 import os
-from minimise.plan_reviewer import PlanReviewer, ReviewFinding
-from minimise.harness import AgentHarness, ClaudeCodeHarness, HarnessResult
+from minimise.agents.plan_reviewer import PlanReviewer, ReviewFinding
+from minimise.agents.harness import AgentHarness, ClaudeCodeHarness, HarnessResult
 from minimise.models import Plan
 
 

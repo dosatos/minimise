@@ -1,8 +1,8 @@
 """Shared CLI helpers and the console.
 
 The mutable config constants (DB_PATH / JOBS_DIR / REPO_PATH) live in the
-package __init__ so that monkeypatching ``minimise.cli.DB_PATH`` (conftest) and
-``importlib.reload(minimise.cli)`` (MINIMISE_HOME override test) keep working.
+package __init__ so that monkeypatching ``minimise.interfaces.cli.DB_PATH`` (conftest) and
+``importlib.reload(minimise.interfaces.cli)`` (MINIMISE_HOME override test) keep working.
 We read them lazily through ``_cli`` here so a patched value is always honored.
 """
 
@@ -11,11 +11,11 @@ from pathlib import Path  # noqa: F401  (kept for parity / type ergonomics)
 
 from rich.console import Console
 
-from minimise.database import Database
-from minimise.job_manager import JobManager
-from minimise.git_tracker import GitTracker
+from minimise.storage.database import Database
+from minimise.orchestration.job_manager import JobManager
+from minimise.storage.git_tracker import GitTracker
 
-import minimise.cli as _cli  # patchable constants live here; read at call time
+import minimise.interfaces.cli as _cli  # patchable constants live here; read at call time
 
 
 console = Console()

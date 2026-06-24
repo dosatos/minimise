@@ -4,11 +4,11 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 from unittest.mock import Mock
-from minimise.task_executor import TaskExecutor
+from minimise.orchestration.task_executor import TaskExecutor
 from minimise.models import Task, TaskStatus
-from minimise.database import Database
-from minimise.git_tracker import GitTracker
-from minimise.harness import AgentHarness, HarnessResult
+from minimise.storage.database import Database
+from minimise.storage.git_tracker import GitTracker
+from minimise.agents.harness import AgentHarness, HarnessResult
 import uuid
 
 
@@ -396,7 +396,7 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, db, git_repo):
 
 def test_default_harness_is_claude_code(temp_db_dir, db, git_repo):
     """TaskExecutor defaults to ClaudeCodeHarness when no harness injected."""
-    from minimise.harness import ClaudeCodeHarness
+    from minimise.agents.harness import ClaudeCodeHarness
 
     git_tracker = GitTracker(git_repo)
     executor = TaskExecutor(db, git_tracker, temp_db_dir)

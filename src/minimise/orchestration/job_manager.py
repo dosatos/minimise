@@ -10,10 +10,10 @@ from datetime import datetime
 from typing import Optional
 
 from minimise.models import Job, Task, JobStatus, TaskStatus, Plan
-from minimise.database import Database
-from minimise.git_tracker import GitTracker
-from minimise.task_executor import TaskExecutor
-from minimise.handover_manager import HandoverManager
+from minimise.storage.database import Database
+from minimise.storage.git_tracker import GitTracker
+from minimise.orchestration.task_executor import TaskExecutor
+from minimise.orchestration.handover_manager import HandoverManager
 from minimise.utils import ensure_directory
 
 
@@ -330,9 +330,9 @@ class JobManager:
             script = f"""
 import sys
 sys.path.insert(0, '{str(self.jobs_dir.parent.parent)}')
-from minimise.database import Database
-from minimise.job_manager import JobManager
-from minimise.git_tracker import GitTracker
+from minimise.storage.database import Database
+from minimise.orchestration.job_manager import JobManager
+from minimise.storage.git_tracker import GitTracker
 from pathlib import Path
 
 db = Database(Path(r'{self.db.db_path}'))

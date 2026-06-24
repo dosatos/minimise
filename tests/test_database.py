@@ -281,7 +281,7 @@ def _row(cols, values):
 
 def test_row_to_job_roundtrip(db):
     """_row_to_job reconstructs a stored job with identical field values."""
-    from minimise.database import _row_to_job
+    from minimise.storage.database import _row_to_job
     job = Job(
         id=str(uuid.uuid4()), name="Job RT", status=JobStatus.RUNNING,
         plan_path="/p.yaml", base_commit="abc123", pid=4242,
@@ -304,7 +304,7 @@ def test_row_to_job_roundtrip(db):
 
 def test_row_to_job_missing_pid_column(db):
     """Locks the KeyError fix: an absent 'pid' column yields pid=None, not a crash."""
-    from minimise.database import _row_to_job
+    from minimise.storage.database import _row_to_job
     row = _row(
         ["id", "name", "status", "plan_path", "base_commit", "created_at",
          "started_at", "completed_at"],
@@ -317,7 +317,7 @@ def test_row_to_job_missing_pid_column(db):
 
 def test_row_to_task_roundtrip(db):
     """_row_to_task reconstructs a stored task with identical field values."""
-    from minimise.database import _row_to_task
+    from minimise.storage.database import _row_to_task
     job = Job(id=str(uuid.uuid4()), name="J", status=JobStatus.PENDING)
     db.create_job(job)
     task = Task(
@@ -344,7 +344,7 @@ def test_row_to_task_roundtrip(db):
 
 def test_row_to_task_missing_optional_columns(db):
     """Absent base_commit/goal/estimated_duration_min map to None/None/5, not a crash."""
-    from minimise.database import _row_to_task
+    from minimise.storage.database import _row_to_task
     row = _row(
         ["id", "job_id", "name", "description", "status", "output", "retries",
          "created_at", "started_at", "completed_at", "diff_path"],
@@ -363,7 +363,7 @@ def test_row_to_task_missing_optional_columns(db):
 def test_existing_null_duration_is_backfilled(tmp_path):
     """A legacy row with NULL estimated_duration_min is backfilled to 5 on init_db."""
     import sqlite3
-    from minimise.database import Database
+    from minimise.storage.database import Database
 
     db_path = tmp_path / "legacy.db"
     # Model a pre-migration DB: create a nullable-column tasks table by hand and
@@ -404,7 +404,7 @@ def test_existing_null_duration_is_backfilled(tmp_path):
 def test_duration_column_is_not_null(tmp_path):
     """After init_db, the estimated_duration_min column is NOT NULL (and others preserved)."""
     import sqlite3
-    from minimise.database import Database
+    from minimise.storage.database import Database
 
     db_path = tmp_path / "fresh.db"
     Database(db_path).init_db()

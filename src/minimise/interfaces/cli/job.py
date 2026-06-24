@@ -10,10 +10,10 @@ import pydantic
 from rich.table import Table
 from rich.text import Text
 
-import minimise.cli as _cli  # patchable constants/PlanReviewer; read at call time
+import minimise.interfaces.cli as _cli  # patchable constants/PlanReviewer; read at call time
 from minimise.models import JobStatus, TaskStatus, Plan
-from minimise.terminal_ui import get_status_color, render_task_table_with_gantt
-from minimise.cli._shared import (
+from minimise.interfaces.terminal_ui import get_status_color, render_task_table_with_gantt
+from minimise.interfaces.cli._shared import (
     console,
     get_db,
     get_job_manager,
@@ -23,7 +23,7 @@ from minimise.cli._shared import (
     _filter_tasks_by_id,
     _get_and_validate_job,
 )
-from minimise.cli.results import job_results
+from minimise.interfaces.cli.results import job_results
 
 
 @click.group(name="job")
@@ -430,7 +430,7 @@ def job_logs(job_id: str):
 def job_show(job_id: str, task_id: Optional[str]):
     """Show job plan structure or full prompt for a specific task."""
     try:
-        from minimise.handover_manager import HandoverManager
+        from minimise.orchestration.handover_manager import HandoverManager
         import yaml
 
         job_id, db, job_obj = _get_and_validate_job(job_id)

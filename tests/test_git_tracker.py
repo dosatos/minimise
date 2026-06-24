@@ -2,7 +2,7 @@ import pytest
 import tempfile
 import subprocess
 from pathlib import Path
-from minimise.git_tracker import GitTracker
+from minimise.storage.git_tracker import GitTracker
 
 
 @pytest.fixture

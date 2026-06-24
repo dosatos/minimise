@@ -16,4 +16,4 @@ dependencies = [
 package-dir = {"" = "src"}
 
 [project.scripts]
-mini = "minimise.cli:main"
+mini = "minimise.interfaces.cli:main"

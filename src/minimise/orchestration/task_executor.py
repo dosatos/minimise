@@ -2,9 +2,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from minimise.models import Task, TaskStatus
-from minimise.database import Database
-from minimise.git_tracker import GitTracker
-from minimise.harness import AgentHarness, ClaudeCodeHarness
+from minimise.storage.database import Database
+from minimise.storage.git_tracker import GitTracker
+from minimise.agents.harness import AgentHarness, ClaudeCodeHarness
 from minimise.utils import run_shell_command, ensure_directory
 
 

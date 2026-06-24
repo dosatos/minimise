@@ -4,7 +4,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from minimise.harness import HarnessResult, AgentHarness, ClaudeCodeHarness
+from minimise.agents.harness import HarnessResult, AgentHarness, ClaudeCodeHarness
 
 
 # --- HarnessResult dataclass ---
@@ -108,7 +108,7 @@ def test_build_env_bedrock_flag_not_one_uses_anthropic():
 
 # --- Command construction ---
 
-@patch("minimise.harness.subprocess.run")
+@patch("minimise.agents.harness.subprocess.run")
 def test_command_base_no_edits_no_model(mock_run):
     mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
     ClaudeCodeHarness().run("hi")
@@ -116,7 +116,7 @@ def test_command_base_no_edits_no_model(mock_run):
     assert cmd == ["claude", "-p", "--output-format", "text"]
 
 
-@patch("minimise.harness.subprocess.run")
+@patch("minimise.agents.harness.subprocess.run")
 def test_command_includes_skip_permissions_only_when_allow_edits(mock_run):
     mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
 
@@ -127,7 +127,7 @@ def test_command_includes_skip_permissions_only_when_allow_edits(mock_run):
     assert "--dangerously-skip-permissions" in mock_run.call_args.args[0]
 
 
-@patch("minimise.harness.subprocess.run")
+@patch("minimise.agents.harness.subprocess.run")
 def test_command_includes_model_only_when_given(mock_run):
     mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
 
@@ -140,7 +140,7 @@ def test_command_includes_model_only_when_given(mock_run):
     assert cmd[cmd.index("--model") + 1] == "claude-opus-4-8"
 
 
-@patch("minimise.harness.subprocess.run")
+@patch("minimise.agents.harness.subprocess.run")
 def test_run_passes_prompt_cwd_timeout(mock_run):
     mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
     ClaudeCodeHarness().run("the-prompt", cwd="/repo", timeout=120)
@@ -154,14 +154,14 @@ def test_run_passes_prompt_cwd_timeout(mock_run):
 
 # --- Result mapping ---
 
-@patch("minimise.harness.subprocess.run")
+@patch("minimise.agents.harness.subprocess.run")
 def test_run_returncode_zero_success(mock_run):
     mock_run.return_value = MagicMock(returncode=0, stdout="all good", stderr="")
     result = ClaudeCodeHarness().run("hi")
     assert result == HarnessResult(success=True, output="all good")
 
 
-@patch("minimise.harness.subprocess.run")
+@patch("minimise.agents.harness.subprocess.run")
 def test_run_returncode_zero_none_stdout_coalesced(mock_run):
     mock_run.return_value = MagicMock(returncode=0, stdout=None, stderr=None)
     result = ClaudeCodeHarness().run("hi")
@@ -169,7 +169,7 @@ def test_run_returncode_zero_none_stdout_coalesced(mock_run):
     assert result.output == ""
 
 
-@patch("minimise.harness.subprocess.run")
+@patch("minimise.agents.harness.subprocess.run")
 def test_run_returncode_nonzero_failure(mock_run):
     mock_run.return_value = MagicMock(returncode=1, stdout="partial", stderr="boom")
     result = ClaudeCodeHarness().run("hi")
@@ -178,7 +178,7 @@ def test_run_returncode_nonzero_failure(mock_run):
     assert result.error == "boom"
 
 
-@patch("minimise.harness.subprocess.run")
+@patch("minimise.agents.harness.subprocess.run")
 def test_run_returncode_nonzero_none_streams_coalesced(mock_run):
     mock_run.return_value = MagicMock(returncode=2, stdout=None, stderr=None)
     result = ClaudeCodeHarness().run("hi")
@@ -187,7 +187,7 @@ def test_run_returncode_nonzero_none_streams_coalesced(mock_run):
     assert result.error == ""
 
 
-@patch("minimise.harness.subprocess.run")
+@patch("minimise.agents.harness.subprocess.run")
 def test_run_timeout(mock_run):
     mock_run.side_effect = subprocess.TimeoutExpired(cmd="claude", timeout=300)
     result = ClaudeCodeHarness().run("hi", timeout=300)
@@ -196,7 +196,7 @@ def test_run_timeout(mock_run):
     assert result.error == "timeout after 300s"
 
 
-@patch("minimise.harness.subprocess.run")
+@patch("minimise.agents.harness.subprocess.run")
 def test_run_generic_exception(mock_run):
     mock_run.side_effect = FileNotFoundError("claude not found")
     result = ClaudeCodeHarness().run("hi")

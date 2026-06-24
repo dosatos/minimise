@@ -4,10 +4,10 @@ import subprocess
 import yaml
 from pathlib import Path
 from datetime import datetime
-from minimise.job_manager import JobManager
+from minimise.orchestration.job_manager import JobManager
 from minimise.models import Job, Task, JobStatus, TaskStatus
-from minimise.database import Database
-from minimise.git_tracker import GitTracker
+from minimise.storage.database import Database
+from minimise.storage.git_tracker import GitTracker
 import uuid
 
 
@@ -174,7 +174,7 @@ def test_cancel_job_basic(job_manager, plan_file):
 
 def test_run_job_basic(job_manager, plan_file):
     """Test running a job with mocked task execution."""
-    from minimise.task_executor import TaskExecutor
+    from minimise.orchestration.task_executor import TaskExecutor
 
     # Create job
     created_job = job_manager.create_job(plan_file)
@@ -189,8 +189,8 @@ def test_run_job_basic(job_manager, plan_file):
             return True, f"Executed {task.name}"
 
     # Monkey patch for this test
-    import minimise.job_manager
-    minimise.job_manager.TaskExecutor = MockTaskExecutor
+    import minimise.orchestration.job_manager
+    minimise.orchestration.job_manager.TaskExecutor = MockTaskExecutor
 
     try:
         # Run the job
@@ -206,12 +206,12 @@ def test_run_job_basic(job_manager, plan_file):
             assert task.status == TaskStatus.COMPLETED
     finally:
         # Restore original class
-        minimise.job_manager.TaskExecutor = original_executor_class
+        minimise.orchestration.job_manager.TaskExecutor = original_executor_class
 
 
 def test_task_commits_against_base_commit(job_manager, plan_file, git_repo):
     """Test that each task commits its changes against its base commit, not HEAD."""
-    from minimise.task_executor import TaskExecutor
+    from minimise.orchestration.task_executor import TaskExecutor
 
     # Create job
     created_job = job_manager.create_job(plan_file)
@@ -258,8 +258,8 @@ def test_task_commits_against_base_commit(job_manager, plan_file, git_repo):
 
             return True, f"Executed {task.name}"
 
-    import minimise.job_manager
-    minimise.job_manager.TaskExecutor = MockTaskExecutor
+    import minimise.orchestration.job_manager
+    minimise.orchestration.job_manager.TaskExecutor = MockTaskExecutor
 
     try:
         # Run the job
@@ -276,15 +276,15 @@ def test_task_commits_against_base_commit(job_manager, plan_file, git_repo):
             assert task.base_commit == base_commit
 
     finally:
-        minimise.job_manager.TaskExecutor = original_executor_class
+        minimise.orchestration.job_manager.TaskExecutor = original_executor_class
 
 
 def test_task_commit_message_format(temp_db_dir, git_repo, plan_file):
     """Test that task commits use the correct message format: 'Task <id>: <name>'."""
-    from minimise.job_manager import JobManager
-    from minimise.task_executor import TaskExecutor
-    from minimise.database import Database
-    from minimise.git_tracker import GitTracker
+    from minimise.orchestration.job_manager import JobManager
+    from minimise.orchestration.task_executor import TaskExecutor
+    from minimise.storage.database import Database
+    from minimise.storage.git_tracker import GitTracker
 
     original_executor_class = TaskExecutor
     execution_count = [0]
@@ -320,8 +320,8 @@ def test_task_commit_message_format(temp_db_dir, git_repo, plan_file):
             self.db.update_task_status(task.id, TaskStatus.COMPLETED, output=f"Executed {task.name}", completed_at=datetime.utcnow())
             return True, f"Executed {task.name}"
 
-    import minimise.job_manager
-    minimise.job_manager.TaskExecutor = MockTaskExecutor
+    import minimise.orchestration.job_manager
+    minimise.orchestration.job_manager.TaskExecutor = MockTaskExecutor
 
     try:
         db = Database(temp_db_dir / "test.db")
@@ -361,15 +361,15 @@ def test_task_commit_message_format(temp_db_dir, git_repo, plan_file):
             assert any(task_id in msg for msg in commit_messages)
 
     finally:
-        minimise.job_manager.TaskExecutor = original_executor_class
+        minimise.orchestration.job_manager.TaskExecutor = original_executor_class
 
 
 def test_task_diff_excludes_prior_task_changes(temp_db_dir, git_repo, plan_file):
     """Test that task diff only includes changes from current task, not prior tasks."""
-    from minimise.job_manager import JobManager
-    from minimise.task_executor import TaskExecutor
-    from minimise.database import Database
-    from minimise.git_tracker import GitTracker
+    from minimise.orchestration.job_manager import JobManager
+    from minimise.orchestration.task_executor import TaskExecutor
+    from minimise.storage.database import Database
+    from minimise.storage.git_tracker import GitTracker
 
     original_executor_class = TaskExecutor
     execution_count = [0]
@@ -421,8 +421,8 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, git_repo, plan_file)
 
             return True, f"Executed {task.name}"
 
-    import minimise.job_manager
-    minimise.job_manager.TaskExecutor = MockTaskExecutor
+    import minimise.orchestration.job_manager
+    minimise.orchestration.job_manager.TaskExecutor = MockTaskExecutor
 
     try:
         db = Database(temp_db_dir / "test.db")
@@ -455,7 +455,7 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, git_repo, plan_file)
         assert "diff_test_2.txt" in diff_2
 
     finally:
-        minimise.job_manager.TaskExecutor = original_executor_class
+        minimise.orchestration.job_manager.TaskExecutor = original_executor_class
 
 
 def test_failed_job_persists_in_db(job_manager, plan_file):
