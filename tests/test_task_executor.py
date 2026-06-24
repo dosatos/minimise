@@ -394,6 +394,38 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, db, git_repo):
     # Note: This is implementation-dependent on how git diff works
 
 
+def test_failed_attempt_handover_injected_into_retry(temp_db_dir, db, git_repo):
+    """A failed attempt's error is fed into the next attempt's context (learn-from-failure)."""
+    from minimise.models import Job, JobStatus
+
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(db, git_tracker, temp_db_dir)
+
+    job_id = str(uuid.uuid4())
+    db.create_job(Job(id=job_id, name="J", status=JobStatus.PENDING,
+                      base_commit=git_tracker.get_current_commit()))
+    task = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
+                name="Flaky", description="d", status=TaskStatus.PENDING)
+    db.create_task(task)
+
+    seen_handovers = []
+
+    def mock_invoke(context):
+        seen_handovers.append(context["handover"])
+        # Fail first attempt, succeed second.
+        if len(seen_handovers) == 1:
+            return False, "boom: missing import"
+        return True, "ok"
+
+    executor._invoke_claude_code = mock_invoke
+    success, _ = executor.execute_task(task, job_id, "ORIGINAL_HANDOVER")
+
+    assert success
+    assert seen_handovers[0] == "ORIGINAL_HANDOVER"          # first attempt: plain handover
+    assert "boom: missing import" in seen_handovers[1]        # retry learns from the failure
+    assert "ORIGINAL_HANDOVER" in seen_handovers[1]           # ...without losing prior context
+
+
 def test_default_harness_is_claude_code(temp_db_dir, db, git_repo):
     """TaskExecutor defaults to ClaudeCodeHarness when no harness injected."""
     from minimise.agents.harness import ClaudeCodeHarness

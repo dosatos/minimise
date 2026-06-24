@@ -55,3 +55,26 @@ class HandoverManager:
 Please continue from where the previous task left off and complete this task."""
 
         return prompt
+
+    @staticmethod
+    def build_retry_prompt(prior_handover: str, task: Task, attempt: int, error_output: str) -> str:
+        """Build the context for re-attempting a failed task: prior handover + what went wrong.
+
+        This is the "learn from the failure" signal — the failed attempt's report is
+        injected into the next attempt so the agent can avoid repeating it.
+        ponytail: failure report is just the error output for now; richer capture
+        (diff, conversation, learnings) is the separate handover-quality effort.
+        """
+        return f"""{prior_handover}
+
+## Previous Attempt Failed (attempt {attempt})
+
+The previous attempt at this task did not succeed. Learn from what went wrong
+and take a different approach.
+
+**Task:** {task.name}
+
+**Failure output:**
+{error_output}
+
+Please complete the task, avoiding the failure above."""

@@ -1,11 +1,12 @@
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from minimise.models import Task, TaskStatus
+from minimise.models import Task
 from minimise.storage.database import Database
 from minimise.storage.git_tracker import GitTracker
+from minimise.storage.job_store import JobStore
+from minimise.orchestration.handover_manager import HandoverManager
 from minimise.agents.harness import AgentHarness, ClaudeCodeHarness
-from minimise.utils import run_shell_command, ensure_directory
+from minimise.utils import run_shell_command
 
 
 class TaskExecutor:
@@ -24,6 +25,7 @@ class TaskExecutor:
         self.db = db
         self.git_tracker = git_tracker
         self.jobs_dir = jobs_dir
+        self.store = JobStore(db, jobs_dir)
         self.on_task_update = on_task_update
         self.harness = harness or ClaudeCodeHarness()
 
@@ -35,107 +37,64 @@ class TaskExecutor:
         pre_task_hook: str = "",
         post_task_hook: str = "",
     ) -> tuple[bool, str]:
+        """Execute a task with retries and hooks; returns (success, output).
+
+        On a failed attempt, the failure report is injected into the next
+        attempt's context (learn-from-failure handover).
         """
-        Execute a task with retries and hooks.
-
-        Args:
-            task: Task to execute
-            job_id: ID of parent job
-            handover_context: Context from previous task
-            pre_task_hook: Shell command to run before task
-            post_task_hook: Shell command to run after task
-
-        Returns:
-            (success, output)
-        """
-        task_dir = ensure_directory(self.jobs_dir / job_id / "tasks" / task.id)
-
-        # Get job to fetch base_commit
-        job = self.db.get_job(job_id)
-        if not job:
+        if not self.db.get_job(job_id):
             return False, f"Job {job_id} not found"
 
         # Capture task's base_commit at start (if not already set)
         if not task.base_commit:
-            task.base_commit = self.git_tracker.get_current_commit()
-            self.db.update_task(task)
+            self.store.set_task_base_commit(task, self.git_tracker.get_current_commit())
 
-        # Run pre-task hook
         if pre_task_hook:
             success, output = run_shell_command(pre_task_hook)
             if not success:
                 return False, f"Pre-task hook failed: {output}"
 
-        # Attempt task execution with retries
         final_success = False
         final_output = ""
-        started_at = None
+        context = handover_context
 
         for attempt in range(self.MAX_RETRIES + 1):
-            task.retries = attempt
-            if attempt == 0:
-                started_at = datetime.utcnow()
-            self.db.update_task_status(task.id, TaskStatus.RUNNING, started_at=started_at if attempt == 0 else None)
+            self.store.mark_running(task, attempt)
 
-            # Build execution context
-            context = {
-                "handover": handover_context,
+            success, output = self._invoke_claude_code({
+                "handover": context,
                 "task_name": task.name,
                 "task_description": task.description,
                 "task_goal": task.goal,
-            }
-
-            # Invoke Claude Code with task context
-            success, output = self._invoke_claude_code(context)
+            })
             final_output = output
 
             if success:
                 final_success = True
                 break
-            elif attempt < self.MAX_RETRIES:
-                # Log failure and retry
-                self.db.update_task_status(
-                    task.id, TaskStatus.PENDING, output=f"Attempt {attempt} failed: {output}"
-                )
+            if attempt < self.MAX_RETRIES:
+                self.store.record_attempt(task, attempt, output)
+                # learn-from-failure: feed this failure into the next attempt.
+                context = HandoverManager.build_retry_prompt(handover_context, task, attempt, output)
 
-        # Run post-task hook
         if post_task_hook:
             hook_success, hook_output = run_shell_command(post_task_hook)
             if not hook_success:
-                self._finalize_task(
-                    task.id, TaskStatus.FAILED, f"Post-task hook failed: {hook_output}", task.retries
-                )
+                self.store.mark_task_failed(task, f"Post-task hook failed: {hook_output}")
                 return False, f"Post-task hook failed: {hook_output}"
 
-        # Commit changes with task-specific message (before calculating diff)
         if final_success:
-            commit_message = f"Task {task.id}: {task.name}"
             try:
-                commit_result = self.git_tracker.commit(commit_message)
+                self.git_tracker.commit(f"Task {task.id}: {task.name}")
             except Exception as e:
                 # Log commit failure but don't fail the task
                 final_output += f"\n[Note: Git commit failed: {str(e)}]"
-                commit_result = None
-
-            # Calculate and store diff against task's base_commit (after commit)
-            if task.base_commit:
-                diff = self.git_tracker.get_diff(task.base_commit)
-                diff_path = task_dir / "diff.txt"
-                diff_path.write_text(diff)
-                # Update only diff_path in database (preserves all other fields)
-                self.db.update_task_diff_path(task.id, str(diff_path))
-
-            self._finalize_task(task.id, TaskStatus.COMPLETED, final_output, task.retries)
+            diff = self.git_tracker.get_diff(task.base_commit) if task.base_commit else ""
+            self.store.record_completed(task, final_output, diff)
         else:
-            self._finalize_task(task.id, TaskStatus.FAILED, final_output, task.retries)
+            self.store.mark_task_failed(task, final_output)
 
         return final_success, final_output
-
-    def _finalize_task(self, task_id: str, status: TaskStatus, output: str, retries: int) -> None:
-        """Record a terminal task status with a completion timestamp."""
-        self.db.update_task_status(
-            task_id, status, output=output, retries=retries, completed_at=datetime.utcnow()
-        )
 
     def _invoke_claude_code(self, context: dict) -> tuple[bool, str]:
         """
