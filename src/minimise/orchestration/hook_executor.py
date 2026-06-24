@@ -5,7 +5,7 @@ named hook and reports success. Failing the job (marking it FAILED in the
 store) is the run loop's concern, so it lives on JobExecutor, not here.
 """
 
-from minimise.orchestration.hooks import Hook
+from minimise.utils import run_shell_command
 
 
 class HookExecutor:
@@ -13,7 +13,9 @@ class HookExecutor:
 
     def run(self, command: str, label: str) -> bool:
         """Run the hook; log and return False if it errors (empty hook succeeds)."""
-        success, output = Hook(command).run()
+        if not command:
+            return True
+        success, output = run_shell_command(command)
         if not success:
             print(f"{label} hook failed: {output}")
         return success

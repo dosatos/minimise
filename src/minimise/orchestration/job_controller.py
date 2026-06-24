@@ -1,8 +1,9 @@
 """JobController — job lifecycle and process control.
 
-Owns creating jobs, starting/stopping a job, status lookups, and
-status-update callbacks. The run loop lives on JobExecutor; per-task work
-lives in TaskExecutor; persistence lives in JobStore.
+Owns creating jobs, starting/stopping a job, and status lookups. It loads the
+job/plan and marks RUNNING/COMPLETED/FAILED around the run; the run loop
+itself lives on JobExecutor; per-task work lives in TaskExecutor; persistence
+lives in JobStore.
 """
 
 from pathlib import Path
@@ -29,7 +30,7 @@ class JobController:
         self.store = JobStore(db, jobs_dir)
         self.task_executor = TaskExecutor(db, git_tracker, jobs_dir)
         self.hook_executor = HookExecutor()
-        self.executor = JobExecutor(self.store, self.task_executor, self.hook_executor, git_tracker)
+        self.executor = JobExecutor(self.task_executor, self.hook_executor, git_tracker)
 
     @classmethod
     def from_paths(cls, db, repo_path, jobs_dir) -> "JobController":
@@ -62,7 +63,7 @@ class JobController:
 
     def start_job(self, job_id: str) -> bool:
         """Run a PENDING job to completion in-process; return True on success."""
-        job = self.db.get_job(job_id)
+        job = self.store.load(job_id)
         if not job:
             print(f"Job {job_id} not found")
             return False
@@ -71,7 +72,19 @@ class JobController:
             print(f"Job must be in PENDING state (current: {job.status.value})")
             return False
 
-        return self.executor.execute(job_id)
+        try:
+            plan = self.store.load_plan(job_id)
+        except Exception as e:
+            print(f"Error reading plan file: {e}")
+            return False
+
+        self.store.mark_job_running(job_id)
+        success = self.executor.execute(job, plan)
+        if success:
+            self.store.mark_job_completed(job_id)
+        else:
+            self.store.mark_job_failed(job_id)
+        return success
 
     def stop_job(self, job_id: str) -> bool:
         """Stop a job: mark it and its RUNNING/PENDING tasks STOPPED."""
