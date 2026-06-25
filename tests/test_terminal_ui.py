@@ -518,3 +518,169 @@ class TestRenderTaskTableWithGantt:
         )
         assert len(table.rows) == 1
         assert table.columns[0]._cells == ["Quick Task"]
+
+    def test_attempts_only_unchanged(self, sample_job, base_time):
+        """Flat executions list of task attempts renders identical per-attempt rows."""
+        task = Task(
+            estimated_duration_min=5,
+            id="task-multi",
+            job_id="job-001",
+            name="Retried Task",
+            description="desc",
+            status=TaskStatus.COMPLETED,
+        )
+        ex0 = Execution(
+            task_id="task-multi",
+            attempt=0,
+            execution_type="task",
+            status=TaskStatus.FAILED,
+            started_at=base_time + timedelta(seconds=1),
+            completed_at=base_time + timedelta(seconds=2),
+        )
+        ex1 = Execution(
+            task_id="task-multi",
+            attempt=1,
+            execution_type="task",
+            status=TaskStatus.COMPLETED,
+            started_at=base_time + timedelta(seconds=4),
+            completed_at=base_time + timedelta(seconds=9),
+        )
+        table = render_execution_table_with_gantt(
+            sample_job,
+            [task],
+            now=base_time + timedelta(seconds=10),
+            executions=[ex0, ex1],
+        )
+        assert len(table.rows) == 2
+        assert table.columns[0]._cells == ["Retried Task  · try 1", "Retried Task  · try 2"]
+
+    def test_plan_hooks_bracket_task_rows(self, sample_job, base_time):
+        """Plan hook rows render in list order around task attempt rows."""
+        task = Task(
+            estimated_duration_min=5,
+            id="task-1",
+            job_id="job-001",
+            name="Build",
+            description="desc",
+            status=TaskStatus.COMPLETED,
+        )
+        pre = Execution(
+            task_id=None,
+            attempt=0,
+            execution_type="pre_plan",
+            status=TaskStatus.COMPLETED,
+            started_at=base_time + timedelta(seconds=1),
+            completed_at=base_time + timedelta(seconds=2),
+        )
+        attempt = Execution(
+            task_id="task-1",
+            attempt=0,
+            execution_type="task",
+            status=TaskStatus.COMPLETED,
+            started_at=base_time + timedelta(seconds=3),
+            completed_at=base_time + timedelta(seconds=5),
+        )
+        post = Execution(
+            task_id=None,
+            attempt=0,
+            execution_type="post_plan",
+            status=TaskStatus.COMPLETED,
+            started_at=base_time + timedelta(seconds=6),
+            completed_at=base_time + timedelta(seconds=7),
+        )
+        table = render_execution_table_with_gantt(
+            sample_job,
+            [task],
+            now=base_time + timedelta(seconds=10),
+            executions=[pre, attempt, post],
+        )
+        assert table.columns[0]._cells == [
+            "Pre-plan hook",
+            "Build  · try 1",
+            "Post-plan hook",
+        ]
+
+    def test_task_hooks_labelled_with_task_name(self, sample_job, base_time):
+        """Per-task hook rows include the resolved task name."""
+        task = Task(
+            estimated_duration_min=5,
+            id="task-1",
+            job_id="job-001",
+            name="Build",
+            description="desc",
+            status=TaskStatus.COMPLETED,
+        )
+        pre = Execution(
+            task_id="task-1",
+            attempt=0,
+            execution_type="pre_task",
+            status=TaskStatus.COMPLETED,
+            started_at=base_time + timedelta(seconds=1),
+            completed_at=base_time + timedelta(seconds=2),
+        )
+        attempt = Execution(
+            task_id="task-1",
+            attempt=0,
+            execution_type="task",
+            status=TaskStatus.COMPLETED,
+            started_at=base_time + timedelta(seconds=3),
+            completed_at=base_time + timedelta(seconds=5),
+        )
+        post = Execution(
+            task_id="task-1",
+            attempt=0,
+            execution_type="post_task",
+            status=TaskStatus.COMPLETED,
+            started_at=base_time + timedelta(seconds=6),
+            completed_at=base_time + timedelta(seconds=7),
+        )
+        table = render_execution_table_with_gantt(
+            sample_job,
+            [task],
+            now=base_time + timedelta(seconds=10),
+            executions=[pre, attempt, post],
+        )
+        assert table.columns[0]._cells == [
+            "Pre-task hook  · Build",
+            "Build  · try 1",
+            "Post-task hook  · Build",
+        ]
+
+    def test_hook_row_expected_is_dash(self, sample_job, base_time):
+        """Hook rows show '—' in the Expected column."""
+        hook = Execution(
+            task_id=None,
+            attempt=0,
+            execution_type="pre_plan",
+            status=TaskStatus.COMPLETED,
+            started_at=base_time + timedelta(seconds=1),
+            completed_at=base_time + timedelta(seconds=2),
+        )
+        table = render_execution_table_with_gantt(
+            sample_job,
+            [],
+            now=base_time + timedelta(seconds=10),
+            executions=[hook],
+        )
+        assert table.columns[3]._cells == ["—"]
+
+    def test_executions_none_uses_legacy_path(self, sample_job, sample_tasks, base_time):
+        """executions=None with executions_by_task reproduces today's per-attempt rows."""
+        task = sample_tasks[0]
+        ex0 = Execution(
+            task_id=task.id,
+            attempt=0,
+            execution_type="task",
+            status=TaskStatus.COMPLETED,
+            started_at=base_time + timedelta(seconds=1),
+            completed_at=base_time + timedelta(seconds=2),
+        )
+        table = render_execution_table_with_gantt(
+            sample_job,
+            [task],
+            now=base_time + timedelta(seconds=10),
+            executions=None,
+            executions_by_task={task.id: [ex0]},
+        )
+        assert len(table.rows) == 1
+        assert table.columns[0]._cells == ["Quick Task  · try 1"]

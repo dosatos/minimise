@@ -464,6 +464,100 @@ def test_executions_recorded_across_retry(temp_db_dir, db, git_repo):
     assert all(e.started_at and e.completed_at for e in execs)     # per-attempt timestamps preserved
 
 
+def _setup_job_and_task(db, git_tracker):
+    from minimise.models import Job, JobStatus
+
+    job_id = str(uuid.uuid4())
+    db.create_job(Job(id=job_id, name="J", status=JobStatus.PENDING,
+                      base_commit=git_tracker.get_current_commit()))
+    task = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
+                name="T", description="d", status=TaskStatus.PENDING)
+    db.create_task(task)
+    return job_id, task
+
+
+def test_pre_task_hook_recorded(temp_db_dir, db, git_repo):
+    """A non-empty pre-task hook writes a COMPLETED pre_task execution row."""
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
+    job_id, task = _setup_job_and_task(db, git_tracker)
+    executor._invoke_claude_code = lambda context: (True, "ok")
+
+    executor.execute_task(task, job_id, "", pre_task_hook="exit 0")
+
+    pre = [e for e in db.list_executions_for_job(job_id) if e.execution_type == "pre_task"]
+    assert len(pre) == 1
+    assert pre[0].task_id == task.id
+    assert pre[0].status == TaskStatus.COMPLETED
+    assert pre[0].started_at and pre[0].completed_at
+
+
+def test_pre_task_hook_failure_recorded(temp_db_dir, db, git_repo):
+    """A failing pre-task hook records a FAILED row AND still early-returns."""
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
+    job_id, task = _setup_job_and_task(db, git_tracker)
+    executor._invoke_claude_code = lambda context: (True, "ok")
+
+    success, output = executor.execute_task(task, job_id, "", pre_task_hook="exit 1")
+
+    assert not success
+    assert output.startswith("Pre-task hook failed:")
+    pre = [e for e in db.list_executions_for_job(job_id) if e.execution_type == "pre_task"]
+    assert len(pre) == 1
+    assert pre[0].status == TaskStatus.FAILED
+
+
+def test_post_task_hook_recorded(temp_db_dir, db, git_repo):
+    """A non-empty post-task hook on a passing task writes a COMPLETED post_task row."""
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
+    job_id, task = _setup_job_and_task(db, git_tracker)
+    executor._invoke_claude_code = lambda context: (True, "ok")
+
+    executor.execute_task(task, job_id, "", post_task_hook="exit 0")
+
+    post = [e for e in db.list_executions_for_job(job_id) if e.execution_type == "post_task"]
+    assert len(post) == 1
+    assert post[0].task_id == task.id
+    assert post[0].status == TaskStatus.COMPLETED
+
+
+def test_no_hooks_records_only_attempts(temp_db_dir, db, git_repo):
+    """With no hooks, no pre_/post_task rows are written — only task attempts."""
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
+    job_id, task = _setup_job_and_task(db, git_tracker)
+    executor._invoke_claude_code = lambda context: (True, "ok")
+
+    executor.execute_task(task, job_id, "")
+
+    types = {e.execution_type for e in db.list_executions_for_job(job_id)}
+    assert "pre_task" not in types
+    assert "post_task" not in types
+
+
+def test_task_attempt_started_at_not_copied_from_pre_task_hook(temp_db_dir, db, git_repo):
+    """The closed task attempt keeps its OWN started_at, not the pre_task hook's.
+
+    Regression: hooks share task_id and attempt=0, so _close_execution matching on
+    attempt alone would graft the pre_task hook's earlier started_at onto the task row.
+    """
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
+    job_id, task = _setup_job_and_task(db, git_tracker)
+    executor._invoke_claude_code = lambda context: (True, "ok")
+
+    executor.execute_task(task, job_id, "", pre_task_hook="true")
+
+    rows = db.list_executions_for_job(job_id)
+    pre = next(e for e in rows if e.execution_type == "pre_task")
+    attempt = next(e for e in rows if e.execution_type == "task")
+    # The attempt opens AFTER the pre_task hook closes, so its start is strictly later.
+    assert attempt.started_at >= pre.completed_at
+    assert attempt.started_at != pre.started_at
+
+
 def test_default_harness_is_claude_code(temp_db_dir, db, git_repo):
     """TaskExecutor defaults to ClaudeCodeHarness when no harness injected."""
     from minimise.agents.harness import ClaudeCodeHarness

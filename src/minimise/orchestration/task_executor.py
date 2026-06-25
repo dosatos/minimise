@@ -1,5 +1,6 @@
+from datetime import datetime
 from typing import Optional
-from minimise.models import Task
+from minimise.models import Execution, Task, TaskStatus
 from minimise.storage.git_tracker import GitTracker
 from minimise.storage.job_store import JobStore
 from minimise.orchestration.handover_manager import HandoverManager
@@ -43,7 +44,13 @@ class TaskExecutor:
             self.store.set_task_base_commit(task, self.git_tracker.get_current_commit())
 
         if pre_task_hook:
+            started_at = datetime.utcnow()
             success, output = run_shell_command(pre_task_hook)
+            self.store.save_execution(Execution(
+                job_id=job_id, task_id=task.id, execution_type="pre_task", attempt=0,
+                status=TaskStatus.COMPLETED if success else TaskStatus.FAILED,
+                started_at=started_at, completed_at=datetime.utcnow(), output=output,
+            ))
             if not success:
                 return False, f"Pre-task hook failed: {output}"
 
@@ -71,7 +78,13 @@ class TaskExecutor:
                 context = HandoverManager.build_retry_prompt(handover_context, task, attempt, output)
 
         if post_task_hook:
+            started_at = datetime.utcnow()
             hook_success, hook_output = run_shell_command(post_task_hook)
+            self.store.save_execution(Execution(
+                job_id=job_id, task_id=task.id, execution_type="post_task", attempt=0,
+                status=TaskStatus.COMPLETED if hook_success else TaskStatus.FAILED,
+                started_at=started_at, completed_at=datetime.utcnow(), output=hook_output,
+            ))
             if not hook_success:
                 self.store.mark_task_failed(task, f"Post-task hook failed: {hook_output}")
                 return False, f"Post-task hook failed: {hook_output}"

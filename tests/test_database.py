@@ -1,4 +1,4 @@
-from minimise.models import Job, Task, JobStatus, TaskStatus
+from minimise.models import Job, Task, Execution, JobStatus, TaskStatus
 from datetime import datetime
 import uuid
 
@@ -417,3 +417,56 @@ def test_duration_column_is_not_null(tmp_path):
     # Pre-existing NOT NULLs must be preserved.
     for col in ("job_id", "name", "status", "created_at"):
         assert info[col][3] == 1, f"{col} lost its NOT NULL constraint"
+
+
+def test_execution_round_trip_with_job_and_type(db):
+    """A task Execution round-trips with job_id/execution_type via both list queries."""
+    e = Execution(task_id="t1", attempt=0, job_id="j1", status=TaskStatus.COMPLETED,
+                  started_at=datetime(2026, 1, 1, 0, 0, 0))
+    db.save_execution(e)
+
+    by_task = db.list_executions_for_task("t1")
+    by_job = db.list_executions_for_job("j1")
+    assert len(by_task) == 1 and len(by_job) == 1
+    for got in (by_task[0], by_job[0]):
+        assert got.task_id == "t1"
+        assert got.job_id == "j1"
+        assert got.execution_type == "task"
+        assert got.attempt == 0
+
+
+def test_list_executions_for_job_orders_by_started_at(db):
+    """Executions for a job come back in started_at order."""
+    db.save_execution(Execution(task_id="t2", attempt=0, job_id="j1",
+                                started_at=datetime(2026, 1, 1, 0, 10, 0)))
+    db.save_execution(Execution(task_id="t1", attempt=0, job_id="j1",
+                                started_at=datetime(2026, 1, 1, 0, 5, 0)))
+    execs = db.list_executions_for_job("j1")
+    assert [e.task_id for e in execs] == ["t1", "t2"]
+
+
+def test_fresh_db_has_new_schema(tmp_path):
+    """A fresh Database creates the executions table with the new columns; round-trip works."""
+    import sqlite3
+    from minimise.storage.database import Database
+
+    db_path = tmp_path / "fresh.db"
+    db = Database(db_path)
+    db.init_db()
+
+    conn = sqlite3.connect(db_path)
+    cols = {c[1] for c in conn.execute("PRAGMA table_info(executions)").fetchall()}
+    conn.close()
+    assert {"execution_id", "job_id", "task_id", "execution_type"} <= cols
+
+    db.save_execution(Execution(task_id="t1", attempt=0, job_id="j1"))
+    assert db.list_executions_for_job("j1")[0].job_id == "j1"
+
+
+def test_delete_job_removes_plan_hook_rows(db):
+    """delete_job removes plan-hook executions (task_id NULL)."""
+    db.save_execution(Execution(task_id=None, attempt=0, job_id="J",
+                                execution_type="pre_plan"))
+    assert len(db.list_executions_for_job("J")) == 1
+    db.delete_job("J")
+    assert db.list_executions_for_job("J") == []

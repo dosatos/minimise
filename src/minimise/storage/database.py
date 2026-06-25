@@ -57,6 +57,8 @@ def _row_to_execution(row: sqlite3.Row) -> Execution:
     return Execution(
         task_id=row['task_id'],
         attempt=row['attempt'],
+        job_id=row['job_id'],
+        execution_type=row['execution_type'],
         status=TaskStatus(row['status']),
         started_at=_dt(row['started_at']),
         completed_at=_dt(row['completed_at']),
@@ -178,17 +180,23 @@ class Database:
             )
         """)
 
+        # ponytail: CREATE IF NOT EXISTS like every other table — init_db() runs
+        # on EVERY cli command, so an unconditional DROP here wipes executions on
+        # every invocation. Old-shape dev tables are dropped once, by hand.
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS executions (
-                task_id TEXT NOT NULL,
-                attempt INTEGER NOT NULL,
+                execution_id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                task_id TEXT,
+                execution_type TEXT NOT NULL DEFAULT 'task',
+                attempt INTEGER NOT NULL DEFAULT 0,
                 status TEXT NOT NULL,
                 started_at TEXT,
                 completed_at TEXT,
                 output TEXT,
                 diff_path TEXT,
                 commit_sha TEXT,
-                PRIMARY KEY (task_id, attempt),
+                FOREIGN KEY(job_id) REFERENCES jobs(id),
                 FOREIGN KEY(task_id) REFERENCES tasks(id)
             )
         """)
@@ -379,14 +387,16 @@ class Database:
         return [_row_to_task(row) for row in rows]
 
     def save_execution(self, execution: Execution) -> None:
-        """Insert or replace an execution row (identity is task_id + attempt)."""
+        """Insert or replace an execution row (latest-wins, keyed by execution_id)."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
             INSERT OR REPLACE INTO executions
-                (task_id, attempt, status, started_at, completed_at, output, diff_path, commit_sha)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (execution.task_id, execution.attempt, execution.status.value,
+                (execution_id, job_id, task_id, execution_type, attempt, status,
+                 started_at, completed_at, output, diff_path, commit_sha)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (execution.execution_id, execution.job_id, execution.task_id,
+              execution.execution_type, execution.attempt, execution.status.value,
               execution.started_at.isoformat() if execution.started_at else None,
               execution.completed_at.isoformat() if execution.completed_at else None,
               execution.output, execution.diff_path, execution.commit_sha))
@@ -399,6 +409,19 @@ class Database:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM executions WHERE task_id = ? ORDER BY attempt", (task_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [_row_to_execution(row) for row in rows]
+
+    def list_executions_for_job(self, job_id: str) -> List[Execution]:
+        """Fetch all of a job's executions in timeline order (the timeline query)."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM executions WHERE job_id = ? ORDER BY started_at, execution_id",
+            (job_id,),
+        )
         rows = cursor.fetchall()
         conn.close()
         return [_row_to_execution(row) for row in rows]
@@ -418,10 +441,8 @@ class Database:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        cursor.execute(
-            "DELETE FROM executions WHERE task_id IN (SELECT id FROM tasks WHERE job_id = ?)",
-            (job_id,),
-        )
+        # Delete by job_id directly so plan-hook rows (task_id NULL) are removed too.
+        cursor.execute("DELETE FROM executions WHERE job_id = ?", (job_id,))
         cursor.execute("DELETE FROM tasks WHERE job_id = ?", (job_id,))
         cursor.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
 

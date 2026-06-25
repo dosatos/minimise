@@ -55,9 +55,14 @@ class Task:
 
 @dataclass
 class Execution:
-    """One attempt at running a task. Identity is (task_id, attempt)."""
-    task_id: str
+    """One timed run: a task attempt or a plan/per-task hook.
+
+    Identity is the derived ``execution_id`` — opaque, never parsed.
+    """
+    task_id: Optional[str]  # None for plan-level hooks
     attempt: int
+    job_id: str = ""
+    execution_type: str = "task"
     status: TaskStatus = TaskStatus.RUNNING
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -65,8 +70,19 @@ class Execution:
     diff_path: Optional[str] = None
     commit_sha: Optional[str] = None
 
+    @property
+    def execution_id(self) -> str:
+        """Deterministic opaque id for this logical run. Never parse it."""
+        return (
+            f"job_id#{self.job_id}#type#{self.execution_type}"
+            f"#task#{self.task_id or ''}#attempt#{self.attempt}"
+        )
+
     def to_dict(self) -> dict:
         return {
+            "execution_id": self.execution_id,
+            "job_id": self.job_id,
+            "execution_type": self.execution_type,
             "task_id": self.task_id,
             "attempt": self.attempt,
             "status": self.status.value,

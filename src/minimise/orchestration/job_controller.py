@@ -29,7 +29,7 @@ class JobController:
         self.repo_path = Path(repo_path)
         self.store = JobStore(db, jobs_dir)
         self.task_executor = TaskExecutor(self.store, git_tracker)
-        self.hook_executor = HookExecutor()
+        self.hook_executor = HookExecutor(self.db)
         self.executor = JobExecutor(self.task_executor, self.hook_executor, git_tracker)
 
     @classmethod
@@ -79,6 +79,7 @@ class JobController:
             return False
 
         self.store.mark_job_running(job_id)
+        self.hook_executor.job_id = job_id
         success = self.executor.execute(job, plan)
         if success:
             self.store.mark_job_completed(job_id)

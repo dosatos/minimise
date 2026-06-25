@@ -308,14 +308,12 @@ def job_status(job_id: str, format: str):
             # Display task progress with Gantt chart
             if job_obj.tasks:
                 console.print(f"\n[bold]Task Progress[/bold]")
-                executions_by_task = {
-                    t.id: db.list_executions_for_task(t.id) for t in job_obj.tasks
-                }
+                executions = db.list_executions_for_job(job_obj.id)
                 table = render_execution_table_with_gantt(
                     job_obj,
                     job_obj.tasks,
                     now=datetime.utcnow(),
-                    executions_by_task=executions_by_task,
+                    executions=executions,
                 )
                 console.print(table)
                 console.print(f"\n[dim]View full output with: mini job logs {job_id[:8]}[/dim]")

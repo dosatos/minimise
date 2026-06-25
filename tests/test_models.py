@@ -1,7 +1,7 @@
 from datetime import datetime
 
 import pytest
-from minimise.models import Job, JobStatus, Task, TaskStatus
+from minimise.models import Execution, Job, JobStatus, Task, TaskStatus
 
 
 def test_task_requires_estimated_duration_min():
@@ -73,3 +73,30 @@ def test_job_to_dict_with_nested_tasks():
 def test_job_to_dict_empty_tasks():
     j = Job(id="j1", name="job")
     assert j.to_dict()["tasks"] == []
+
+
+def test_execution_id_derivation():
+    """execution_id is deterministic and distinguishes the three run shapes."""
+    task_attempt = Execution(task_id="t1", attempt=2, job_id="j1")
+    plan_hook = Execution(task_id=None, attempt=0, job_id="j1", execution_type="pre_plan")
+    per_task_hook = Execution(task_id="t1", attempt=0, job_id="j1", execution_type="pre_task")
+
+    # task default type
+    assert task_attempt.execution_type == "task"
+    # opaque but deterministic: same logical run -> same id
+    assert task_attempt.execution_id == Execution(task_id="t1", attempt=2, job_id="j1").execution_id
+    # the three shapes are distinct
+    ids = {task_attempt.execution_id, plan_hook.execution_id, per_task_hook.execution_id}
+    assert len(ids) == 3
+    # plan hook has no task_id
+    assert plan_hook.task_id is None
+
+
+def test_execution_to_dict_carries_new_fields():
+    e = Execution(task_id="t1", attempt=1, job_id="j1", execution_type="task")
+    d = e.to_dict()
+    assert d["job_id"] == "j1"
+    assert d["execution_type"] == "task"
+    assert d["execution_id"] == e.execution_id
+    assert d["task_id"] == "t1"
+    assert d["attempt"] == 1

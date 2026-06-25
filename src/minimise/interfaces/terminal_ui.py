@@ -161,6 +161,7 @@ def render_execution_table_with_gantt(
     job: Job,
     tasks: list[Task],
     now: Optional[datetime] = None,
+    executions: Optional[list] = None,
     executions_by_task: Optional[dict] = None,
 ) -> Table:
     """
@@ -170,10 +171,15 @@ def render_execution_table_with_gantt(
         job: Job object with timing info
         tasks: List of tasks to display
         now: Current time for elapsed calculation
-        executions_by_task: Optional map of task_id -> list[Execution]. When a
-            task has executions, one row is emitted per attempt (timed from the
-            execution's own timestamps). Tasks without executions fall back to a
-            single task-level row.
+        executions: Optional flat list[Execution] in job timeline order (from
+            list_executions_for_job). When provided, it is THE source of rows —
+            one row per execution, in the given order (NOT re-sorted) — and
+            TAKES PRECEDENCE over executions_by_task. Covers task attempts AND
+            plan/per-task hooks.
+        executions_by_task: LEGACY map of task_id -> list[Execution]. Used only
+            when ``executions`` is None. When a task has executions, one row is
+            emitted per attempt; tasks without executions fall back to a single
+            task-level row.
 
     Returns:
         Rich Table with Task Name, Status, Duration, Expected, and Timeline columns
@@ -205,10 +211,28 @@ def render_execution_table_with_gantt(
             ),
         )
 
+    if executions is not None:
+        names = {t.id: t.name for t in tasks}
+        task_est = {t.id: t.estimated_duration_min for t in tasks}
+        for ex in executions:
+            tname = names.get(ex.task_id, "")
+            if ex.execution_type == "task":
+                label, expected = f"{tname}  · try {ex.attempt + 1}", task_est.get(ex.task_id)
+            elif ex.execution_type == "pre_plan":
+                label, expected = "Pre-plan hook", None
+            elif ex.execution_type == "post_plan":
+                label, expected = "Post-plan hook", None
+            elif ex.execution_type == "pre_task":
+                label, expected = f"Pre-task hook  · {tname}", None
+            else:  # post_task
+                label, expected = f"Post-task hook  · {tname}", None
+            add_row(label, ex.status, ex.started_at, ex.completed_at, expected)
+        return table
+
     for task in tasks:
-        executions = executions_by_task.get(task.id)
-        if executions:
-            for i, ex in enumerate(executions, start=1):
+        task_executions = executions_by_task.get(task.id)
+        if task_executions:
+            for i, ex in enumerate(task_executions, start=1):
                 add_row(
                     f"{task.name}  · try {i}",
                     ex.status,

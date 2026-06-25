@@ -96,7 +96,7 @@ class JobStore:
             started_at=datetime.utcnow() if attempt == 0 else None,
         )
         self.db.save_execution(Execution(
-            task_id=task.id, attempt=attempt,
+            task_id=task.id, attempt=attempt, job_id=task.job_id, execution_type="task",
             status=TaskStatus.RUNNING, started_at=datetime.utcnow(),
         ))
 
@@ -133,16 +133,28 @@ class JobStore:
         commit_sha: Optional[str] = None,
     ) -> None:
         """Close the open execution for an attempt, preserving its started_at."""
+        # Match the task-attempt row only: hooks now share task_id and attempt=0,
+        # so filtering by attempt alone would grab the pre_task hook's started_at.
         existing = next(
-            (e for e in self.db.list_executions_for_task(task.id) if e.attempt == attempt),
+            (e for e in self.db.list_executions_for_task(task.id)
+             if e.attempt == attempt and e.execution_type == "task"),
             None,
         )
         self.db.save_execution(Execution(
-            task_id=task.id, attempt=attempt, status=status,
+            task_id=task.id, attempt=attempt, job_id=task.job_id, execution_type="task",
+            status=status,
             started_at=existing.started_at if existing else None,
             completed_at=datetime.utcnow(),
             output=output, diff_path=diff_path, commit_sha=commit_sha,
         ))
+
+    def save_execution(self, execution: Execution) -> None:
+        """Persist an execution row (e.g. a per-task hook)."""
+        self.db.save_execution(execution)
+
+    def list_executions_for_job(self, job_id: str) -> list[Execution]:
+        """All executions for a job, in timeline order."""
+        return self.db.list_executions_for_job(job_id)
 
     def mark_task_stopped(self, task: Task) -> None:
         self.db.update_task_status(task.id, TaskStatus.STOPPED, completed_at=datetime.utcnow())
