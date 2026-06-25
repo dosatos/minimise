@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List
@@ -73,10 +74,75 @@ class Database:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
+    @contextmanager
+    def transaction(self):
+        """One connection for several writes — commit on success, rollback on error.
+
+        Pass the yielded ``conn`` into any mutator's ``conn=`` param to enlist it:
+
+            with db.transaction() as conn:
+                db.update_task_status(..., conn=conn)
+                db.save_execution(..., conn=conn)   # both land, or neither
+
+        Reads (get_*/list_*) run on their own connection, so inside a transaction
+        they see only ALREADY-COMMITTED rows — don't expect to read this txn's own
+        uncommitted writes back through a separate method call.
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    @contextmanager
+    def _write(self, conn: Optional[sqlite3.Connection]):
+        """Yield a cursor for a single mutator.
+
+        If ``conn`` is None the mutator owns its connection (open/commit/close);
+        if a ``conn`` is passed it enlists in that open transaction and leaves the
+        commit to whoever opened it.
+        """
+        if conn is not None:
+            yield conn.cursor()
+            return
+        own = sqlite3.connect(self.db_path)
+        try:
+            yield own.cursor()
+            own.commit()
+        except Exception:
+            own.rollback()
+            raise
+        finally:
+            own.close()
+
+    def _query(self, sql: str, params=()) -> List[sqlite3.Row]:
+        """Run a read and return rows as sqlite3.Row (own connection, always closed)."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            return conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+
+    SCHEMA_VERSION = 1
+
     def init_db(self):
-        """Create database schema."""
+        """Create/migrate the schema once per DB.
+
+        ``PRAGMA user_version`` is 0 on a fresh or pre-versioning database and
+        SCHEMA_VERSION once we've run. init_db() fires on EVERY cli command, so
+        this guard makes all but the first invocation a single PRAGMA read.
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+
+        if cursor.execute("PRAGMA user_version").fetchone()[0] == self.SCHEMA_VERSION:
+            conn.close()
+            return
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS jobs (
@@ -168,18 +234,6 @@ class Database:
             cursor.execute("ROLLBACK TO SAVEPOINT dur_migration")
             raise
 
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS diffs (
-                id TEXT PRIMARY KEY,
-                task_id TEXT NOT NULL,
-                diff_path TEXT NOT NULL,
-                file_count INTEGER,
-                lines_added INTEGER,
-                lines_removed INTEGER,
-                FOREIGN KEY(task_id) REFERENCES tasks(id)
-            )
-        """)
-
         # ponytail: CREATE IF NOT EXISTS like every other table — init_db() runs
         # on EVERY cli command, so an unconditional DROP here wipes executions on
         # every invocation. Old-shape dev tables are dropped once, by hand.
@@ -201,58 +255,44 @@ class Database:
             )
         """)
 
+        cursor.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
         conn.commit()
         conn.close()
 
-    def create_job(self, job: Job) -> None:
+    def create_job(self, job: Job, conn: Optional[sqlite3.Connection] = None) -> None:
         """Insert a new job."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO jobs (id, name, status, plan_path, base_commit, created_at, pid)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (job.id, job.name, job.status.value, job.plan_path, job.base_commit, job.created_at.isoformat(), job.pid))
-        conn.commit()
-        conn.close()
+        with self._write(conn) as cursor:
+            cursor.execute("""
+                INSERT INTO jobs (id, name, status, plan_path, base_commit, created_at, pid)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (job.id, job.name, job.status.value, job.plan_path, job.base_commit, job.created_at.isoformat(), job.pid))
+
+    def create_job_with_tasks(self, job: Job, tasks: List[Task]) -> None:
+        """Insert a job and all its tasks in one transaction — all or nothing."""
+        with self.transaction() as conn:
+            self.create_job(job, conn=conn)
+            for task in tasks:
+                self.create_task(task, conn=conn)
 
     def get_job(self, job_id: str) -> Optional[Job]:
         """Fetch a job by ID."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
-        row = cursor.fetchone()
-        conn.close()
-
-        if not row:
-            return None
-
-        return _row_to_job(row)
+        rows = self._query("SELECT * FROM jobs WHERE id = ?", (job_id,))
+        return _row_to_job(rows[0]) if rows else None
 
     def list_jobs(self, limit: Optional[int] = None) -> List[Job]:
         """Fetch jobs with optional limit."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
         if limit is not None:
-            cursor.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,))
+            rows = self._query("SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,))
         else:
-            cursor.execute("SELECT * FROM jobs ORDER BY created_at DESC")
-        rows = cursor.fetchall()
-        conn.close()
-
+            rows = self._query("SELECT * FROM jobs ORDER BY created_at DESC")
         return [_row_to_job(row) for row in rows]
 
-    def update_job_status(self, job_id: str, status: JobStatus, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, pid: Optional[int] = None) -> None:
+    def update_job_status(self, job_id: str, status: JobStatus, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, pid: Optional[int] = None, conn: Optional[sqlite3.Connection] = None) -> None:
         """Update job status.
 
         Only updates fields that are explicitly provided. If started_at or completed_at
         are None, their existing database values are preserved.
         """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
         # Build dynamic UPDATE statement to only update provided fields
         update_fields = ["status = ?"]
         params = [status.value]
@@ -272,32 +312,25 @@ class Database:
         params.append(job_id)
 
         query = f"UPDATE jobs SET {', '.join(update_fields)} WHERE id = ?"
-        cursor.execute(query, params)
-        conn.commit()
-        conn.close()
+        with self._write(conn) as cursor:
+            cursor.execute(query, params)
 
-    def create_task(self, task: Task) -> None:
+    def create_task(self, task: Task, conn: Optional[sqlite3.Connection] = None) -> None:
         """Insert a new task."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO tasks (id, job_id, name, description, status, output, retries, created_at, started_at, completed_at, diff_path, base_commit, goal, estimated_duration_min)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (task.id, task.job_id, task.name, task.description, task.status.value, task.output, task.retries,
-              task.created_at.isoformat(), task.started_at.isoformat() if task.started_at else None,
-              task.completed_at.isoformat() if task.completed_at else None, task.diff_path, task.base_commit, task.goal, task.estimated_duration_min))
-        conn.commit()
-        conn.close()
+        with self._write(conn) as cursor:
+            cursor.execute("""
+                INSERT INTO tasks (id, job_id, name, description, status, output, retries, created_at, started_at, completed_at, diff_path, base_commit, goal, estimated_duration_min)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (task.id, task.job_id, task.name, task.description, task.status.value, task.output, task.retries,
+                  task.created_at.isoformat(), task.started_at.isoformat() if task.started_at else None,
+                  task.completed_at.isoformat() if task.completed_at else None, task.diff_path, task.base_commit, task.goal, task.estimated_duration_min))
 
-    def update_task_status(self, task_id: str, status: TaskStatus, output: Optional[str] = None, retries: int = 0, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None) -> None:
+    def update_task_status(self, task_id: str, status: TaskStatus, output: Optional[str] = None, retries: int = 0, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, conn: Optional[sqlite3.Connection] = None) -> None:
         """Update task status.
 
         Only updates fields that are explicitly provided. If started_at or completed_at
         are None, their existing database values are preserved.
         """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
         # Build dynamic UPDATE statement to only update provided fields
         update_fields = ["status = ?", "retries = ?"]
         params = [status.value, retries]
@@ -317,113 +350,78 @@ class Database:
         params.append(task_id)
 
         query = f"UPDATE tasks SET {', '.join(update_fields)} WHERE id = ?"
-        cursor.execute(query, params)
-        conn.commit()
-        conn.close()
+        with self._write(conn) as cursor:
+            cursor.execute(query, params)
 
-    def update_task(self, task: Task) -> None:
+    def update_task(self, task: Task, conn: Optional[sqlite3.Connection] = None) -> None:
         """Update an entire task object.
 
         Updates all fields of the task in the database.
         """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE tasks SET
-                job_id = ?,
-                name = ?,
-                description = ?,
-                status = ?,
-                output = ?,
-                retries = ?,
-                created_at = ?,
-                started_at = ?,
-                completed_at = ?,
-                diff_path = ?,
-                base_commit = ?,
-                goal = ?,
-                estimated_duration_min = ?
-            WHERE id = ?
-        """, (task.job_id, task.name, task.description, task.status.value, task.output, task.retries,
-              task.created_at.isoformat(), task.started_at.isoformat() if task.started_at else None,
-              task.completed_at.isoformat() if task.completed_at else None, task.diff_path, task.base_commit, task.goal, task.estimated_duration_min, task.id))
-        conn.commit()
-        conn.close()
+        with self._write(conn) as cursor:
+            cursor.execute("""
+                UPDATE tasks SET
+                    job_id = ?,
+                    name = ?,
+                    description = ?,
+                    status = ?,
+                    output = ?,
+                    retries = ?,
+                    created_at = ?,
+                    started_at = ?,
+                    completed_at = ?,
+                    diff_path = ?,
+                    base_commit = ?,
+                    goal = ?,
+                    estimated_duration_min = ?
+                WHERE id = ?
+            """, (task.job_id, task.name, task.description, task.status.value, task.output, task.retries,
+                  task.created_at.isoformat(), task.started_at.isoformat() if task.started_at else None,
+                  task.completed_at.isoformat() if task.completed_at else None, task.diff_path, task.base_commit, task.goal, task.estimated_duration_min, task.id))
 
-    def update_task_diff_path(self, task_id: str, diff_path: str) -> None:
+    def update_task_diff_path(self, task_id: str, diff_path: str, conn: Optional[sqlite3.Connection] = None) -> None:
         """Update only the diff_path for a task.
 
         Preserves all other fields unchanged.
         """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE tasks SET diff_path = ? WHERE id = ?", (diff_path, task_id))
-        conn.commit()
-        conn.close()
+        with self._write(conn) as cursor:
+            cursor.execute("UPDATE tasks SET diff_path = ? WHERE id = ?", (diff_path, task_id))
 
     def get_task(self, task_id: str) -> Optional[Task]:
         """Fetch a task by ID."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
-        row = cursor.fetchone()
-        conn.close()
-
-        if not row:
-            return None
-
-        return _row_to_task(row)
+        rows = self._query("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        return _row_to_task(rows[0]) if rows else None
 
     def list_tasks_for_job(self, job_id: str) -> List[Task]:
         """Fetch all tasks for a job."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM tasks WHERE job_id = ? ORDER BY created_at", (job_id,))
-        rows = cursor.fetchall()
-        conn.close()
-
+        rows = self._query("SELECT * FROM tasks WHERE job_id = ? ORDER BY created_at", (job_id,))
         return [_row_to_task(row) for row in rows]
 
-    def save_execution(self, execution: Execution) -> None:
+    def save_execution(self, execution: Execution, conn: Optional[sqlite3.Connection] = None) -> None:
         """Insert or replace an execution row (latest-wins, keyed by execution_id)."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT OR REPLACE INTO executions
-                (execution_id, job_id, task_id, execution_type, attempt, status,
-                 started_at, completed_at, output, diff_path, commit_sha)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (execution.execution_id, execution.job_id, execution.task_id,
-              execution.execution_type, execution.attempt, execution.status.value,
-              execution.started_at.isoformat() if execution.started_at else None,
-              execution.completed_at.isoformat() if execution.completed_at else None,
-              execution.output, execution.diff_path, execution.commit_sha))
-        conn.commit()
-        conn.close()
+        with self._write(conn) as cursor:
+            cursor.execute("""
+                INSERT OR REPLACE INTO executions
+                    (execution_id, job_id, task_id, execution_type, attempt, status,
+                     started_at, completed_at, output, diff_path, commit_sha)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (execution.execution_id, execution.job_id, execution.task_id,
+                  execution.execution_type, execution.attempt, execution.status.value,
+                  execution.started_at.isoformat() if execution.started_at else None,
+                  execution.completed_at.isoformat() if execution.completed_at else None,
+                  execution.output, execution.diff_path, execution.commit_sha))
 
     def list_executions_for_task(self, task_id: str) -> List[Execution]:
         """Fetch a task's executions in attempt order."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM executions WHERE task_id = ? ORDER BY attempt", (task_id,))
-        rows = cursor.fetchall()
-        conn.close()
+        rows = self._query("SELECT * FROM executions WHERE task_id = ? ORDER BY attempt", (task_id,))
         return [_row_to_execution(row) for row in rows]
 
     def list_executions_for_job(self, job_id: str) -> List[Execution]:
         """Fetch all of a job's executions in timeline order (the timeline query)."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute(
+        rows = self._query(
             "SELECT * FROM executions WHERE job_id = ? ORDER BY started_at, execution_id",
             (job_id,),
         )
-        rows = cursor.fetchall()
-        conn.close()
         return [_row_to_execution(row) for row in rows]
 
     def delete_job(self, job_id: str, jobs_dir: Path = None) -> bool:
@@ -463,13 +461,8 @@ class Database:
 
         Returns the job ID if exactly one match found, None otherwise.
         """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT id FROM jobs WHERE id = ? OR id LIKE ?", (job_id_or_prefix, f"{job_id_or_prefix}%"))
-        rows = cursor.fetchall()
-        conn.close()
-
-        if len(rows) == 1:
-            return rows[0][0]
-        return None
+        rows = self._query(
+            "SELECT id FROM jobs WHERE id = ? OR id LIKE ?",
+            (job_id_or_prefix, f"{job_id_or_prefix}%"),
+        )
+        return rows[0][0] if len(rows) == 1 else None

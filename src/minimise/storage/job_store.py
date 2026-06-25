@@ -6,6 +6,7 @@ Database or the filesystem directly.
 """
 
 import yaml
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -48,9 +49,7 @@ class JobStore:
             for pt in plan.tasks
         ]
 
-        self.db.create_job(job)
-        for task in job.tasks:
-            self.db.create_task(task)
+        self.db.create_job_with_tasks(job, job.tasks)
 
         job_dir = ensure_directory(self.jobs_dir / job_id)
         with open(job_dir / "plan.yaml", "w") as f:
@@ -87,65 +86,70 @@ class JobStore:
     def mark_running(self, task: Task, attempt: int) -> None:
         """Mark a task RUNNING for the given attempt (stamps started_at on attempt 0).
 
-        Also opens an Execution row for this attempt.
+        Also opens an Execution row for this attempt — both writes in one transaction.
         """
         task.retries = attempt
-        self.db.update_task_status(
-            task.id, TaskStatus.RUNNING,
-            started_at=datetime.utcnow() if attempt == 0 else None,
-        )
-        self.db.save_execution(Execution(
-            task_id=task.id, attempt=attempt, job_id=task.job_id, execution_type="task",
-            status=TaskStatus.RUNNING, started_at=datetime.utcnow(),
-        ))
+        with self.db.transaction() as conn:
+            self.db.update_task_status(
+                task.id, TaskStatus.RUNNING,
+                started_at=datetime.utcnow() if attempt == 0 else None,
+                conn=conn,
+            )
+            self.db.save_execution(Execution(
+                task_id=task.id, attempt=attempt, job_id=task.job_id, execution_type="task",
+                status=TaskStatus.RUNNING, started_at=datetime.utcnow(),
+            ), conn=conn)
 
     def record_attempt(self, task: Task, attempt: int, output: str) -> None:
         """Record a failed-but-retrying attempt (back to PENDING with the failure note)."""
-        self.db.update_task_status(
-            task.id, TaskStatus.PENDING, output=f"Attempt {attempt} failed: {output}"
-        )
-        self._close_execution(task, attempt, TaskStatus.FAILED, output=output)
+        with self._close_attempt(task, attempt, TaskStatus.FAILED, output=output) as conn:
+            self.db.update_task_status(
+                task.id, TaskStatus.PENDING, output=f"Attempt {attempt} failed: {output}",
+                conn=conn,
+            )
 
     def record_completed(self, task: Task, output: str, diff: str, commit_sha: Optional[str] = None) -> None:
         """Persist a successful task: save its diff and mark it COMPLETED."""
         if task.base_commit:
             self._save_diff(task, diff)
-        self.db.update_task_status(
-            task.id, TaskStatus.COMPLETED, output=output, retries=task.retries,
-            completed_at=datetime.utcnow(),
-        )
-        self._close_execution(
+        with self._close_attempt(
             task, task.retries, TaskStatus.COMPLETED,
             output=output, diff_path=task.diff_path, commit_sha=commit_sha,
-        )
+        ) as conn:
+            self.db.update_task_status(
+                task.id, TaskStatus.COMPLETED, output=output, retries=task.retries,
+                completed_at=datetime.utcnow(), conn=conn,
+            )
 
     def mark_task_failed(self, task: Task, output: str) -> None:
-        self.db.update_task_status(
-            task.id, TaskStatus.FAILED, output=output, retries=task.retries,
-            completed_at=datetime.utcnow(),
-        )
-        self._close_execution(task, task.retries, TaskStatus.FAILED, output=output)
+        with self._close_attempt(task, task.retries, TaskStatus.FAILED, output=output) as conn:
+            self.db.update_task_status(
+                task.id, TaskStatus.FAILED, output=output, retries=task.retries,
+                completed_at=datetime.utcnow(), conn=conn,
+            )
 
-    def _close_execution(
-        self, task: Task, attempt: int, status: TaskStatus,
-        output: Optional[str] = None, diff_path: Optional[str] = None,
-        commit_sha: Optional[str] = None,
-    ) -> None:
-        """Close the open execution for an attempt, preserving its started_at."""
-        # Match the task-attempt row only: hooks now share task_id and attempt=0,
-        # so filtering by attempt alone would grab the pre_task hook's started_at.
+    @contextmanager
+    def _close_attempt(self, task: Task, attempt: int, status: TaskStatus, **exec_fields):
+        """Run the caller's task-status write in a txn, then close the attempt's
+        Execution row (preserving its started_at) in the SAME transaction.
+
+        The started_at lookup runs first, OUTSIDE the txn: hooks now share task_id
+        and attempt=0, so filtering by attempt alone would grab the pre_task hook's.
+        """
         existing = next(
             (e for e in self.db.list_executions_for_task(task.id)
              if e.attempt == attempt and e.execution_type == "task"),
             None,
         )
-        self.db.save_execution(Execution(
-            task_id=task.id, attempt=attempt, job_id=task.job_id, execution_type="task",
-            status=status,
-            started_at=existing.started_at if existing else None,
-            completed_at=datetime.utcnow(),
-            output=output, diff_path=diff_path, commit_sha=commit_sha,
-        ))
+        with self.db.transaction() as conn:
+            yield conn
+            self.db.save_execution(Execution(
+                task_id=task.id, attempt=attempt, job_id=task.job_id, execution_type="task",
+                status=status,
+                started_at=existing.started_at if existing else None,
+                completed_at=datetime.utcnow(),
+                **exec_fields,
+            ), conn=conn)
 
     def save_execution(self, execution: Execution) -> None:
         """Persist an execution row (e.g. a per-task hook)."""

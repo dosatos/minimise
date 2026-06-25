@@ -1,4 +1,5 @@
 from minimise.models import Job, Task, Execution, JobStatus, TaskStatus
+from minimise.utils import new_id
 from datetime import datetime
 import uuid
 
@@ -461,6 +462,59 @@ def test_fresh_db_has_new_schema(tmp_path):
 
     db.save_execution(Execution(task_id="t1", attempt=0, job_id="j1"))
     assert db.list_executions_for_job("j1")[0].job_id == "j1"
+
+
+def test_create_job_with_tasks_is_atomic(db):
+    """A failing task insert rolls back the whole job — no orphan job row."""
+    import pytest
+    job = Job(id=new_id("job"), name="Atomic Job", status=JobStatus.PENDING)
+    dup = new_id("task")
+    tasks = [
+        Task(id=dup, job_id=job.id, name="ok", description="", status=TaskStatus.PENDING, estimated_duration_min=5),
+        Task(id=dup, job_id=job.id, name="dup", description="", status=TaskStatus.PENDING, estimated_duration_min=5),
+    ]
+    with pytest.raises(Exception):
+        db.create_job_with_tasks(job, tasks)
+
+    assert db.get_job(job.id) is None
+    assert db.list_tasks_for_job(job.id) == []
+
+
+def test_create_job_with_tasks_happy_path(db):
+    """All rows land in one transaction."""
+    job = Job(id=new_id("job"), name="Atomic Job", status=JobStatus.PENDING)
+    tasks = [
+        Task(id=new_id("task"), job_id=job.id, name="a", description="", status=TaskStatus.PENDING, estimated_duration_min=5),
+        Task(id=new_id("task"), job_id=job.id, name="b", description="", status=TaskStatus.PENDING, estimated_duration_min=5),
+    ]
+    db.create_job_with_tasks(job, tasks)
+    assert db.get_job(job.id) is not None
+    assert len(db.list_tasks_for_job(job.id)) == 2
+
+
+def test_transaction_rolls_back_all_writes(db):
+    """A failure inside transaction() leaves none of its writes."""
+    import pytest
+    job = Job(id=new_id("job"), name="Txn Job", status=JobStatus.PENDING)
+    task = Task(id=new_id("task"), job_id=job.id, name="t", description="", status=TaskStatus.PENDING, estimated_duration_min=5)
+    with pytest.raises(RuntimeError):
+        with db.transaction() as conn:
+            db.create_job(job, conn=conn)
+            db.create_task(task, conn=conn)
+            raise RuntimeError("boom")
+    assert db.get_job(job.id) is None
+    assert db.get_task(task.id) is None
+
+
+def test_transaction_commits_all_writes(db):
+    """All writes inside transaction() land together."""
+    job = Job(id=new_id("job"), name="Txn Job", status=JobStatus.PENDING)
+    task = Task(id=new_id("task"), job_id=job.id, name="t", description="", status=TaskStatus.PENDING, estimated_duration_min=5)
+    with db.transaction() as conn:
+        db.create_job(job, conn=conn)
+        db.create_task(task, conn=conn)
+    assert db.get_job(job.id) is not None
+    assert db.get_task(task.id) is not None
 
 
 def test_delete_job_removes_plan_hook_rows(db):
