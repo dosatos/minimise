@@ -1,6 +1,12 @@
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Optional
+
+
+def new_id(prefix: str) -> str:
+    """Short prefixed id, e.g. new_id("job") -> "job-a1b2c3"."""
+    return f"{prefix}-{uuid.uuid4().hex[:6]}"
 
 
 def run_shell_command(command: str, cwd: Optional[Path] = None, timeout: int = 3600) -> tuple[bool, str]:

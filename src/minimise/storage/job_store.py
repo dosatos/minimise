@@ -5,7 +5,6 @@ vocabulary — ``mark_running``, ``record_completed`` — and never touches the
 Database or the filesystem directly.
 """
 
-import uuid
 import yaml
 from datetime import datetime
 from pathlib import Path
@@ -13,7 +12,7 @@ from typing import Optional
 
 from minimise.models import Job, Task, Execution, JobStatus, TaskStatus, Plan
 from minimise.storage.database import Database
-from minimise.utils import ensure_directory
+from minimise.utils import ensure_directory, new_id
 
 
 class JobStore:
@@ -25,7 +24,7 @@ class JobStore:
 
     def create(self, plan: Plan, base_commit: str, plan_path: str) -> Job:
         """Persist a new job + its tasks from a parsed plan, and cache the plan."""
-        job_id = str(uuid.uuid4())
+        job_id = new_id("job")
         job = Job(
             id=job_id,
             name=plan.name,
@@ -36,7 +35,7 @@ class JobStore:
         )
         job.tasks = [
             Task(
-                id=pt.id,
+                id=new_id("task"),
                 job_id=job_id,
                 name=pt.name,
                 description=pt.description,
@@ -195,7 +194,9 @@ def demo():
         assert loaded is not None
         assert loaded.name == "Demo"
         assert loaded.base_commit == "abc123"
-        assert len(loaded.tasks) == 1 and loaded.tasks[0].id == "t1"
+        # Task ids are generated (prefixed), not taken from the plan's PlanTask.id.
+        assert len(loaded.tasks) == 1 and loaded.tasks[0].id.startswith("task-")
+        assert job.id.startswith("job-")
         assert store.load_plan(job.id).name == "Demo"
 
         # Execution history: a failed attempt then a successful one.
