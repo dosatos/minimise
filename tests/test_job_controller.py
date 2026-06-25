@@ -184,7 +184,7 @@ def test_run_job_basic(job_controller, plan_file):
     original_executor_class = TaskExecutor
 
     class MockTaskExecutor(TaskExecutor):
-        def execute_task(self, task, job_id, handover_context, pre_task_hook="", post_task_hook=""):
+        def execute_task(self, task, job_id, handover_context, pre_task_hook="", post_task_hook="", next_task=None):
             # Mock successful execution
             return True, f"Executed {task.name}"
 
@@ -230,7 +230,7 @@ def test_task_commits_against_base_commit(job_controller, plan_file, git_repo):
     execution_count = [0]
 
     class MockTaskExecutor(TaskExecutor):
-        def execute_task(self, task, job_id, handover_context, pre_task_hook="", post_task_hook=""):
+        def execute_task(self, task, job_id, handover_context, pre_task_hook="", post_task_hook="", next_task=None):
             execution_count[0] += 1
 
             # Simulate task making changes
@@ -291,7 +291,7 @@ def test_task_commit_message_format(temp_db_dir, git_repo, plan_file):
     commit_messages = []
 
     class MockTaskExecutor(TaskExecutor):
-        def execute_task(self, task, job_id, handover_context, pre_task_hook="", post_task_hook=""):
+        def execute_task(self, task, job_id, handover_context, pre_task_hook="", post_task_hook="", next_task=None):
             execution_count[0] += 1
 
             # Simulate task making changes
@@ -376,7 +376,7 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, git_repo, plan_file)
     stored_diffs = []
 
     class MockTaskExecutor(TaskExecutor):
-        def execute_task(self, task, job_id, handover_context, pre_task_hook="", post_task_hook=""):
+        def execute_task(self, task, job_id, handover_context, pre_task_hook="", post_task_hook="", next_task=None):
             execution_count[0] += 1
 
             # Simulate task making changes
@@ -463,7 +463,7 @@ def test_failed_job_persists_in_db(job_controller, plan_file):
     execution_count = [0]
     original_method = job_controller.task_executor.execute_task
 
-    def mock_execute_task(task, job_id, handover_context, pre_task_hook="", post_task_hook=""):
+    def mock_execute_task(task, job_id, handover_context, pre_task_hook="", post_task_hook="", next_task=None):
         execution_count[0] += 1
         if execution_count[0] == 1:
             # Fail on first task
@@ -508,7 +508,7 @@ def test_failed_job_stores_error_reason(job_controller, plan_file):
     error_reason = "Database connection timeout"
     original_method = job_controller.task_executor.execute_task
 
-    def mock_execute_task(task, job_id, handover_context, pre_task_hook="", post_task_hook=""):
+    def mock_execute_task(task, job_id, handover_context, pre_task_hook="", post_task_hook="", next_task=None):
         error_msg = f"Task execution failed: {error_reason}"
         job_controller.db.update_task_status(task.id, TaskStatus.FAILED, output=error_msg, completed_at=datetime.utcnow())
         return False, error_msg
@@ -610,7 +610,7 @@ def test_post_plan_hook_failure_persists_job(job_controller, plan_file):
         # Mock task executor to succeed
         original_method = job_controller.task_executor.execute_task
 
-        def mock_execute_task(task, job_id, handover_context, pre_task_hook="", post_task_hook=""):
+        def mock_execute_task(task, job_id, handover_context, pre_task_hook="", post_task_hook="", next_task=None):
             job_controller.db.update_task_status(task.id, TaskStatus.COMPLETED, output=f"Executed {task.name}", completed_at=datetime.utcnow())
             return True, f"Executed {task.name}"
 

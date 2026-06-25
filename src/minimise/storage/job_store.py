@@ -171,6 +171,11 @@ class JobStore:
     def task_dir(self, job_id: str, task_id: str) -> Path:
         return ensure_directory(self.jobs_dir / job_id / "tasks" / task_id)
 
+    def handoff_path(self, job_id: str, task_id: str, attempt: int) -> Path:
+        """Per-attempt handoff file, outside the repo so auto-commit can't sweep it in."""
+        d = ensure_directory(self.jobs_dir / job_id / "handoffs" / task_id)
+        return d / f"attempt-{attempt}.md"
+
     def _save_diff(self, task: Task, diff: str) -> None:
         diff_path = self.task_dir(task.job_id, task.id) / "diff.txt"
         diff_path.write_text(diff)

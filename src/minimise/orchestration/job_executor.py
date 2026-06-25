@@ -10,7 +10,6 @@ from minimise.models import Job, Plan
 from minimise.storage.git_tracker import GitTracker
 from minimise.orchestration.task_executor import TaskExecutor
 from minimise.orchestration.hook_executor import HookExecutor
-from minimise.orchestration.handover_manager import HandoverManager
 
 
 class JobExecutor:
@@ -29,18 +28,18 @@ class JobExecutor:
         handover = ""
         for idx, task in enumerate(job.tasks):
             plan_task = plan.tasks[idx] if idx < len(plan.tasks) else None
+            next_task = job.tasks[idx + 1] if idx < len(job.tasks) - 1 else None
             success, output = self.task_executor.execute_task(
                 task, job.id, handover,
                 pre_task_hook=getattr(plan_task, "pre_task_hook", "") or "",
                 post_task_hook=getattr(plan_task, "post_task_hook", "") or "",
+                next_task=next_task,
             )
             if not success:
                 print(f"Task {task.name} failed: {output}")
                 return False
 
-            # Hand the completed task's report to the next one.
-            if idx < len(job.tasks) - 1:
-                diff = self.git_tracker.get_diff(job.base_commit) if job.base_commit else ""
-                handover = HandoverManager.build_handover_prompt(output, diff, job.tasks[idx + 1])
+            # execute_task returns the completed task's handoff for the next one.
+            handover = output
 
         return self.hook_executor.run(plan.post_plan_hook, "Post-plan")

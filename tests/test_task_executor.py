@@ -427,6 +427,92 @@ def test_failed_attempt_handover_injected_into_retry(temp_db_dir, db, git_repo):
     assert "ORIGINAL_HANDOVER" in seen_handovers[1]           # ...without losing prior context
 
 
+def test_retry_reads_prior_attempt_agent_written_handoff(temp_db_dir, db, git_repo):
+    """A failed attempt's agent-written handoff file feeds the next attempt's context."""
+    from minimise.models import Job, JobStatus
+
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
+
+    job_id = str(uuid.uuid4())
+    db.create_job(Job(id=job_id, name="J", status=JobStatus.PENDING,
+                      base_commit=git_tracker.get_current_commit()))
+    task = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
+                name="Flaky", description="d", status=TaskStatus.PENDING)
+    db.create_task(task)
+
+    seen = []
+
+    def mock_invoke(context):
+        seen.append(context["handover"])
+        # Each attempt writes its own handoff file.
+        Path(context["handoff_path"]).write_text(f"HANDOFF-{len(seen) - 1}")
+        return (False, "err") if len(seen) == 1 else (True, "ok")
+
+    executor._invoke_claude_code = mock_invoke
+    success, _ = executor.execute_task(task, job_id, "ORIG")
+
+    assert success
+    # Attempt 1's context is attempt 0's agent-written handoff, marked as such.
+    assert "(agent-written handoff)" in seen[1]
+    assert "HANDOFF-0" in seen[1]
+
+
+def test_missing_handoff_returns_autogen_fallback(temp_db_dir, db, git_repo):
+    """With no handoff file, the returned handover is the build_handover_prompt fallback + warning."""
+    from minimise.models import Job, JobStatus
+
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
+
+    job_id = str(uuid.uuid4())
+    db.create_job(Job(id=job_id, name="J", status=JobStatus.PENDING,
+                      base_commit=git_tracker.get_current_commit()))
+    task = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
+                name="T", description="d", status=TaskStatus.PENDING)
+    db.create_task(task)
+    next_task = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
+                     name="NEXT_TASK_NAME", description="nd", status=TaskStatus.PENDING)
+
+    executor._invoke_claude_code = lambda context: (True, "did the work")
+    success, handover = executor.execute_task(task, job_id, "", next_task=next_task)
+
+    assert success
+    assert "WARNING auto-generated from diff - not reviewed" in handover
+    assert "NEXT_TASK_NAME" in handover          # build_handover_prompt names the next task
+    assert "Previous Task Summary" in handover
+
+
+def test_three_attempts_leave_three_handoff_files(temp_db_dir, db, git_repo):
+    """A task that takes 3 attempts (writing a file each) leaves attempt-0/1/2.md."""
+    from minimise.models import Job, JobStatus
+
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
+
+    job_id = str(uuid.uuid4())
+    db.create_job(Job(id=job_id, name="J", status=JobStatus.PENDING,
+                      base_commit=git_tracker.get_current_commit()))
+    task = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
+                name="Stubborn", description="d", status=TaskStatus.PENDING)
+    db.create_task(task)
+
+    calls = []
+
+    def mock_invoke(context):
+        calls.append(1)
+        Path(context["handoff_path"]).write_text(f"h{len(calls) - 1}")
+        return (False, "x") if len(calls) < 3 else (True, "ok")
+
+    executor._invoke_claude_code = mock_invoke
+    success, _ = executor.execute_task(task, job_id, "")
+
+    assert success
+    handoff_dir = executor.store.handoff_path(job_id, task.id, 0).parent
+    for n in range(3):
+        assert (handoff_dir / f"attempt-{n}.md").exists()
+
+
 def test_executions_recorded_across_retry(temp_db_dir, db, git_repo):
     """Each attempt writes its own Execution row: a failed attempt 0, then a committed attempt 1."""
     from minimise.models import Job, JobStatus
@@ -608,6 +694,24 @@ def test_invoke_delegates_to_harness_and_propagates_success(temp_db_dir, db, git
     prompt = args[0]
     assert "task-7: Build widget" in prompt
     assert "Implement the widget module" in prompt
+
+
+def test_invoke_prompt_names_handoff_path_and_section_headers(temp_db_dir, db, git_repo):
+    """When a handoff_path is in context, the prompt names that absolute path and the four headers."""
+    git_tracker = GitTracker(git_repo)
+    fake = Mock(spec=AgentHarness)
+    fake.run.return_value = HarnessResult(success=True, output="done")
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
+
+    handoff_path = str(temp_db_dir / "jobs" / "j1" / "handoffs" / "t1" / "attempt-0.md")
+    executor._invoke_claude_code({
+        "task_name": "T", "task_description": "D", "handoff_path": handoff_path,
+    })
+
+    prompt = fake.run.call_args[0][0]
+    assert handoff_path in prompt
+    for header in ("What changed & why", "Gotchas", "Current state", "What the next task needs"):
+        assert header in prompt
 
 
 def test_invoke_failure_returns_error_when_present(temp_db_dir, db, git_repo):
