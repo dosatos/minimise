@@ -59,7 +59,8 @@ sees the whole plan and remaining work at a glance.
 
 ### Task 2: Verify acceptance criteria
 
-- [ ] verify all requirements from Overview are implemented (full plan visible
+- [x] verify all requirements from Overview are implemented (full plan visible
       from the first status call; started tasks keep one row per attempt)
-- [ ] run full project test suite
-- [ ] run project linter - all issues must be fixed
+- [x] run full project test suite
+- [x] run project linter - all issues must be fixed (no linter configured/installed;
+      pytest is the project gate per CLAUDE.md — skipped, not applicable)
