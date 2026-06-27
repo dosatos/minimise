@@ -125,3 +125,39 @@ engine able to satisfy it.
   (ABC + `JsonlLogBackend`).
 - `agents/harness.py`, `orchestration/task_executor.py`,
   `interfaces/cli/job.py` (modified).
+
+## Implementation steps
+
+TDD: failing test first, then implement; full suite green before the next task.
+
+### Task 1 — `LogQuery` IR + parser (`logging/log_query.py`)
+- [ ] Tests: parse Insights strings → expected `LogQuery`; bad syntax raises a
+      clear error; `@timestamp`/`@message` map correctly.
+- [ ] `LogQuery` dataclass + `Predicate`/`Op` (`EQ`/`NE`/`LIKE`, intent not dialect).
+- [ ] `pyparsing` grammar for `fields | filter | sort | limit` (`and`/`or`, no parens).
+
+### Task 2 — Backend (`logging/backend.py`)
+- [ ] Tests: `JsonlLogBackend.record()` appends a JSON line; `search()` applies
+      filter (`=`/`!=`/`like`, `and`/`or`) → sort → limit; non-JSON line tolerated
+      as `{"message": raw}`.
+- [ ] `JobLogBackend` ABC (`record`, `search`) + `JsonlLogBackend` impl.
+
+### Task 3 — Harness writes structured lines (`agents/harness.py`)
+- [ ] Tests: each chunk written via backend as a JSON line with merged
+      `log_fields` + `timestamp`/`level`/`message`; `log_fields=None` writes nothing.
+- [ ] Inject `JobLogBackend` (default `JsonlLogBackend`); add `log_fields` param;
+      replace the flat-text write with `backend.record(...)`.
+
+### Task 4 — Executor identity + drop banner (`orchestration/task_executor.py`)
+- [ ] Tests: executor passes `log_fields={execution_id, type}`; no `---` banner.
+- [ ] Pass `log_fields` + per-job `log_path` to `harness.run(...)`; remove the
+      banner write.
+
+### Task 5 — CLI query/render (`interfaces/cli/job.py`)
+- [ ] Tests: no-`--query` unchanged; `--query` filters/sorts/limits/projects
+      (`fields`, `@message`); `--json` raw passthrough; `-f` applies filter live
+      (sort/limit ignored, notice); "no logs yet".
+- [ ] Add `--query`/`--json`; parse → `backend.search()` → render projecting `fields`.
+
+### Task 6 — Verify
+- [ ] Full suite green; dogfood `mini job logs --query` on a real job.
