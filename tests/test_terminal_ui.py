@@ -684,3 +684,41 @@ class TestRenderTaskTableWithGantt:
         )
         assert len(table.rows) == 1
         assert table.columns[0]._cells == ["Quick Task  · try 1"]
+
+    def test_pending_task_rendered_as_placeholder_row(self, sample_job, base_time):
+        """A task with no task-type execution shows a PENDING placeholder row in plan order."""
+        started = Task(
+            estimated_duration_min=5,
+            id="task-1",
+            job_id="job-001",
+            name="Started",
+            description="desc",
+            status=TaskStatus.COMPLETED,
+        )
+        pending = Task(
+            estimated_duration_min=7,
+            id="task-2",
+            job_id="job-001",
+            name="Not Started",
+            description="desc",
+            status=TaskStatus.PENDING,
+        )
+        ex = Execution(
+            task_id="task-1",
+            attempt=0,
+            execution_type="task",
+            status=TaskStatus.COMPLETED,
+            started_at=base_time + timedelta(seconds=1),
+            completed_at=base_time + timedelta(seconds=2),
+        )
+        table = render_execution_table_with_gantt(
+            sample_job,
+            [started, pending],
+            now=base_time + timedelta(seconds=10),
+            executions=[ex],
+        )
+        assert table.columns[0]._cells == ["Started  · try 1", "Not Started"]
+        assert table.columns[1]._cells[1].plain == "pending"
+        # Expected column reflects the pending task's estimated duration; bar is empty.
+        assert table.columns[3]._cells[1] == "7m 0s"
+        assert table.columns[4]._cells[1] == "—"

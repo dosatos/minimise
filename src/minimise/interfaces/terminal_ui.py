@@ -214,9 +214,11 @@ def render_execution_table_with_gantt(
     if executions is not None:
         names = {t.id: t.name for t in tasks}
         task_est = {t.id: t.estimated_duration_min for t in tasks}
+        started_task_ids = set()
         for ex in executions:
             tname = names.get(ex.task_id, "")
             if ex.execution_type == "task":
+                started_task_ids.add(ex.task_id)
                 label, expected = f"{tname}  · try {ex.attempt + 1}", task_est.get(ex.task_id)
             elif ex.execution_type == "pre_plan":
                 label, expected = "Pre-plan hook", None
@@ -227,6 +229,10 @@ def render_execution_table_with_gantt(
             else:  # post_task
                 label, expected = f"Post-task hook  · {tname}", None
             add_row(label, ex.status, ex.started_at, ex.completed_at, expected)
+        # PENDING tasks (no task-type execution yet) shown as placeholder rows in plan order.
+        for task in tasks:
+            if task.id not in started_task_ids:
+                add_row(task.name, TaskStatus.PENDING, None, None, task.estimated_duration_min)
         return table
 
     for task in tasks:

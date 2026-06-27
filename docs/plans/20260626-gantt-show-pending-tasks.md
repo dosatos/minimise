@@ -48,14 +48,14 @@ sees the whole plan and remaining work at a glance.
 
 ### Task 1: Render PENDING tasks as placeholder rows in the executions path
 
-- [ ] Identify which task ids have at least one `execution_type == "task"` row in
+- [x] Identify which task ids have at least one `execution_type == "task"` row in
       the supplied executions list
-- [ ] After the executions loop (before `return table`), emit a placeholder row
+- [x] After the executions loop (before `return table`), emit a placeholder row
       for every task in `tasks` with no task-type execution, in plan order, using
       the task name, PENDING status, empty timestamps, and estimated duration
-- [ ] write tests for new functionality — assert a PENDING task appears as a row
+- [x] write tests for new functionality — assert a PENDING task appears as a row
       when an executions list containing only other tasks is rendered
-- [ ] run project tests - must pass before next task
+- [x] run project tests - must pass before next task
 
 ### Task 2: Verify acceptance criteria
 
