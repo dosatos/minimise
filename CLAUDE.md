@@ -14,6 +14,20 @@ Or manually:
 cat worklogs/handoffs/session-latest.md
 ```
 
+## Scratch & Generated Files — Keep the Repo Root Clean
+
+NEVER write scratch, test, or generated artifacts to the repo root. They pollute
+the package. Put them under `worklogs/` (gitignored) instead:
+
+- Throwaway plan YAMLs, sample plans, experiment configs → `worklogs/scratch/`
+- Test-run output / captured logs → `worklogs/` (or pipe to `/tmp`)
+- Session handoffs → `worklogs/handoffs/`
+- Working plan docs → `docs/plans/*.md` (gitignored; only `docs/plans/completed/` is tracked)
+- Agent/tool working dirs are local-only and globally ignored
+
+The root must stay limited to real package files (`src/`, `tests/`, `docs/`,
+packaging, README). If a tool needs a path, point it at `worklogs/`.
+
 ## Environment
 
 - **Python:** 3.9+

@@ -59,5 +59,9 @@ __pycache__/
 .agent-native/
 examples/*.yaml
 
+# Local working plan docs (generated each run; not part of the package)
+docs/plans/*.md
+!docs/plans/completed/
+
 # Understand-Anything knowledge graph (untracked tooling output)
 .understand-anything/
