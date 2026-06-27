@@ -722,3 +722,16 @@ class TestRenderTaskTableWithGantt:
         # Expected column reflects the pending task's estimated duration; bar is empty.
         assert table.columns[3]._cells[1] == "7m 0s"
         assert table.columns[4]._cells[1] == "—"
+
+    def test_all_tasks_pending_with_empty_executions(self, sample_job, base_time):
+        """First status call (no executions yet) shows the full plan as PENDING rows in order."""
+        tasks = [
+            Task(id=f"task-{i}", job_id="job-001", name=f"Task {i}",
+                 description="desc", status=TaskStatus.PENDING, estimated_duration_min=i)
+            for i in (1, 2, 3)
+        ]
+        table = render_execution_table_with_gantt(
+            sample_job, tasks, now=base_time, executions=[],
+        )
+        assert table.columns[0]._cells == ["Task 1", "Task 2", "Task 3"]
+        assert [c.plain for c in table.columns[1]._cells] == ["pending"] * 3
