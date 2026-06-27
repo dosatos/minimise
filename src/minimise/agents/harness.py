@@ -1,8 +1,12 @@
+import json
 import os
 import subprocess
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Union
 
 
 @dataclass
@@ -14,6 +18,25 @@ class HarnessResult:
     error: Optional[str] = None
 
 
+def _extract_text(event: dict) -> str:
+    """Extract assistant text from a single stream-json event.
+
+    Keep only ``assistant`` events and, from those, concatenate the ``text``
+    fields of ``message.content`` blocks whose type is ``text``. Everything
+    else (tool_use, system, result) yields "".
+    """
+    if event.get("type") != "assistant":
+        return ""
+    content = event.get("message", {}).get("content") or []
+    if not isinstance(content, list):
+        return ""
+    return "".join(
+        block.get("text", "")
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+
+
 class AgentHarness(ABC):
     """Abstract interface for sending a prompt to an agent harness."""
 
@@ -23,15 +46,20 @@ class AgentHarness(ABC):
         prompt: str,
         *,
         cwd: Optional[str] = None,
-        timeout: int = 900,
+        timeout: float = 900,
         model: Optional[str] = None,
         allow_edits: bool = False,
+        log_path: Optional[Union[str, Path]] = None,
     ) -> HarnessResult:
         """Send a prompt to the harness and return its text output.
 
         allow_edits=True permits the agent to modify files (adds
         --dangerously-skip-permissions). When False, the call is a
         read-only completion.
+
+        log_path, when given, receives each extracted assistant text chunk
+        (timestamped) appended live so the run can be tailed. When None,
+        nothing is written and behavior is unchanged.
         """
         raise NotImplementedError
 
@@ -78,36 +106,107 @@ class ClaudeCodeHarness(AgentHarness):
         prompt: str,
         *,
         cwd: Optional[str] = None,
-        timeout: int = 900,
+        timeout: float = 900,
         model: Optional[str] = None,
         allow_edits: bool = False,
+        log_path: Optional[Union[str, Path]] = None,
     ) -> HarnessResult:
-        cmd = ["claude", "-p", "--output-format", "text"]
+        # stream-json lets the orchestrator read assistant output live;
+        # the CLI requires --verbose alongside it.
+        cmd = ["claude", "-p", "--output-format", "stream-json", "--verbose"]
         if allow_edits:
             cmd.append("--dangerously-skip-permissions")
         if model is not None:
             cmd += ["--model", model]
 
+        proc = None
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
-                input=prompt,
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout,
+                encoding="utf-8",
                 cwd=cwd,
                 env=self._build_env(),
             )
 
-            if result.returncode == 0:
-                return HarnessResult(success=True, output=result.stdout or "")
-            return HarnessResult(
-                success=False,
-                output=result.stdout or "",
-                error=result.stderr or "",
+            # Feed stdin and drain stderr on separate threads so a large prompt
+            # or a chatty subprocess can't deadlock against the stdout we read.
+            threading.Thread(target=self._feed_stdin, args=(proc, prompt), daemon=True).start()
+            stderr_capture: list[str] = []
+            stderr_thread = threading.Thread(
+                target=lambda: stderr_capture.append(proc.stderr.read() if proc.stderr else ""),
+                daemon=True,
             )
+            stderr_thread.start()
 
-        except subprocess.TimeoutExpired:
-            return HarnessResult(success=False, output="", error=f"timeout after {timeout}s")
+            chunks: list[str] = []
+            reader = threading.Thread(target=self._read_stdout, args=(proc, chunks, log_path))
+            reader.start()
+            # Bound the live read with a real wall-clock deadline; the old
+            # subprocess.run(timeout=) guarantee is otherwise lost (a hung agent
+            # that holds stdout open would block the read loop forever).
+            reader.join(timeout=timeout)
+            if reader.is_alive():
+                proc.kill()
+                proc.wait()  # reap the killed child so it doesn't linger as a zombie
+                reader.join()
+                return HarnessResult(success=False, output="".join(chunks), error=f"timeout after {timeout}s")
+
+            # stdout hit EOF; reap the child and drain stderr, but stay bounded.
+            # A surviving grandchild can keep these pipes open and otherwise hang
+            # the worker forever, defeating the timeout the read loop preserves.
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            stderr_thread.join(timeout=10)  # daemon; safe to abandon if still stuck
+            output = "".join(chunks)
+
+            if proc.returncode == 0:
+                return HarnessResult(success=True, output=output)
+            stderr = stderr_capture[0] if stderr_capture else ""
+            return HarnessResult(success=False, output=output, error=stderr or "")
+
         except Exception as e:
+            if proc is not None:
+                proc.kill()
+                proc.wait()  # reap the child and let the reader thread close the log sink
             return HarnessResult(success=False, output="", error=str(e))
+
+    @staticmethod
+    def _feed_stdin(proc: "subprocess.Popen", prompt: str) -> None:
+        if proc.stdin is None:
+            return
+        try:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+
+    @staticmethod
+    def _read_stdout(proc: "subprocess.Popen", chunks: list, log_path) -> None:
+        """Read stdout line-by-line, accumulate assistant text, tee to log_path."""
+        sink = open(log_path, "a", encoding="utf-8") if log_path is not None else None
+        try:
+            for line in proc.stdout or []:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                text = _extract_text(event)
+                if not text:
+                    continue
+                chunks.append(text)
+                if sink is not None:
+                    sink.write(f"[{datetime.now().isoformat()}] {text}\n")
+                    sink.flush()
+        finally:
+            if sink is not None:
+                sink.close()

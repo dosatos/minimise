@@ -12,7 +12,7 @@ from rich.text import Text
 
 import minimise.interfaces.cli as _cli  # patchable constants/PlanReviewer; read at call time
 from minimise.models import JobStatus, TaskStatus, Plan
-from minimise.interfaces.terminal_ui import get_status_color, render_execution_table_with_gantt, humanize_duration, format_duration
+from minimise.interfaces.terminal_ui import get_status_color, render_execution_table_with_gantt, humanize_duration
 from minimise.interfaces.cli._shared import (
     console,
     get_db,
@@ -378,43 +378,45 @@ def job_delete(job_id: str):
 
 @job.command(name="logs")
 @click.argument("job_id")
-def job_logs(job_id: str):
-    """View job output and logs."""
+@click.option("-f", "--follow", is_flag=True, help="Tail the log live (Ctrl-C to stop)")
+def job_logs(job_id: str, follow: bool):
+    """View the agent narration log for a job (live with -f).
+
+    Reads the per-job ``job.log`` written by the harness. The per-task
+    status/duration timeline lives in ``mini job status``.
+    """
+    import time
+
     try:
         job_id, db, job_obj = _get_and_validate_job(job_id)
+        log_path = _cli.JOBS_DIR / job_id / "job.log"
 
-        tasks = db.list_tasks_for_job(job_id)
-
-        console.print(f"\n[bold]Job Logs for {job_obj.name}[/bold]")
-        console.print(f"[bold]Job ID:[/bold] {job_id}\n")
-
-        if not tasks:
-            console.print("[yellow]No tasks for this job[/yellow]")
+        if not log_path.exists():
+            console.print("[yellow]No logs yet for this job.[/yellow]")
             return
 
-        for task in tasks:
-            console.print(f"[bold cyan]{task.name}[/bold cyan]")
-            console.print(f"  Status: {task.status.value}")
-            console.print(f"  Retries: {task.retries}")
+        with open(log_path, "r", encoding="utf-8") as f:
+            console.out(f.read(), end="")
 
-            for ex in db.list_executions_for_task(task.id):
-                dur = format_duration(ex.started_at, ex.completed_at)
-                console.print(
-                    f"  [dim]Attempt {ex.attempt}:[/dim] {ex.status.value} ({dur})"
-                    + (f" → {ex.commit_sha[:8]}" if ex.commit_sha else "")
-                )
+            if not follow:
+                return
 
-            if task.output:
-                console.print(f"  Output:")
-                for line in task.output.split("\n"):
-                    console.print(f"    {line}")
-            else:
-                console.print(f"  Output: (none)")
-
-            if task.diff_path:
-                console.print(f"  Diff: {task.diff_path}")
-
-            console.print()
+            # Tail: poll for appended lines, stop once the job leaves RUNNING.
+            try:
+                while True:
+                    line = f.readline()
+                    if line:
+                        console.out(line, end="")
+                        continue
+                    fresh = db.get_job(job_id)
+                    if fresh is None or fresh.status != JobStatus.RUNNING:
+                        # Flush any lines flushed between the last readline and
+                        # the status flip before exiting.
+                        console.out(f.read(), end="")
+                        break
+                    time.sleep(0.1)
+            except KeyboardInterrupt:
+                pass
 
     except Exception as e:
         console.print(f"[red]Error: {str(e)}[/red]")

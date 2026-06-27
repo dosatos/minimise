@@ -740,3 +740,33 @@ def test_invoke_failure_falls_back_to_output_when_no_error(temp_db_dir, db, git_
 
     assert success is False
     assert output == "just stdout"
+
+
+def test_execute_task_passes_job_log_path_to_harness(temp_db_dir, db, git_repo):
+    """execute_task threads the per-job job.log path into harness.run(log_path=...)."""
+    git_tracker = GitTracker(git_repo)
+    fake = Mock(spec=AgentHarness)
+    fake.run.return_value = HarnessResult(success=True, output="ok")
+    store = JobStore(db, temp_db_dir)
+    executor = TaskExecutor(store, git_tracker, harness=fake)
+    job_id, task = _setup_job_and_task(db, git_tracker)
+
+    executor.execute_task(task, job_id, "")
+
+    log_path = store.job_log_path(job_id)
+    assert fake.run.call_args.kwargs["log_path"] == str(log_path)
+
+
+def test_execute_task_writes_attempt_section_marker(temp_db_dir, db, git_repo):
+    """A section marker naming the task + attempt is appended to job.log before each attempt."""
+    git_tracker = GitTracker(git_repo)
+    fake = Mock(spec=AgentHarness)
+    fake.run.return_value = HarnessResult(success=True, output="ok")
+    store = JobStore(db, temp_db_dir)
+    executor = TaskExecutor(store, git_tracker, harness=fake)
+    job_id, task = _setup_job_and_task(db, git_tracker)
+
+    executor.execute_task(task, job_id, "")
+
+    log = store.job_log_path(job_id).read_text()
+    assert f"--- task {task.id} attempt 0" in log

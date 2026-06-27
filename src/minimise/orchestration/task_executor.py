@@ -61,8 +61,15 @@ class TaskExecutor:
         final_output = ""
         context = handover_context
 
+        job_log_path = self.store.job_log_path(job_id)
+
         for attempt in range(self.MAX_RETRIES + 1):
             self.store.mark_running(task, attempt)
+
+            # Section marker so the live tail stays readable across retries.
+            with open(job_log_path, "a") as log:
+                # datetime.now() (local) to match the harness narration timestamps in the same file.
+                log.write(f"--- task {task.id} attempt {attempt} @ {datetime.now().isoformat()} ---\n")
 
             handoff_path = self.store.handoff_path(job_id, task.id, attempt)
             success, output = self._invoke_claude_code({
@@ -71,6 +78,7 @@ class TaskExecutor:
                 "task_description": task.description,
                 "task_goal": task.goal,
                 "handoff_path": str(handoff_path),
+                "log_path": str(job_log_path),
             })
             final_output = output
 
@@ -143,6 +151,7 @@ class TaskExecutor:
         task_goal = context.get("task_goal", "")
         handover = context.get("handover", "")
         handoff_path = context.get("handoff_path", "")
+        log_path = context.get("log_path")
 
         # Build prompt for Claude Code agent
         goal_section = f"Goal: {task_goal}\n\n" if task_goal else ""
@@ -175,7 +184,7 @@ Execute this task by modifying the codebase as needed. When done, write a summar
         # the subprocess invocation, timeout (default 900s / 15 min), and
         # error handling.
         repo_root = str(self.git_tracker.repo_path)
-        result = self.harness.run(prompt, cwd=repo_root, allow_edits=True)
+        result = self.harness.run(prompt, cwd=repo_root, allow_edits=True, log_path=log_path)
         return result.success, (
             result.output if result.success else (result.error or result.output)
         )

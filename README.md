@@ -189,8 +189,9 @@ mini job delete <ID>                          # Delete job and all tasks
 ### Results & Logs
 
 ```bash
-mini job logs <ID>                            # View all task outputs
-mini job results logs <ID>                    # Same as above
+mini job logs <ID>                            # View the live agent narration (job.log)
+mini job logs <ID> -f                         # Tail the narration live until the job ends (Ctrl-C to stop)
+mini job results logs <ID>                    # View per-task outputs (DB summary)
 mini job results logs <ID> --task-id <TASK>   # Filter by task ID
 mini job results diff <ID>                    # View all git diffs
 mini job results diff <ID> --task-id <TASK>   # Filter by task ID

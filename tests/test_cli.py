@@ -850,6 +850,103 @@ def test_results_logs_nonexistent_job_fails(runner, mock_config_dir):
 
 
 # ============================================================================
+# JOB LOGS COMMAND TESTS (live narration file, not the DB summary)
+# ============================================================================
+
+def _make_job_with_log(mock_config_dir, content: str, status=JobStatus.COMPLETED):
+    """Create a job (+ one task & execution) and write `content` to its job.log."""
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Narration Job",
+        status=status,
+        plan_path="/path/to/plan.yaml",
+    )
+    db.create_job(job)
+    task = Task(
+        estimated_duration_min=5,
+        id="task-narr",
+        job_id=job.id,
+        name="Narrate Task",
+        description="A task",
+        status=TaskStatus.COMPLETED,
+        retries=2,
+        output="DB narration blob",
+        diff_path="/some/diff.patch",
+    )
+    db.create_task(task)
+    log_path = (mock_config_dir / "jobs" / job.id)
+    log_path.mkdir(parents=True, exist_ok=True)
+    log_path = log_path / "job.log"
+    log_path.write_text(content)
+    return db, job, log_path
+
+
+def test_job_logs_prints_narration_file(runner, mock_config_dir):
+    """`mini job logs <id>` prints the job.log narration, not the DB summary."""
+    _, job, _ = _make_job_with_log(
+        mock_config_dir, "agent says hello\nagent did a thing\n"
+    )
+
+    result = runner.invoke(mini, ["job", "logs", job.id])
+
+    assert result.exit_code == 0
+    assert "agent says hello" in result.output
+    assert "agent did a thing" in result.output
+    # The per-attempt status/duration table and diff path are gone — that is
+    # `mini job status`'s job now.
+    assert "Retries" not in result.output
+    assert "Attempt" not in result.output
+    assert "/some/diff.patch" not in result.output
+
+
+def test_job_logs_no_log_yet_message(runner, mock_config_dir):
+    """When job.log doesn't exist yet, print a clear message, not an error."""
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Unstarted Job",
+        status=JobStatus.PENDING,
+        plan_path="/path/to/plan.yaml",
+    )
+    db.create_job(job)
+
+    result = runner.invoke(mini, ["job", "logs", job.id])
+
+    assert result.exit_code == 0
+    assert "No logs yet" in result.output
+
+
+def test_job_logs_follow_tails_appended_lines(db, runner, mock_config_dir):
+    """`mini job logs <id> -f` prints existing content then appended lines."""
+    import threading
+
+    db, job, log_path = _make_job_with_log(
+        mock_config_dir, "first line\n", status=JobStatus.RUNNING
+    )
+
+    def append_then_finish():
+        time.sleep(0.15)
+        with open(log_path, "a") as f:
+            f.write("second line\n")
+        time.sleep(0.15)
+        # flip to a terminal state so the follow loop exits
+        appender_db = Database(mock_config_dir / "minimise.db")
+        appender_db.update_job_status(job.id, JobStatus.COMPLETED)
+
+    t = threading.Thread(target=append_then_finish)
+    t.start()
+    result = runner.invoke(mini, ["job", "logs", job.id, "-f"])
+    t.join()
+
+    assert result.exit_code == 0
+    assert "first line" in result.output
+    assert "second line" in result.output
+
+
+# ============================================================================
 # RESULTS DIFF COMMAND TESTS
 # ============================================================================
 

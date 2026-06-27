@@ -171,6 +171,10 @@ class JobStore:
     def task_dir(self, job_id: str, task_id: str) -> Path:
         return ensure_directory(self.jobs_dir / job_id / "tasks" / task_id)
 
+    def job_log_path(self, job_id: str) -> Path:
+        """The one-file-per-job live narration log (flat append-only file)."""
+        return ensure_directory(self.jobs_dir / job_id) / "job.log"
+
     def handoff_path(self, job_id: str, task_id: str, attempt: int) -> Path:
         """Per-attempt handoff file, outside the repo so auto-commit can't sweep it in."""
         d = ensure_directory(self.jobs_dir / job_id / "handoffs" / task_id)

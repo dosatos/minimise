@@ -1,10 +1,31 @@
+import json
 import os
 import subprocess
 from unittest.mock import patch, MagicMock
 
 import pytest
 
-from minimise.agents.harness import HarnessResult, AgentHarness, ClaudeCodeHarness
+from minimise.agents.harness import HarnessResult, AgentHarness, ClaudeCodeHarness, _extract_text
+
+
+# --- Fake Popen helper for stream-json ---
+
+def _assistant_event(text):
+    return {"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}
+
+
+def make_fake_popen(stdout_lines, *, returncode=0, stderr=""):
+    """Build a fake subprocess.Popen factory yielding canned stream-json lines."""
+    def factory(*args, **kwargs):
+        proc = MagicMock()
+        proc.stdin = MagicMock()
+        proc.stdout = iter(stdout_lines)
+        proc.stderr = MagicMock()
+        proc.stderr.read.return_value = stderr
+        proc.returncode = returncode
+        proc.wait.return_value = returncode
+        return proc
+    return factory
 
 
 # --- HarnessResult dataclass ---
@@ -108,97 +129,159 @@ def test_build_env_bedrock_flag_not_one_uses_anthropic():
 
 # --- Command construction ---
 
-@patch("minimise.agents.harness.subprocess.run")
-def test_command_base_no_edits_no_model(mock_run):
-    mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_command_base_no_edits_no_model(mock_popen):
+    mock_popen.side_effect = make_fake_popen([])
     ClaudeCodeHarness().run("hi")
-    cmd = mock_run.call_args.args[0]
-    assert cmd == ["claude", "-p", "--output-format", "text"]
+    cmd = mock_popen.call_args.args[0]
+    assert cmd == ["claude", "-p", "--output-format", "stream-json", "--verbose"]
 
 
-@patch("minimise.agents.harness.subprocess.run")
-def test_command_includes_skip_permissions_only_when_allow_edits(mock_run):
-    mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_command_includes_skip_permissions_only_when_allow_edits(mock_popen):
+    mock_popen.side_effect = make_fake_popen([])
 
     ClaudeCodeHarness().run("hi", allow_edits=False)
-    assert "--dangerously-skip-permissions" not in mock_run.call_args.args[0]
+    assert "--dangerously-skip-permissions" not in mock_popen.call_args.args[0]
 
     ClaudeCodeHarness().run("hi", allow_edits=True)
-    assert "--dangerously-skip-permissions" in mock_run.call_args.args[0]
+    assert "--dangerously-skip-permissions" in mock_popen.call_args.args[0]
 
 
-@patch("minimise.agents.harness.subprocess.run")
-def test_command_includes_model_only_when_given(mock_run):
-    mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_command_includes_model_only_when_given(mock_popen):
+    mock_popen.side_effect = make_fake_popen([])
 
     ClaudeCodeHarness().run("hi")
-    assert "--model" not in mock_run.call_args.args[0]
+    assert "--model" not in mock_popen.call_args.args[0]
 
     ClaudeCodeHarness().run("hi", model="claude-opus-4-8")
-    cmd = mock_run.call_args.args[0]
+    cmd = mock_popen.call_args.args[0]
     assert "--model" in cmd
     assert cmd[cmd.index("--model") + 1] == "claude-opus-4-8"
 
 
-@patch("minimise.agents.harness.subprocess.run")
-def test_run_passes_prompt_cwd_timeout(mock_run):
-    mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_run_passes_prompt_cwd(mock_popen):
+    mock_popen.side_effect = make_fake_popen([])
     ClaudeCodeHarness().run("the-prompt", cwd="/repo", timeout=120)
-    kwargs = mock_run.call_args.kwargs
-    assert kwargs["input"] == "the-prompt"
+    kwargs = mock_popen.call_args.kwargs
     assert kwargs["cwd"] == "/repo"
-    assert kwargs["timeout"] == 120
-    assert kwargs["capture_output"] is True
     assert kwargs["text"] is True
 
 
-# --- Result mapping ---
+# --- _extract_text robustness against malformed events ---
 
-@patch("minimise.agents.harness.subprocess.run")
-def test_run_returncode_zero_success(mock_run):
-    mock_run.return_value = MagicMock(returncode=0, stdout="all good", stderr="")
-    result = ClaudeCodeHarness().run("hi")
-    assert result == HarnessResult(success=True, output="all good")
+@pytest.mark.parametrize("event", [
+    {"type": "assistant", "message": {"content": None}},
+    {"type": "assistant", "message": {"content": "oops"}},
+    {"type": "assistant", "message": {"content": ["not-a-dict", 42]}},
+    {"type": "assistant", "message": {}},
+    {"type": "assistant"},
+])
+def test_extract_text_tolerates_malformed_content(event):
+    # Must not raise on unexpected content shapes (guards the live read loop,
+    # which only catches JSONDecodeError).
+    assert _extract_text(event) == ""
 
 
-@patch("minimise.agents.harness.subprocess.run")
-def test_run_returncode_zero_none_stdout_coalesced(mock_run):
-    mock_run.return_value = MagicMock(returncode=0, stdout=None, stderr=None)
+# --- stream-json parsing / result mapping ---
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_run_extracts_only_assistant_text(mock_popen):
+    lines = [
+        json.dumps({"type": "system", "subtype": "init"}),
+        json.dumps(_assistant_event("Hello ")),
+        json.dumps({"type": "user", "message": {"content": [{"type": "tool_result"}]}}),
+        json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash"}]}}),
+        json.dumps(_assistant_event("world")),
+        json.dumps({"type": "result", "result": "done"}),
+    ]
+    mock_popen.side_effect = make_fake_popen(lines, returncode=0)
     result = ClaudeCodeHarness().run("hi")
     assert result.success is True
-    assert result.output == ""
+    assert result.output == "Hello world"
 
 
-@patch("minimise.agents.harness.subprocess.run")
-def test_run_returncode_nonzero_failure(mock_run):
-    mock_run.return_value = MagicMock(returncode=1, stdout="partial", stderr="boom")
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_run_log_path_tees_timestamped_chunks(mock_popen, tmp_path):
+    lines = [
+        json.dumps(_assistant_event("first")),
+        json.dumps(_assistant_event("second")),
+    ]
+    mock_popen.side_effect = make_fake_popen(lines, returncode=0)
+    log = tmp_path / "job.log"
+    result = ClaudeCodeHarness().run("hi", log_path=log)
+    assert result.output == "firstsecond"
+    contents = log.read_text()
+    assert "first" in contents
+    assert "second" in contents
+    # each chunk on its own timestamped line
+    written_lines = [ln for ln in contents.splitlines() if ln.strip()]
+    assert len(written_lines) == 2
+    assert written_lines[0].startswith("[") and "] first" in written_lines[0]
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_run_no_log_path_writes_nothing(mock_popen, tmp_path):
+    mock_popen.side_effect = make_fake_popen([json.dumps(_assistant_event("x"))])
+    ClaudeCodeHarness().run("hi")
+    # nothing created in tmp_path
+    assert list(tmp_path.iterdir()) == []
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_run_skips_malformed_lines(mock_popen):
+    lines = ["not json", "", json.dumps(_assistant_event("ok"))]
+    mock_popen.side_effect = make_fake_popen(lines)
+    result = ClaudeCodeHarness().run("hi")
+    assert result.output == "ok"
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_run_returncode_nonzero_failure(mock_popen):
+    mock_popen.side_effect = make_fake_popen(
+        [json.dumps(_assistant_event("partial"))], returncode=1, stderr="boom"
+    )
     result = ClaudeCodeHarness().run("hi")
     assert result.success is False
     assert result.output == "partial"
     assert result.error == "boom"
 
 
-@patch("minimise.agents.harness.subprocess.run")
-def test_run_returncode_nonzero_none_streams_coalesced(mock_run):
-    mock_run.return_value = MagicMock(returncode=2, stdout=None, stderr=None)
-    result = ClaudeCodeHarness().run("hi")
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_run_timeout(mock_popen):
+    # Simulate a hung agent: stdout blocks (never yields, never EOFs) so the
+    # reader thread can't finish within the deadline and the process is killed.
+    import threading
+
+    released = threading.Event()
+
+    class _BlockingStdout:
+        def __iter__(self):
+            return self
+        def __next__(self):
+            released.wait()  # block until proc.kill() releases us
+            raise StopIteration
+
+    def factory(*args, **kwargs):
+        proc = MagicMock()
+        proc.stdin = MagicMock()
+        proc.stdout = _BlockingStdout()
+        proc.stderr = MagicMock()
+        proc.stderr.read.return_value = ""
+        proc.kill.side_effect = lambda: released.set()
+        return proc
+    mock_popen.side_effect = factory
+    result = ClaudeCodeHarness().run("hi", timeout=0.2)
     assert result.success is False
     assert result.output == ""
-    assert result.error == ""
+    assert result.error == "timeout after 0.2s"
 
 
-@patch("minimise.agents.harness.subprocess.run")
-def test_run_timeout(mock_run):
-    mock_run.side_effect = subprocess.TimeoutExpired(cmd="claude", timeout=300)
-    result = ClaudeCodeHarness().run("hi", timeout=300)
-    assert result.success is False
-    assert result.output == ""
-    assert result.error == "timeout after 300s"
-
-
-@patch("minimise.agents.harness.subprocess.run")
-def test_run_generic_exception(mock_run):
-    mock_run.side_effect = FileNotFoundError("claude not found")
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_run_generic_exception(mock_popen):
+    mock_popen.side_effect = FileNotFoundError("claude not found")
     result = ClaudeCodeHarness().run("hi")
     assert result.success is False
     assert result.output == ""

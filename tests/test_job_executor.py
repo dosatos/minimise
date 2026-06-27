@@ -40,7 +40,7 @@ class HandoffWritingHarness(AgentHarness):
     def __init__(self):
         self.prompts = []
 
-    def run(self, prompt, *, cwd=None, timeout=900, model=None, allow_edits=False):
+    def run(self, prompt, *, cwd=None, timeout=900, model=None, allow_edits=False, log_path=None):
         self.prompts.append(prompt)
         # The prompt names the exact handoff path; task 1 writes a known handoff there.
         if len(self.prompts) == 1:
