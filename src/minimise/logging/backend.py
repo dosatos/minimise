@@ -37,7 +37,9 @@ class JobLogBackend(ABC):
 def _matches(pred: Predicate, rec: dict) -> bool:
     # Values are quoted strings in the query surface, so compare as strings
     # deliberately (numeric/string record values both coerce here).
-    actual = str(rec.get(pred.field, ""))
+    # `@message` is the whole-record marker (mirrors the `fields` projection):
+    # no record has a literal `@message` key, so match against the raw JSON.
+    actual = json.dumps(rec) if pred.field == "@message" else str(rec.get(pred.field, ""))
     if pred.op is Op.EQ:
         return actual == pred.value
     if pred.op is Op.NE:

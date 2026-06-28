@@ -996,6 +996,21 @@ def test_job_logs_query_at_message_prints_whole_record(runner, mock_config_dir):
     assert "task-aa" in result.output  # whole record includes execution_id
 
 
+def test_job_logs_filter_at_message_matches_whole_record(runner, mock_config_dir):
+    """`filter @message like ...` searches the whole record, not a literal key."""
+    _, job, _ = _make_job_with_log(mock_config_dir, _JSONL_LOG)
+
+    result = runner.invoke(
+        mini,
+        ["job", "logs", job.id, "--query",
+         'fields message | filter @message like "applied a patch"'],
+    )
+
+    assert result.exit_code == 0
+    lines = [l for l in result.output.splitlines() if l.strip()]
+    assert lines == ["applied a patch"]  # the one record whose JSON contains it
+
+
 def test_job_logs_json_is_raw_matching_jsonl(runner, mock_config_dir):
     """--json emits one raw JSON record per matching line (jq-friendly)."""
     _, job, _ = _make_job_with_log(mock_config_dir, _JSONL_LOG)
