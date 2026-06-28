@@ -376,16 +376,31 @@ def job_delete(job_id: str):
         raise SystemExit(1)
 
 
+def _render_record(rec: dict, fields: list) -> str:
+    """Project a record to `fields` (in order); `@message`/omit → whole record JSON."""
+    if not fields:
+        return json.dumps(rec)
+    parts = []
+    for f in fields:
+        parts.append(json.dumps(rec) if f == "@message" else str(rec.get(f, "")))
+    return "\t".join(parts)
+
+
 @job.command(name="logs")
 @click.argument("job_id")
 @click.option("-f", "--follow", is_flag=True, help="Tail the log live (Ctrl-C to stop)")
-def job_logs(job_id: str, follow: bool):
+@click.option("--query", default=None, help="CloudWatch Insights-style query (fields|filter|sort|limit)")
+@click.option("--json", "as_json", is_flag=True, help="Emit raw matching JSONL records (for jq)")
+def job_logs(job_id: str, follow: bool, query: Optional[str], as_json: bool):
     """View the agent narration log for a job (live with -f).
 
-    Reads the per-job ``job.log`` written by the harness. The per-task
+    Reads the per-job ``job.log`` written by the harness. Without ``--query`` the
+    raw file is printed; ``--query`` parses an Insights-style string, runs it via
+    the JSONL backend, and renders the projected ``fields``. The per-task
     status/duration timeline lives in ``mini job status``.
     """
-    import time
+    from minimise.logging.backend import JsonlLogBackend
+    from minimise.logging.log_query import parse_query
 
     try:
         job_id, db, job_obj = _get_and_validate_job(job_id)
@@ -395,32 +410,93 @@ def job_logs(job_id: str, follow: bool):
             console.print("[yellow]No logs yet for this job.[/yellow]")
             return
 
+        # No query → keep the original raw print/tail path byte-for-byte.
+        if query is None:
+            with open(log_path, "r", encoding="utf-8") as f:
+                console.out(f.read(), end="")
+                if not follow:
+                    return
+                _tail_raw(f, db, job_id)
+            return
+
+        try:
+            log_query = parse_query(query)
+        except ValueError as e:
+            console.print(f"[red]Error: {str(e)}[/red]")
+            raise SystemExit(1)
+
+        backend = JsonlLogBackend()
+        for rec in backend.search(log_path, log_query):
+            console.out(json.dumps(rec) if as_json
+                        else _render_record(rec, log_query.fields))
+
+        if not follow:
+            return
+
+        # Live tail: only the filter applies per new line; sort/limit can't on a
+        # stream, so flag that once and keep going.
+        if log_query.sort_present or log_query.limit is not None:
+            click.echo("(live: sort/limit ignored; filter applied per line)", err=True)
         with open(log_path, "r", encoding="utf-8") as f:
-            console.out(f.read(), end="")
-
-            if not follow:
-                return
-
-            # Tail: poll for appended lines, stop once the job leaves RUNNING.
-            try:
-                while True:
-                    line = f.readline()
-                    if line:
-                        console.out(line, end="")
-                        continue
-                    fresh = db.get_job(job_id)
-                    if fresh is None or fresh.status != JobStatus.RUNNING:
-                        # Flush any lines flushed between the last readline and
-                        # the status flip before exiting.
-                        console.out(f.read(), end="")
-                        break
-                    time.sleep(0.1)
-            except KeyboardInterrupt:
-                pass
+            f.seek(0, 2)  # past the already-rendered backlog
+            _tail_filtered(f, db, job_id, backend, log_query, as_json)
 
     except Exception as e:
         console.print(f"[red]Error: {str(e)}[/red]")
         raise SystemExit(1)
+
+
+def _tail_raw(f, db, job_id: str) -> None:
+    """Poll for appended lines, stop once the job leaves RUNNING."""
+    import time
+    try:
+        while True:
+            line = f.readline()
+            if line:
+                console.out(line, end="")
+                continue
+            fresh = db.get_job(job_id)
+            if fresh is None or fresh.status != JobStatus.RUNNING:
+                console.out(f.read(), end="")
+                break
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        pass
+
+
+def _tail_filtered(f, db, job_id: str, backend, log_query, as_json: bool) -> None:
+    """Tail like `_tail_raw` but render each new line through the query's filter."""
+    import time
+
+    def emit(line: str) -> None:
+        line = line.strip()
+        if not line:
+            return
+        try:
+            rec = json.loads(line)
+            if not isinstance(rec, dict):
+                rec = {"message": line}
+        except json.JSONDecodeError:
+            rec = {"message": line}
+        if not backend.matches(log_query, rec):
+            return
+        console.out(json.dumps(rec) if as_json
+                    else _render_record(rec, log_query.fields))
+
+    try:
+        while True:
+            line = f.readline()
+            if line:
+                emit(line)
+                continue
+            fresh = db.get_job(job_id)
+            if fresh is None or fresh.status != JobStatus.RUNNING:
+                for rest in f.read().splitlines():
+                    emit(rest)
+                break
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        pass
 
 
 @job.command(name="show")

@@ -4,9 +4,10 @@ import subprocess
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
+
+from minimise.logging.backend import JobLogBackend, JsonlLogBackend
 
 
 @dataclass
@@ -50,6 +51,7 @@ class AgentHarness(ABC):
         model: Optional[str] = None,
         allow_edits: bool = False,
         log_path: Optional[Union[str, Path]] = None,
+        log_fields: Optional[dict] = None,
     ) -> HarnessResult:
         """Send a prompt to the harness and return its text output.
 
@@ -57,15 +59,19 @@ class AgentHarness(ABC):
         --dangerously-skip-permissions). When False, the call is a
         read-only completion.
 
-        log_path, when given, receives each extracted assistant text chunk
-        (timestamped) appended live so the run can be tailed. When None,
-        nothing is written and behavior is unchanged.
+        log_path + log_fields, when both given, write each extracted assistant
+        chunk as a JSON line (log_fields merged with timestamp/level/message)
+        via the injected backend so the run can be tailed/queried. If either is
+        None, nothing is written and behavior is unchanged.
         """
         raise NotImplementedError
 
 
 class ClaudeCodeHarness(AgentHarness):
     """AgentHarness backed by the `claude -p` CLI subprocess."""
+
+    def __init__(self, backend: Optional[JobLogBackend] = None) -> None:
+        self._backend = backend or JsonlLogBackend()
 
     def _build_env(self) -> dict:
         """Build secure environment for Claude Code subprocess.
@@ -110,6 +116,7 @@ class ClaudeCodeHarness(AgentHarness):
         model: Optional[str] = None,
         allow_edits: bool = False,
         log_path: Optional[Union[str, Path]] = None,
+        log_fields: Optional[dict] = None,
     ) -> HarnessResult:
         # stream-json lets the orchestrator read assistant output live;
         # the CLI requires --verbose alongside it.
@@ -143,7 +150,10 @@ class ClaudeCodeHarness(AgentHarness):
             stderr_thread.start()
 
             chunks: list[str] = []
-            reader = threading.Thread(target=self._read_stdout, args=(proc, chunks, log_path))
+            reader = threading.Thread(
+                target=self._read_stdout,
+                args=(proc, chunks, log_path, log_fields, self._backend),
+            )
             reader.start()
             # Bound the live read with a real wall-clock deadline; the old
             # subprocess.run(timeout=) guarantee is otherwise lost (a hung agent
@@ -188,25 +198,24 @@ class ClaudeCodeHarness(AgentHarness):
             pass
 
     @staticmethod
-    def _read_stdout(proc: "subprocess.Popen", chunks: list, log_path) -> None:
-        """Read stdout line-by-line, accumulate assistant text, tee to log_path."""
-        sink = open(log_path, "a", encoding="utf-8") if log_path is not None else None
-        try:
-            for line in proc.stdout or []:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                text = _extract_text(event)
-                if not text:
-                    continue
-                chunks.append(text)
-                if sink is not None:
-                    sink.write(f"[{datetime.now().isoformat()}] {text}\n")
-                    sink.flush()
-        finally:
-            if sink is not None:
-                sink.close()
+    def _read_stdout(proc: "subprocess.Popen", chunks: list, log_path, log_fields, backend) -> None:
+        """Read stdout line-by-line, accumulate assistant text, record each chunk.
+
+        Each chunk is written as a structured JSON line via the backend when both
+        log_path and log_fields are given; otherwise nothing is written.
+        """
+        record = log_path is not None and log_fields is not None
+        for line in proc.stdout or []:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            text = _extract_text(event)
+            if not text:
+                continue
+            chunks.append(text)
+            if record:
+                backend.record(log_path, log_fields, text)

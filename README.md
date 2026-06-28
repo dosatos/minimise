@@ -189,12 +189,31 @@ mini job delete <ID>                          # Delete job and all tasks
 ### Results & Logs
 
 ```bash
-mini job logs <ID>                            # View the live agent narration (job.log)
+mini job logs <ID>                            # View the live agent narration (job.log, JSONL)
 mini job logs <ID> -f                         # Tail the narration live until the job ends (Ctrl-C to stop)
+mini job logs <ID> --query '<insights query>' # Filter/sort/limit/project log lines (see below)
+mini job logs <ID> --query '...' --json       # Emit raw matching JSONL records (jq-friendly)
+mini job logs <ID> -f --query '...'           # Live tail with filter applied per line (sort/limit ignored)
 mini job results logs <ID>                    # View per-task outputs (DB summary)
 mini job results logs <ID> --task-id <TASK>   # Filter by task ID
 mini job results diff <ID>                    # View all git diffs
 mini job results diff <ID> --task-id <TASK>   # Filter by task ID
+```
+
+`job.log` is structured JSONL — one JSON object per line
+(`timestamp`, `execution_id`, `type`, `level`, `message`). `--query` accepts a
+CloudWatch Insights-style string, clauses separated by `|` (any order, all optional):
+
+- `fields a, b` — project columns (`@message` = whole-record JSON; omit = whole record).
+- `filter type = "task" and level != "debug"` — ops `=`, `!=`, `like` (substring);
+  `and`/`or` evaluated left-to-right, no parentheses.
+- `sort @timestamp desc` — `asc` (default) or `desc`.
+- `limit 20`.
+
+`@timestamp` maps to `timestamp`. Bad syntax exits 1 with a clear error.
+
+```bash
+mini job logs <ID> --query 'fields @timestamp, message | filter type = "task" | sort @timestamp desc | limit 20'
 ```
 
 ### UI & Server

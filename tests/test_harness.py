@@ -204,30 +204,68 @@ def test_run_extracts_only_assistant_text(mock_popen):
 
 
 @patch("minimise.agents.harness.subprocess.Popen")
-def test_run_log_path_tees_timestamped_chunks(mock_popen, tmp_path):
+def test_run_writes_structured_jsonl_with_merged_fields(mock_popen, tmp_path):
     lines = [
         json.dumps(_assistant_event("first")),
         json.dumps(_assistant_event("second")),
     ]
     mock_popen.side_effect = make_fake_popen(lines, returncode=0)
     log = tmp_path / "job.log"
-    result = ClaudeCodeHarness().run("hi", log_path=log)
+    fields = {"execution_id": "job#x#type#task", "type": "task"}
+    result = ClaudeCodeHarness().run("hi", log_path=log, log_fields=fields)
     assert result.output == "firstsecond"
-    contents = log.read_text()
-    assert "first" in contents
-    assert "second" in contents
-    # each chunk on its own timestamped line
-    written_lines = [ln for ln in contents.splitlines() if ln.strip()]
-    assert len(written_lines) == 2
-    assert written_lines[0].startswith("[") and "] first" in written_lines[0]
+
+    records = [json.loads(ln) for ln in log.read_text().splitlines() if ln.strip()]
+    assert len(records) == 2
+    first = records[0]
+    # caller fields merged in, plus timestamp/level/message
+    assert first["execution_id"] == "job#x#type#task"
+    assert first["type"] == "task"
+    assert first["level"] == "info"
+    assert first["message"] == "first"
+    assert "timestamp" in first
+    assert records[1]["message"] == "second"
 
 
 @patch("minimise.agents.harness.subprocess.Popen")
 def test_run_no_log_path_writes_nothing(mock_popen, tmp_path):
     mock_popen.side_effect = make_fake_popen([json.dumps(_assistant_event("x"))])
-    ClaudeCodeHarness().run("hi")
+    ClaudeCodeHarness().run("hi", log_fields={"type": "task"})
     # nothing created in tmp_path
     assert list(tmp_path.iterdir()) == []
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_run_no_log_fields_writes_nothing(mock_popen, tmp_path):
+    # log_path given but log_fields=None (e.g. PlanReviewer) → nothing written.
+    mock_popen.side_effect = make_fake_popen([json.dumps(_assistant_event("x"))])
+    log = tmp_path / "job.log"
+    ClaudeCodeHarness().run("hi", log_path=log)
+    assert not log.exists()
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_run_uses_injected_backend(mock_popen):
+    # The harness routes writes through the injected backend, not a hard-coded one.
+    from minimise.logging.backend import JobLogBackend
+
+    calls = []
+
+    class _SpyBackend(JobLogBackend):
+        def record(self, log_path, fields, text, level="info"):
+            calls.append((str(log_path), dict(fields), text, level))
+
+        def search(self, log_path, query):
+            return iter([])
+
+        def matches(self, query, rec):
+            return True
+
+    mock_popen.side_effect = make_fake_popen([json.dumps(_assistant_event("hi"))])
+    ClaudeCodeHarness(backend=_SpyBackend()).run(
+        "p", log_path="/tmp/j.log", log_fields={"type": "task"}
+    )
+    assert calls == [("/tmp/j.log", {"type": "task"}, "hi", "info")]
 
 
 @patch("minimise.agents.harness.subprocess.Popen")

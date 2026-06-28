@@ -66,11 +66,10 @@ class TaskExecutor:
         for attempt in range(self.MAX_RETRIES + 1):
             self.store.mark_running(task, attempt)
 
-            # Section marker so the live tail stays readable across retries.
-            with open(job_log_path, "a") as log:
-                # datetime.now() (local) to match the harness narration timestamps in the same file.
-                log.write(f"--- task {task.id} attempt {attempt} @ {datetime.now().isoformat()} ---\n")
-
+            # Identity now lives in each JSON log line, not a flat banner.
+            ex = Execution(
+                job_id=job_id, task_id=task.id, attempt=attempt, execution_type="task"
+            )
             handoff_path = self.store.handoff_path(job_id, task.id, attempt)
             success, output = self._invoke_claude_code({
                 "handover": context,
@@ -79,6 +78,7 @@ class TaskExecutor:
                 "task_goal": task.goal,
                 "handoff_path": str(handoff_path),
                 "log_path": str(job_log_path),
+                "log_fields": {"execution_id": ex.execution_id, "type": ex.execution_type},
             })
             final_output = output
 
@@ -152,6 +152,7 @@ class TaskExecutor:
         handover = context.get("handover", "")
         handoff_path = context.get("handoff_path", "")
         log_path = context.get("log_path")
+        log_fields = context.get("log_fields")
 
         # Build prompt for Claude Code agent
         goal_section = f"Goal: {task_goal}\n\n" if task_goal else ""
@@ -184,7 +185,9 @@ Execute this task by modifying the codebase as needed. When done, write a summar
         # the subprocess invocation, timeout (default 900s / 15 min), and
         # error handling.
         repo_root = str(self.git_tracker.repo_path)
-        result = self.harness.run(prompt, cwd=repo_root, allow_edits=True, log_path=log_path)
+        result = self.harness.run(
+            prompt, cwd=repo_root, allow_edits=True, log_path=log_path, log_fields=log_fields
+        )
         return result.success, (
             result.output if result.success else (result.error or result.output)
         )

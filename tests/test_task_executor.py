@@ -757,8 +757,10 @@ def test_execute_task_passes_job_log_path_to_harness(temp_db_dir, db, git_repo):
     assert fake.run.call_args.kwargs["log_path"] == str(log_path)
 
 
-def test_execute_task_writes_attempt_section_marker(temp_db_dir, db, git_repo):
-    """A section marker naming the task + attempt is appended to job.log before each attempt."""
+def test_execute_task_passes_execution_log_fields_to_harness(temp_db_dir, db, git_repo):
+    """execute_task passes log_fields with the execution_id + type identity."""
+    from minimise.models import Execution
+
     git_tracker = GitTracker(git_repo)
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(success=True, output="ok")
@@ -768,5 +770,26 @@ def test_execute_task_writes_attempt_section_marker(temp_db_dir, db, git_repo):
 
     executor.execute_task(task, job_id, "")
 
-    log = store.job_log_path(job_id).read_text()
-    assert f"--- task {task.id} attempt 0" in log
+    log_fields = fake.run.call_args.kwargs["log_fields"]
+    expected_id = Execution(
+        job_id=job_id, task_id=task.id, attempt=0, execution_type="task"
+    ).execution_id
+    assert log_fields == {"execution_id": expected_id, "type": "task"}
+
+
+def test_execute_task_writes_no_banner_to_log(temp_db_dir, db, git_repo):
+    """The old `--- task ... ---` banner is no longer written to job.log."""
+    git_tracker = GitTracker(git_repo)
+    fake = Mock(spec=AgentHarness)
+    fake.run.return_value = HarnessResult(success=True, output="ok")
+    store = JobStore(db, temp_db_dir)
+    executor = TaskExecutor(store, git_tracker, harness=fake)
+    job_id, task = _setup_job_and_task(db, git_tracker)
+
+    executor.execute_task(task, job_id, "")
+
+    log_path = store.job_log_path(job_id)
+    content = log_path.read_text() if log_path.exists() else ""
+    assert "--- task" not in content
+
+

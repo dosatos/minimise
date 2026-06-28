@@ -946,6 +946,182 @@ def test_job_logs_follow_tails_appended_lines(db, runner, mock_config_dir):
     assert "second line" in result.output
 
 
+# A few JSONL records spanning two types, for --query tests.
+_JSONL_LOG = (
+    '{"timestamp":"2026-06-27T01:00:00","execution_id":"job#a#task#task-aa","type":"task","level":"info","message":"running pytest"}\n'
+    '{"timestamp":"2026-06-27T01:00:01","execution_id":"job#a#task#task-bb","type":"task","level":"info","message":"applied a patch"}\n'
+    '{"timestamp":"2026-06-27T01:00:02","execution_id":"job#a#review","type":"review","level":"info","message":"review note"}\n'
+)
+
+
+def test_job_logs_no_query_prints_everything(runner, mock_config_dir):
+    """Without --query the raw file is printed unchanged (JSONL passes through)."""
+    _, job, _ = _make_job_with_log(mock_config_dir, _JSONL_LOG)
+
+    result = runner.invoke(mini, ["job", "logs", job.id])
+
+    assert result.exit_code == 0
+    assert "running pytest" in result.output
+    assert "review note" in result.output
+
+
+def test_job_logs_query_filters_sorts_limits_projects(runner, mock_config_dir):
+    """--query filters by type, sorts desc, limits, and projects fields."""
+    _, job, _ = _make_job_with_log(mock_config_dir, _JSONL_LOG)
+
+    result = runner.invoke(
+        mini,
+        ["job", "logs", job.id, "--query",
+         'fields message | filter type = "task" | sort @timestamp desc | limit 1'],
+    )
+
+    assert result.exit_code == 0
+    # type=review filtered out; sort desc + limit 1 keeps the latest task line.
+    # filter + sort desc + limit 1 → exactly the latest task line, nothing else.
+    assert [l for l in result.output.splitlines() if l.strip()] == ["applied a patch"]
+
+
+def test_job_logs_query_at_message_prints_whole_record(runner, mock_config_dir):
+    """`fields @message` prints the whole record (the raw JSON)."""
+    _, job, _ = _make_job_with_log(mock_config_dir, _JSONL_LOG)
+
+    result = runner.invoke(
+        mini,
+        ["job", "logs", job.id, "--query",
+         'fields @message | filter execution_id like "task-aa"'],
+    )
+
+    assert result.exit_code == 0
+    assert "running pytest" in result.output
+    assert "task-aa" in result.output  # whole record includes execution_id
+
+
+def test_job_logs_json_is_raw_matching_jsonl(runner, mock_config_dir):
+    """--json emits one raw JSON record per matching line (jq-friendly)."""
+    _, job, _ = _make_job_with_log(mock_config_dir, _JSONL_LOG)
+
+    result = runner.invoke(
+        mini,
+        ["job", "logs", job.id, "--query", 'filter type = "review"', "--json"],
+    )
+
+    assert result.exit_code == 0
+    lines = [l for l in result.output.splitlines() if l.strip()]
+    assert len(lines) == 1
+    rec = json.loads(lines[0])
+    assert rec["type"] == "review"
+    assert rec["message"] == "review note"
+
+
+def test_job_logs_bad_query_errors(runner, mock_config_dir):
+    """A malformed query exits 1 with a clear error."""
+    _, job, _ = _make_job_with_log(mock_config_dir, _JSONL_LOG)
+
+    result = runner.invoke(
+        mini, ["job", "logs", job.id, "--query", "fields | bogus ("]
+    )
+
+    assert result.exit_code == 1
+    assert "query" in result.output.lower()
+
+
+def test_job_logs_no_logs_yet_with_query(runner, mock_config_dir):
+    """--query on a job with no log file still prints the no-logs message."""
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Unstarted",
+        status=JobStatus.PENDING,
+        plan_path="/path/to/plan.yaml",
+    )
+    db.create_job(job)
+
+    result = runner.invoke(
+        mini, ["job", "logs", job.id, "--query", 'filter type = "task"']
+    )
+
+    assert result.exit_code == 0
+    assert "No logs yet" in result.output
+
+
+def test_job_logs_follow_with_query_applies_filter_live(db, runner, mock_config_dir):
+    """`-f --query` applies the filter per new line; sort/limit ignored (notice)."""
+    import threading
+
+    db, job, log_path = _make_job_with_log(
+        mock_config_dir,
+        '{"type":"task","message":"keep me"}\n',
+        status=JobStatus.RUNNING,
+    )
+
+    def append_then_finish():
+        time.sleep(0.15)
+        with open(log_path, "a") as f:
+            f.write('{"type":"review","message":"drop me"}\n')
+            f.write('{"type":"task","message":"keep me too"}\n')
+        time.sleep(0.15)
+        Database(mock_config_dir / "minimise.db").update_job_status(
+            job.id, JobStatus.COMPLETED
+        )
+
+    t = threading.Thread(target=append_then_finish)
+    t.start()
+    result = runner.invoke(
+        mini,
+        ["job", "logs", job.id, "-f", "--query",
+         'filter type = "task" | sort @timestamp desc | limit 1'],
+    )
+    t.join()
+
+    assert result.exit_code == 0
+    assert "keep me" in result.output
+    assert "keep me too" in result.output
+    assert "drop me" not in result.output  # filtered live
+
+
+def test_job_logs_follow_notice_fires_for_asc_sort(db, runner, mock_config_dir):
+    """`-f` with an explicit `sort ... asc` (sort_desc falsy) still warns it's ignored."""
+    import threading
+
+    db, job, log_path = _make_job_with_log(
+        mock_config_dir,
+        '{"type":"task","message":"line"}\n',
+        status=JobStatus.RUNNING,
+    )
+
+    def finish():
+        time.sleep(0.15)
+        Database(mock_config_dir / "minimise.db").update_job_status(
+            job.id, JobStatus.COMPLETED
+        )
+
+    t = threading.Thread(target=finish)
+    t.start()
+    result = runner.invoke(
+        mini,
+        ["job", "logs", job.id, "-f", "--query", 'sort @timestamp asc'],
+    )
+    t.join()
+
+    assert result.exit_code == 0
+    assert "live" in result.output.lower()  # the sort/limit-ignored notice fired
+
+
+def test_job_logs_json_alone_is_raw_passthrough(runner, mock_config_dir):
+    """`--json` without `--query` emits the raw JSONL lines (jq passthrough)."""
+    _, job, _ = _make_job_with_log(mock_config_dir, _JSONL_LOG)
+
+    result = runner.invoke(mini, ["job", "logs", job.id, "--json"])
+
+    assert result.exit_code == 0
+    lines = [l for l in result.output.splitlines() if l.strip()]
+    assert len(lines) == 3
+    recs = [json.loads(l) for l in lines]
+    assert [r["message"] for r in recs] == [
+        "running pytest", "applied a patch", "review note"]
+
+
 # ============================================================================
 # RESULTS DIFF COMMAND TESTS
 # ============================================================================
