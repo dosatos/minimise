@@ -136,27 +136,50 @@ class Hook(BaseModel):
     command: Optional[str] = None
 
 
+def _validate_hook_list(hooks: list["Hook"], where: str) -> None:
+    names = [h.name for h in hooks]
+    if len(names) != len(set(names)):
+        raise ValueError(f"hook names must be unique within {where}")
+    for h in hooks:
+        if h.command is None:
+            # Bare name = a config-hook reference; resolver not built yet.
+            raise ValueError(
+                f"hook '{h.name}' in {where} has no command "
+                "(named config-hooks are not supported yet)"
+            )
+
+
 class PlanTask(BaseModel):
-    model_config = ConfigDict(extra="allow")  # preserve per-task hooks (pre_task_hook, post_task_hook)
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     description: str
     goal: str
     # strict rejects bool (an int subclass) and float; gt=0 keeps it positive
     estimated_duration_min: int = Field(gt=0, strict=True)
+    pre_hooks: list[Hook] = Field(default_factory=list)
+    post_hooks: list[Hook] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_hooks(self):
+        _validate_hook_list(self.pre_hooks, f"task '{self.id}' pre_hooks")
+        _validate_hook_list(self.post_hooks, f"task '{self.id}' post_hooks")
+        return self
 
 class Plan(BaseModel):
     model_config = ConfigDict(extra="allow")
     name: str
     tasks: list[PlanTask] = Field(min_length=1)
-    pre_plan_hook: str = ""
-    post_plan_hook: str = ""
+    pre_hooks: list[Hook] = Field(default_factory=list)
+    post_hooks: list[Hook] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _unique_task_ids(self):
         ids = [t.id for t in self.tasks]
         if len(ids) != len(set(ids)):
             raise ValueError("task ids must be unique")
+        _validate_hook_list(self.pre_hooks, "plan pre_hooks")
+        _validate_hook_list(self.post_hooks, "plan post_hooks")
         return self
 
     @classmethod

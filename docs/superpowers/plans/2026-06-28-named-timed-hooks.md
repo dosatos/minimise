@@ -179,7 +179,7 @@ git commit -m "feat: Hook dataclass + hook_name identity + readable execution_id
 
 `Hook` is already a pydantic `BaseModel` (Task 1), so it drops straight into `Plan`/`PlanTask` as a typed list field — no separate spec/conversion type needed.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `tests/test_plan_validator.py`:
 
@@ -249,12 +249,12 @@ def test_bare_name_hook_without_command_rejected():
 
 Leave the `briefing` setup and assertion intact. Do not delete the whole test.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `PYTHONPATH=src pytest tests/test_plan_validator.py -q`
 Expected: FAIL — `pre_hooks`/`post_hooks` not recognized (stored as extras, not typed lists) and no validation.
 
-- [ ] **Step 3: Implement the schema**
+- [x] **Step 3: Implement the schema**
 
 In `src/minimise/models.py`, update `PlanTask` and `Plan` to use the `Hook` model. Add a shared validator helper module-level:
 
@@ -312,12 +312,12 @@ class Plan(BaseModel):
         return self
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `PYTHONPATH=src pytest tests/test_plan_validator.py tests/test_models.py -q`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/minimise/models.py tests/test_plan_validator.py

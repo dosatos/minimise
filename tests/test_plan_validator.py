@@ -94,13 +94,66 @@ class TestFromYaml:
     def test_extras_preserved(self, tmp_path):
         data = _valid_plan_dict()
         data["briefing"] = "context here"
-        data["tasks"][0]["pre_task_hook"] = "echo hi"
         path = self._write(tmp_path, yaml.dump(data))
         plan = Plan.from_yaml(path)
         assert plan.briefing == "context here"
-        assert plan.tasks[0].pre_task_hook == "echo hi"
 
     def test_invalid_plan_raises(self, tmp_path):
         path = self._write(tmp_path, yaml.dump({"name": "P", "tasks": []}))
         with pytest.raises(ValidationError):
             Plan.from_yaml(path)
+
+
+def test_plan_task_hook_lists_parse():
+    from minimise.models import Plan
+    plan = Plan.model_validate({
+        "name": "P",
+        "pre_hooks": [{"name": "setup", "command": "make init", "estimated_duration_min": 1}],
+        "post_hooks": [{"name": "deploy", "command": "deploy.sh", "estimated_duration_min": 5}],
+        "tasks": [{
+            "id": "t1", "name": "Build", "description": "d", "goal": "g",
+            "estimated_duration_min": 3,
+            "post_hooks": [
+                {"name": "Run tests", "command": "pytest -q", "estimated_duration_min": 3},
+                {"name": "Lint", "command": "ruff check", "estimated_duration_min": 1},
+            ],
+        }],
+    })
+    assert plan.pre_hooks[0].name == "setup"
+    assert plan.post_hooks[0].command == "deploy.sh"
+    assert [h.name for h in plan.tasks[0].post_hooks] == ["Run tests", "Lint"]
+    assert plan.tasks[0].pre_hooks == []
+
+
+def test_duplicate_hook_names_rejected():
+    import pytest
+    from pydantic import ValidationError
+    from minimise.models import Plan
+    with pytest.raises(ValidationError, match="unique"):
+        Plan.model_validate({
+            "name": "P",
+            "tasks": [{
+                "id": "t1", "name": "Build", "description": "d", "goal": "g",
+                "estimated_duration_min": 3,
+                "post_hooks": [
+                    {"name": "dup", "command": "a", "estimated_duration_min": 1},
+                    {"name": "dup", "command": "b", "estimated_duration_min": 1},
+                ],
+            }],
+        })
+
+
+def test_bare_name_hook_without_command_rejected():
+    import pytest
+    from pydantic import ValidationError
+    from minimise.models import Plan
+    # A name-only hook references a config-hook; until that ships, it's an error.
+    with pytest.raises(ValidationError, match="command"):
+        Plan.model_validate({
+            "name": "P",
+            "tasks": [{
+                "id": "t1", "name": "Build", "description": "d", "goal": "g",
+                "estimated_duration_min": 3,
+                "post_hooks": [{"name": "security", "estimated_duration_min": 5}],
+            }],
+        })
