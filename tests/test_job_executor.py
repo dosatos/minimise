@@ -71,10 +71,56 @@ def test_task1_agent_handoff_flows_to_task2(temp_db_dir, db, git_repo):
         {"id": t2.id, "name": "T2", "description": "d2", "goal": "g2", "estimated_duration_min": 5},
     ])
 
-    executor = JobExecutor(TaskExecutor(store, git_tracker, harness=harness), HookExecutor(), git_tracker)
+    executor = JobExecutor(TaskExecutor(store, git_tracker, harness=harness), HookExecutor())
     assert executor.execute(job, plan)
 
     # Task 2's prompt carries task 1's agent-written handoff, not the raw stdout.
     assert "TASK1_AGENT_HANDOFF marker" in harness.prompts[1]
     assert "(agent-written handoff)" in harness.prompts[1]
     assert "stdout-noise" not in harness.prompts[1]
+
+
+def _single_task_job(db, git_tracker, *, pre=None, post=None):
+    job_id = str(uuid.uuid4())
+    db.create_job(Job(id=job_id, name="J", status=JobStatus.PENDING,
+                      base_commit=git_tracker.get_current_commit()))
+    t1 = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
+              name="T1", description="d1", status=TaskStatus.PENDING)
+    db.create_task(t1)
+    job = Job(id=job_id, name="J", status=JobStatus.PENDING, tasks=[t1])
+    plan = Plan(name="J", tasks=[{
+        "id": t1.id, "name": "T1", "description": "d1", "goal": "g1",
+        "estimated_duration_min": 5, "pre_hooks": pre or [], "post_hooks": post or [],
+    }])
+    return job, plan, t1
+
+
+def test_post_task_hook_failure_fails_task(temp_db_dir, db, git_repo):
+    git_tracker = GitTracker(git_repo)
+    store = JobStore(db, temp_db_dir)
+    job, plan, t1 = _single_task_job(
+        db, git_tracker,
+        post=[{"name": "check", "command": "exit 1", "estimated_duration_min": 1}])
+
+    executor = JobExecutor(
+        TaskExecutor(store, git_tracker, harness=HandoffWritingHarness()), HookExecutor())
+    assert executor.execute(job, plan) is False
+    failed = db.get_task(t1.id)
+    assert failed.status == TaskStatus.FAILED
+    assert "Post-task hook failed" in failed.output
+
+
+def test_pre_task_hook_failure_skips_task(temp_db_dir, db, git_repo):
+    git_tracker = GitTracker(git_repo)
+    store = JobStore(db, temp_db_dir)
+    job, plan, t1 = _single_task_job(
+        db, git_tracker,
+        pre=[{"name": "check", "command": "exit 1", "estimated_duration_min": 1}])
+
+    harness = HandoffWritingHarness()
+    executor = JobExecutor(TaskExecutor(store, git_tracker, harness=harness), HookExecutor())
+    assert executor.execute(job, plan) is False
+    assert harness.prompts == []  # task never ran
+    failed = db.get_task(t1.id)
+    assert failed.status == TaskStatus.FAILED
+    assert "Pre-task hook failed" in failed.output

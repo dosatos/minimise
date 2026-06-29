@@ -37,3 +37,34 @@ def test_failed_hook_logs_error_line(tmp_path):
     err = [r for r in recs if r["level"] == "error"]
     assert err and err[0]["type"] == "post_task"
     assert "post_task_hook#pytest" in err[0]["execution_id"]
+
+
+def test_success_hook_logs_info_line(tmp_path):
+    log = tmp_path / "job.log"
+    HookExecutor(job_id="j1", log_path=log, backend=JsonlLogBackend()).run(
+        Hook(name="lint", command="exit 0", estimated_duration_min=1),
+        "pre_plan", task_id=None)
+    recs = [json.loads(l) for l in log.read_text().splitlines()]
+    info = [r for r in recs if r["level"] == "info"]
+    assert info and "pre_plan_hook#lint" in info[0]["execution_id"]
+
+
+def test_runs_in_repo_root_cwd(tmp_path):
+    h = Hook(name="pwd", command="pwd", estimated_duration_min=1)
+    ex = _captured_execution(HookExecutor(repo_root=tmp_path), h)
+    assert str(tmp_path.resolve()) in ex.output
+
+
+def test_runs_in_project_venv(tmp_path):
+    (tmp_path / ".venv" / "bin").mkdir(parents=True)
+    h = Hook(name="env", command="echo $VIRTUAL_ENV", estimated_duration_min=1)
+    ex = _captured_execution(HookExecutor(repo_root=tmp_path), h)
+    assert str((tmp_path / ".venv")) in ex.output
+
+
+def _captured_execution(executor, hook):
+    """Run a hook, capturing the Execution it would persist."""
+    captured = []
+    executor.store = type("S", (), {"save_execution": lambda self, e: captured.append(e)})()
+    executor.run(hook, "post_task", task_id="t1")
+    return captured[0]

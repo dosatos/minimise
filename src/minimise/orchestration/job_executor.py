@@ -7,7 +7,6 @@ this call; per-task persistence lives in TaskExecutor.
 """
 
 from minimise.models import Job, Plan
-from minimise.storage.git_tracker import GitTracker
 from minimise.orchestration.task_executor import TaskExecutor
 from minimise.orchestration.hook_executor import HookExecutor
 
@@ -15,10 +14,9 @@ from minimise.orchestration.hook_executor import HookExecutor
 class JobExecutor:
     """Runs all of a job's tasks sequentially."""
 
-    def __init__(self, task_executor: TaskExecutor, hook_executor: HookExecutor, git_tracker: GitTracker):
+    def __init__(self, task_executor: TaskExecutor, hook_executor: HookExecutor):
         self.task_executor = task_executor
         self.hook_executor = hook_executor
-        self.git_tracker = git_tracker
 
     def _run_hooks(self, hooks, execution_type, task_id) -> bool:
         for hook in hooks:

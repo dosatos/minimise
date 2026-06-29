@@ -33,7 +33,7 @@ class JobController:
         self.hook_executor = HookExecutor(
             store=self.store, repo_root=self.repo_path, backend=JsonlLogBackend(),
         )
-        self.executor = JobExecutor(self.task_executor, self.hook_executor, git_tracker)
+        self.executor = JobExecutor(self.task_executor, self.hook_executor)
 
     @classmethod
     def from_paths(cls, db, repo_path, jobs_dir) -> "JobController":

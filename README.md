@@ -326,7 +326,7 @@ docs/
 ## Status
 
 ✅ **Production-ready backend**
-- 159/159 tests passing
+- 350/350 tests passing
 - All core components complete
 - Full deferred execution workflow implemented
 - Tested with Anthropic & Bedrock backends
@@ -340,6 +340,7 @@ docs/
 - ✅ Concurrent job orchestration
 - ✅ **Deferred execution workflow** (new/show/start/stop/resume)
 - ✅ Job lifecycle management (PENDING → RUNNING → COMPLETED/FAILED/STOPPED)
+- ✅ Named, timed pre/post hooks (plan- and task-level) — run in the project venv, render on the Gantt, queryable in the job log
 - ✅ Failed plan persistence & recovery (automatic lock release)
 - ✅ Results retrieval (logs, diffs, full context)
 - ✅ REST API + WebSocket support
