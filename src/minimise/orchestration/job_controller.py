@@ -16,6 +16,7 @@ from minimise.storage.job_store import JobStore
 from minimise.orchestration.task_executor import TaskExecutor
 from minimise.orchestration.hook_executor import HookExecutor
 from minimise.orchestration.job_executor import JobExecutor
+from minimise.logging.backend import JsonlLogBackend
 from minimise.utils import ensure_directory
 
 
@@ -29,7 +30,9 @@ class JobController:
         self.repo_path = Path(repo_path)
         self.store = JobStore(db, jobs_dir)
         self.task_executor = TaskExecutor(self.store, git_tracker)
-        self.hook_executor = HookExecutor(self.db)
+        self.hook_executor = HookExecutor(
+            store=self.store, repo_root=self.repo_path, backend=JsonlLogBackend(),
+        )
         self.executor = JobExecutor(self.task_executor, self.hook_executor, git_tracker)
 
     @classmethod
@@ -80,6 +83,7 @@ class JobController:
 
         self.store.mark_job_running(job_id)
         self.hook_executor.job_id = job_id
+        self.hook_executor.log_path = self.store.job_log_path(job_id)
         success = self.executor.execute(job, plan)
         if success:
             self.store.mark_job_completed(job_id)

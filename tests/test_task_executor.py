@@ -72,104 +72,6 @@ def test_task_executor_initialization(temp_db_dir, db, git_repo):
     assert executor.MAX_RETRIES == 3
 
 
-def test_pre_post_hooks_execution(temp_db_dir, db, git_repo):
-    """Test that pre and post hooks are executed."""
-    from minimise.models import Job, JobStatus
-
-    git_tracker = GitTracker(git_repo)
-    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
-
-    job_id = str(uuid.uuid4())
-
-    # Create the job first
-    job = Job(
-        id=job_id,
-        name="Test Job",
-        status=JobStatus.PENDING,
-        base_commit=git_tracker.get_current_commit(),
-    )
-    db.create_job(job)
-
-    task = Task(estimated_duration_min=5, 
-        id=str(uuid.uuid4()),
-        job_id=job_id,
-        name="Test Task",
-        description="Test task description",
-        status=TaskStatus.PENDING,
-    )
-    db.create_task(task)
-
-    # Create marker files for testing hook execution
-    pre_marker = temp_db_dir / "pre_hook.txt"
-    post_marker = temp_db_dir / "post_hook.txt"
-
-    pre_hook = f"echo 'pre-hook-ran' > {pre_marker}"
-    post_hook = f"echo 'post-hook-ran' > {post_marker}"
-
-    # Mock the Claude Code invocation to avoid actual execution
-    def mock_invoke(context):
-        return True, "Task completed successfully"
-
-    executor._invoke_claude_code = mock_invoke
-
-    success, output = executor.execute_task(
-        task, job_id, "", pre_task_hook=pre_hook, post_task_hook=post_hook
-    )
-
-    # Verify hooks ran
-    assert pre_marker.exists(), "Pre-hook did not run"
-    assert post_marker.exists(), "Post-hook did not run"
-    assert success
-    assert output == "Task completed successfully"
-
-
-def test_post_hook_failure_updates_status(temp_db_dir, db, git_repo):
-    """Test that post-hook failure updates task status to FAILED."""
-    from minimise.models import Job, JobStatus
-
-    git_tracker = GitTracker(git_repo)
-    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
-
-    job_id = str(uuid.uuid4())
-
-    # Create the job first
-    job = Job(
-        id=job_id,
-        name="Test Job",
-        status=JobStatus.PENDING,
-        base_commit=git_tracker.get_current_commit(),
-    )
-    db.create_job(job)
-
-    task = Task(estimated_duration_min=5, 
-        id=str(uuid.uuid4()),
-        job_id=job_id,
-        name="Test Task",
-        description="",
-        status=TaskStatus.PENDING,
-    )
-    db.create_task(task)
-
-    # Mock Claude Code to succeed
-    def mock_invoke(context):
-        return True, "Success"
-
-    executor._invoke_claude_code = mock_invoke
-
-    # Run with failing post-hook
-    failing_post_hook = "exit 1"
-    success, output = executor.execute_task(
-        task, job_id, "", post_task_hook=failing_post_hook
-    )
-
-    # Verify: should fail and DB should show FAILED
-    assert not success
-    updated_task = db.get_task(task.id)
-    assert updated_task.status == TaskStatus.FAILED
-    assert "Post-task hook failed" in updated_task.output
-    assert updated_task.completed_at is not None
-
-
 def test_task_completion_without_base_commit(temp_db_dir, db, git_repo):
     """Test that task success updates status even when base_commit is None."""
     from minimise.models import Job, JobStatus
@@ -562,55 +464,8 @@ def _setup_job_and_task(db, git_tracker):
     return job_id, task
 
 
-def test_pre_task_hook_recorded(temp_db_dir, db, git_repo):
-    """A non-empty pre-task hook writes a COMPLETED pre_task execution row."""
-    git_tracker = GitTracker(git_repo)
-    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
-    job_id, task = _setup_job_and_task(db, git_tracker)
-    executor._invoke_claude_code = lambda context: (True, "ok")
-
-    executor.execute_task(task, job_id, "", pre_task_hook="exit 0")
-
-    pre = [e for e in db.list_executions_for_job(job_id) if e.execution_type == "pre_task"]
-    assert len(pre) == 1
-    assert pre[0].task_id == task.id
-    assert pre[0].status == TaskStatus.COMPLETED
-    assert pre[0].started_at and pre[0].completed_at
-
-
-def test_pre_task_hook_failure_recorded(temp_db_dir, db, git_repo):
-    """A failing pre-task hook records a FAILED row AND still early-returns."""
-    git_tracker = GitTracker(git_repo)
-    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
-    job_id, task = _setup_job_and_task(db, git_tracker)
-    executor._invoke_claude_code = lambda context: (True, "ok")
-
-    success, output = executor.execute_task(task, job_id, "", pre_task_hook="exit 1")
-
-    assert not success
-    assert output.startswith("Pre-task hook failed:")
-    pre = [e for e in db.list_executions_for_job(job_id) if e.execution_type == "pre_task"]
-    assert len(pre) == 1
-    assert pre[0].status == TaskStatus.FAILED
-
-
-def test_post_task_hook_recorded(temp_db_dir, db, git_repo):
-    """A non-empty post-task hook on a passing task writes a COMPLETED post_task row."""
-    git_tracker = GitTracker(git_repo)
-    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
-    job_id, task = _setup_job_and_task(db, git_tracker)
-    executor._invoke_claude_code = lambda context: (True, "ok")
-
-    executor.execute_task(task, job_id, "", post_task_hook="exit 0")
-
-    post = [e for e in db.list_executions_for_job(job_id) if e.execution_type == "post_task"]
-    assert len(post) == 1
-    assert post[0].task_id == task.id
-    assert post[0].status == TaskStatus.COMPLETED
-
-
 def test_no_hooks_records_only_attempts(temp_db_dir, db, git_repo):
-    """With no hooks, no pre_/post_task rows are written — only task attempts."""
+    """execute_task writes no pre_/post_task rows — hooks are JobExecutor's job now."""
     git_tracker = GitTracker(git_repo)
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
     job_id, task = _setup_job_and_task(db, git_tracker)
@@ -621,27 +476,6 @@ def test_no_hooks_records_only_attempts(temp_db_dir, db, git_repo):
     types = {e.execution_type for e in db.list_executions_for_job(job_id)}
     assert "pre_task" not in types
     assert "post_task" not in types
-
-
-def test_task_attempt_started_at_not_copied_from_pre_task_hook(temp_db_dir, db, git_repo):
-    """The closed task attempt keeps its OWN started_at, not the pre_task hook's.
-
-    Regression: hooks share task_id and attempt=0, so _close_execution matching on
-    attempt alone would graft the pre_task hook's earlier started_at onto the task row.
-    """
-    git_tracker = GitTracker(git_repo)
-    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
-    job_id, task = _setup_job_and_task(db, git_tracker)
-    executor._invoke_claude_code = lambda context: (True, "ok")
-
-    executor.execute_task(task, job_id, "", pre_task_hook="true")
-
-    rows = db.list_executions_for_job(job_id)
-    pre = next(e for e in rows if e.execution_type == "pre_task")
-    attempt = next(e for e in rows if e.execution_type == "task")
-    # The attempt opens AFTER the pre_task hook closes, so its start is strictly later.
-    assert attempt.started_at >= pre.completed_at
-    assert attempt.started_at != pre.started_at
 
 
 def test_default_harness_is_claude_code(temp_db_dir, db, git_repo):

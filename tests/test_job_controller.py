@@ -65,8 +65,6 @@ def plan_file(temp_db_dir):
     plan_content = {
         "name": "Test Plan",
         "briefing": "This is a test plan",
-        "pre_plan_hook": "",
-        "post_plan_hook": "",
         "tasks": [
             {
                 "id": "task-1",
@@ -74,8 +72,6 @@ def plan_file(temp_db_dir):
                 "description": "First task",
                 "goal": "Complete first task",
                 "estimated_duration_min": 5,
-                "pre_task_hook": "",
-                "post_task_hook": "",
             },
             {
                 "id": "task-2",
@@ -83,8 +79,6 @@ def plan_file(temp_db_dir):
                 "description": "Second task",
                 "goal": "Complete second task",
                 "estimated_duration_min": 5,
-                "pre_task_hook": "",
-                "post_task_hook": "",
             }
         ]
     }
@@ -184,7 +178,7 @@ def test_run_job_basic(job_controller, plan_file):
     original_executor_class = TaskExecutor
 
     class MockTaskExecutor(TaskExecutor):
-        def execute_task(self, task, job_id, handover_context, pre_task_hook="", post_task_hook="", next_task=None):
+        def execute_task(self, task, job_id, handover_context, next_task=None):
             # Mock successful execution
             return True, f"Executed {task.name}"
 
@@ -209,6 +203,43 @@ def test_run_job_basic(job_controller, plan_file):
         minimise.orchestration.job_controller.TaskExecutor = original_executor_class
 
 
+def test_job_runs_task_hooks_in_plan_order(job_controller, temp_db_dir):
+    """pre_hooks -> task -> post_hooks, recorded as executions with hook_name."""
+    from minimise.orchestration.task_executor import TaskExecutor
+
+    plan_content = {
+        "name": "Hook Order Plan",
+        "tasks": [{
+            "id": "task-1", "name": "Build", "description": "d", "goal": "g",
+            "estimated_duration_min": 1,
+            "pre_hooks": [{"name": "setup", "command": "true", "estimated_duration_min": 1}],
+            "post_hooks": [{"name": "verify", "command": "true", "estimated_duration_min": 1}],
+        }],
+    }
+    plan_path = temp_db_dir / "hook_order.yaml"
+    with open(plan_path, "w") as f:
+        yaml.dump(plan_content, f)
+
+    original = job_controller.task_executor.execute_task
+
+    def mock_execute_task(task, job_id, handover_context, next_task=None):
+        job_controller.db.update_task_status(task.id, TaskStatus.COMPLETED,
+                                             output="ok", completed_at=datetime.utcnow())
+        return True, "ok"
+
+    job_controller.task_executor.execute_task = mock_execute_task
+    try:
+        created_job = job_controller.create_job(plan_path)
+        assert job_controller.start_job(created_job.id)
+
+        execs = job_controller.db.list_executions_for_job(created_job.id)
+        by_name = {(e.hook_name, e.execution_type) for e in execs if e.hook_name}
+        assert ("setup", "pre_task") in by_name
+        assert ("verify", "post_task") in by_name
+    finally:
+        job_controller.task_executor.execute_task = original
+
+
 def test_task_commits_against_base_commit(job_controller, plan_file, git_repo):
     """Test that each task commits its changes against its base commit, not HEAD."""
     from minimise.orchestration.task_executor import TaskExecutor
@@ -230,7 +261,7 @@ def test_task_commits_against_base_commit(job_controller, plan_file, git_repo):
     execution_count = [0]
 
     class MockTaskExecutor(TaskExecutor):
-        def execute_task(self, task, job_id, handover_context, pre_task_hook="", post_task_hook="", next_task=None):
+        def execute_task(self, task, job_id, handover_context, next_task=None):
             execution_count[0] += 1
 
             # Simulate task making changes
@@ -291,7 +322,7 @@ def test_task_commit_message_format(temp_db_dir, git_repo, plan_file):
     commit_messages = []
 
     class MockTaskExecutor(TaskExecutor):
-        def execute_task(self, task, job_id, handover_context, pre_task_hook="", post_task_hook="", next_task=None):
+        def execute_task(self, task, job_id, handover_context, next_task=None):
             execution_count[0] += 1
 
             # Simulate task making changes
@@ -376,7 +407,7 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, git_repo, plan_file)
     stored_diffs = []
 
     class MockTaskExecutor(TaskExecutor):
-        def execute_task(self, task, job_id, handover_context, pre_task_hook="", post_task_hook="", next_task=None):
+        def execute_task(self, task, job_id, handover_context, next_task=None):
             execution_count[0] += 1
 
             # Simulate task making changes
@@ -463,7 +494,7 @@ def test_failed_job_persists_in_db(job_controller, plan_file):
     execution_count = [0]
     original_method = job_controller.task_executor.execute_task
 
-    def mock_execute_task(task, job_id, handover_context, pre_task_hook="", post_task_hook="", next_task=None):
+    def mock_execute_task(task, job_id, handover_context, next_task=None):
         execution_count[0] += 1
         if execution_count[0] == 1:
             # Fail on first task
@@ -508,7 +539,7 @@ def test_failed_job_stores_error_reason(job_controller, plan_file):
     error_reason = "Database connection timeout"
     original_method = job_controller.task_executor.execute_task
 
-    def mock_execute_task(task, job_id, handover_context, pre_task_hook="", post_task_hook="", next_task=None):
+    def mock_execute_task(task, job_id, handover_context, next_task=None):
         error_msg = f"Task execution failed: {error_reason}"
         job_controller.db.update_task_status(task.id, TaskStatus.FAILED, output=error_msg, completed_at=datetime.utcnow())
         return False, error_msg
@@ -544,8 +575,7 @@ def test_pre_plan_hook_failure_persists_job(job_controller, plan_file, temp_db_d
     plan_content = {
         "name": "Test Plan with Hook Failure",
         "briefing": "Plan with failing pre hook",
-        "pre_plan_hook": "exit 1",  # This will fail
-        "post_plan_hook": "",
+        "pre_hooks": [{"name": "guard", "command": "exit 1", "estimated_duration_min": 1}],
         "tasks": [
             {
                 "id": "task-1",
@@ -553,8 +583,6 @@ def test_pre_plan_hook_failure_persists_job(job_controller, plan_file, temp_db_d
                 "description": "First task",
                 "goal": "Complete task",
                 "estimated_duration_min": 5,
-                "pre_task_hook": "",
-                "post_task_hook": "",
             }
         ]
     }
@@ -586,8 +614,7 @@ def test_post_plan_hook_failure_persists_job(job_controller, plan_file):
     plan_content = {
         "name": "Test Plan with Post Hook Failure",
         "briefing": "Plan with failing post hook",
-        "pre_plan_hook": "",
-        "post_plan_hook": "exit 1",  # This will fail
+        "post_hooks": [{"name": "guard", "command": "exit 1", "estimated_duration_min": 1}],
         "tasks": [
             {
                 "id": "task-1",
@@ -595,8 +622,6 @@ def test_post_plan_hook_failure_persists_job(job_controller, plan_file):
                 "description": "First task",
                 "goal": "Complete task",
                 "estimated_duration_min": 5,
-                "pre_task_hook": "",
-                "post_task_hook": "",
             }
         ]
     }
@@ -610,7 +635,7 @@ def test_post_plan_hook_failure_persists_job(job_controller, plan_file):
         # Mock task executor to succeed
         original_method = job_controller.task_executor.execute_task
 
-        def mock_execute_task(task, job_id, handover_context, pre_task_hook="", post_task_hook="", next_task=None):
+        def mock_execute_task(task, job_id, handover_context, next_task=None):
             job_controller.db.update_task_status(task.id, TaskStatus.COMPLETED, output=f"Executed {task.name}", completed_at=datetime.utcnow())
             return True, f"Executed {task.name}"
 
@@ -643,8 +668,6 @@ def test_estimated_duration_min_parsed_from_yaml(job_controller, temp_db_dir):
     plan_content = {
         "name": "Plan with Durations",
         "briefing": "Test plan with task durations",
-        "pre_plan_hook": "",
-        "post_plan_hook": "",
         "tasks": [
             {
                 "id": "quick-task",
@@ -652,8 +675,6 @@ def test_estimated_duration_min_parsed_from_yaml(job_controller, temp_db_dir):
                 "description": "A quick task",
                 "goal": "Complete quickly",
                 "estimated_duration_min": 5,
-                "pre_task_hook": "",
-                "post_task_hook": "",
             },
             {
                 "id": "medium-task",
@@ -661,8 +682,6 @@ def test_estimated_duration_min_parsed_from_yaml(job_controller, temp_db_dir):
                 "description": "A medium task",
                 "goal": "Complete in reasonable time",
                 "estimated_duration_min": 60,
-                "pre_task_hook": "",
-                "post_task_hook": "",
             },
             {
                 "id": "long-task",
@@ -670,8 +689,6 @@ def test_estimated_duration_min_parsed_from_yaml(job_controller, temp_db_dir):
                 "description": "A long task",
                 "goal": "Complete eventually",
                 "estimated_duration_min": 480,
-                "pre_task_hook": "",
-                "post_task_hook": "",
             },
         ]
     }
@@ -696,8 +713,6 @@ def test_estimated_duration_min_stored_in_database(job_controller, temp_db_dir):
     plan_content = {
         "name": "Plan for DB Storage",
         "briefing": "Test database storage",
-        "pre_plan_hook": "",
-        "post_plan_hook": "",
         "tasks": [
             {
                 "id": "db-task-1",
@@ -705,8 +720,6 @@ def test_estimated_duration_min_stored_in_database(job_controller, temp_db_dir):
                 "description": "First task",
                 "goal": "Complete first",
                 "estimated_duration_min": 15,
-                "pre_task_hook": "",
-                "post_task_hook": "",
             },
             {
                 "id": "db-task-2",
@@ -714,8 +727,6 @@ def test_estimated_duration_min_stored_in_database(job_controller, temp_db_dir):
                 "description": "Second task",
                 "goal": "Complete second",
                 "estimated_duration_min": 45,
-                "pre_task_hook": "",
-                "post_task_hook": "",
             },
         ]
     }
@@ -742,8 +753,6 @@ def test_estimated_duration_min_survives_refetch(job_controller, temp_db_dir):
     plan_content = {
         "name": "Plan for Resume Test",
         "briefing": "Test resume persistence",
-        "pre_plan_hook": "",
-        "post_plan_hook": "",
         "tasks": [
             {
                 "id": "resume-task-1",
@@ -751,8 +760,6 @@ def test_estimated_duration_min_survives_refetch(job_controller, temp_db_dir):
                 "description": "First task",
                 "goal": "Complete first",
                 "estimated_duration_min": 20,
-                "pre_task_hook": "",
-                "post_task_hook": "",
             },
             {
                 "id": "resume-task-2",
@@ -760,8 +767,6 @@ def test_estimated_duration_min_survives_refetch(job_controller, temp_db_dir):
                 "description": "Second task",
                 "goal": "Complete second",
                 "estimated_duration_min": 90,
-                "pre_task_hook": "",
-                "post_task_hook": "",
             },
         ]
     }
@@ -824,8 +829,6 @@ def test_cached_plan_survives_original_deletion(job_controller, temp_db_dir):
     plan_content = {
         "name": "Deletable Plan",
         "briefing": "This plan will be deleted",
-        "pre_plan_hook": "",
-        "post_plan_hook": "",
         "tasks": [
             {
                 "id": "only-task",
@@ -833,8 +836,6 @@ def test_cached_plan_survives_original_deletion(job_controller, temp_db_dir):
                 "description": "Single task",
                 "goal": "Complete task",
                 "estimated_duration_min": 5,
-                "pre_task_hook": "",
-                "post_task_hook": "",
             }
         ]
     }

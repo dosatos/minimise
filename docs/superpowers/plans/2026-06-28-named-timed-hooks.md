@@ -708,7 +708,7 @@ git commit -m "feat: HookExecutor runs named hooks in project env, records + log
 
 **Design note — who fails the task?** Today `TaskExecutor` marks the task FAILED on a post-hook failure (`mark_task_failed`). With hooks moving to `JobExecutor`, the post-task-hook failure path must still mark the task failed. Keep it simple: `JobExecutor` calls `self.task_executor.store.mark_task_failed(task, msg)` when a post-task hook fails. The `store` is already on `TaskExecutor`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 In `tests/test_task_executor.py`, the hook tests (lines ~116, 162, 565-640) now belong to `HookExecutor` (Task 5) — **delete the hook-param tests** (`test_pre_task_hook_recorded`, `test_pre_task_hook_failure_recorded`, `test_post_task_hook_recorded`, `test_task_attempt_started_at_not_copied_from_pre_task_hook`, and the hook kwargs in lines 116/162). Update remaining `execute_task(...)` calls to drop `pre_task_hook=`/`post_task_hook=`.
 
@@ -750,12 +750,12 @@ def test_job_runs_task_hooks_in_plan_order(job_controller, tmp_path):
 
 (post-plan variant: move the failing hook to `"post_hooks"`, keep the task-succeeds mock.) Assertions (`job.status == JobStatus.FAILED`, tasks PENDING for the pre-plan case) stay as-is.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `PYTHONPATH=src pytest tests/test_task_executor.py tests/test_job_controller.py tests/test_job_executor.py -q`
 Expected: FAIL — signature mismatches; plan-hook-failure tests fail because the failing hook isn't wired through the new list path yet.
 
-- [ ] **Step 3: Trim `TaskExecutor`**
+- [x] **Step 3: Trim `TaskExecutor`**
 
 In `task_executor.py`, change the signature (remove hook params):
 
@@ -771,7 +771,7 @@ In `task_executor.py`, change the signature (remove hook params):
 
 Delete the `if pre_task_hook:` block (lines 49-58) and the `if post_task_hook:` block (lines 96-106). Remove the now-unused `run_shell_command` import if nothing else uses it (grep first — `_invoke_claude_code` does not use it).
 
-- [ ] **Step 4: Rewrite `JobExecutor.execute`**
+- [x] **Step 4: Rewrite `JobExecutor.execute`**
 
 ```python
 class JobExecutor:
@@ -816,7 +816,7 @@ class JobExecutor:
         return self._run_hooks(plan.post_hooks, "post_plan", None)
 ```
 
-- [ ] **Step 5: Wire `HookExecutor` in `JobController`**
+- [x] **Step 5: Wire `HookExecutor` in `JobController`**
 
 In `job_controller.py:32`, replace `self.hook_executor = HookExecutor(self.db)` with the fully wired executor. Note this also changes the `store` from `self.db` to `self.store` (the `JobStore`) — both expose `save_execution`, and routing through `JobStore` is the right layer:
 
@@ -835,12 +835,12 @@ from minimise.logging.backend import JsonlLogBackend
         self.hook_executor.log_path = self.store.job_log_path(job_id)
 ```
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [x] **Step 6: Run tests to verify they pass**
 
 Run: `PYTHONPATH=src pytest tests/test_task_executor.py tests/test_job_controller.py tests/test_job_executor.py tests/test_hook_executor.py -q`
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/minimise/orchestration/

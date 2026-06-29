@@ -1,11 +1,9 @@
-from datetime import datetime
 from typing import Optional
 from minimise.models import Execution, Task, TaskStatus
 from minimise.storage.git_tracker import GitTracker
 from minimise.storage.job_store import JobStore
 from minimise.orchestration.handover_manager import HandoverManager
 from minimise.agents.harness import AgentHarness, ClaudeCodeHarness
-from minimise.utils import run_shell_command
 
 
 class TaskExecutor:
@@ -28,16 +26,15 @@ class TaskExecutor:
         task: Task,
         job_id: str,
         handover_context: str,
-        pre_task_hook: str = "",
-        post_task_hook: str = "",
         next_task: Optional[Task] = None,
     ) -> tuple[bool, str]:
-        """Execute a task with retries and hooks; returns (success, output_or_handover).
+        """Execute a task with retries; returns (success, output_or_handover).
 
         Each attempt writes a per-attempt handoff file. A failed attempt's
         handoff feeds the next attempt; on success the returned handover is the
         completed attempt's handoff (agent-written, or the diff-based builder as
-        a marked fallback when the agent wrote nothing).
+        a marked fallback when the agent wrote nothing). Hooks run in
+        JobExecutor (via HookExecutor), not here.
         """
         if not self.store.load(job_id):
             return False, f"Job {job_id} not found"
@@ -45,17 +42,6 @@ class TaskExecutor:
         # Capture task's base_commit at start (if not already set)
         if not task.base_commit:
             self.store.set_task_base_commit(task, self.git_tracker.get_current_commit())
-
-        if pre_task_hook:
-            started_at = datetime.utcnow()
-            success, output = run_shell_command(pre_task_hook)
-            self.store.save_execution(Execution(
-                job_id=job_id, task_id=task.id, execution_type="pre_task", attempt=0,
-                status=TaskStatus.COMPLETED if success else TaskStatus.FAILED,
-                started_at=started_at, completed_at=datetime.utcnow(), output=output,
-            ))
-            if not success:
-                return False, f"Pre-task hook failed: {output}"
 
         final_success = False
         final_output = ""
@@ -92,18 +78,6 @@ class TaskExecutor:
                     handoff_path,
                     lambda: HandoverManager.build_retry_prompt(handover_context, task, attempt, output),
                 )
-
-        if post_task_hook:
-            started_at = datetime.utcnow()
-            hook_success, hook_output = run_shell_command(post_task_hook)
-            self.store.save_execution(Execution(
-                job_id=job_id, task_id=task.id, execution_type="post_task", attempt=0,
-                status=TaskStatus.COMPLETED if hook_success else TaskStatus.FAILED,
-                started_at=started_at, completed_at=datetime.utcnow(), output=hook_output,
-            ))
-            if not hook_success:
-                self.store.mark_task_failed(task, f"Post-task hook failed: {hook_output}")
-                return False, f"Post-task hook failed: {hook_output}"
 
         if final_success:
             commit_sha = None
