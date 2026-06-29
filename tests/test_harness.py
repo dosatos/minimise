@@ -211,7 +211,7 @@ def test_run_writes_structured_jsonl_with_merged_fields(mock_popen, tmp_path):
     ]
     mock_popen.side_effect = make_fake_popen(lines, returncode=0)
     log = tmp_path / "job.log"
-    fields = {"execution_id": "job#x#type#task", "type": "task"}
+    fields = {"execution_id": "job#j1#task#task-9f#attempt#0", "type": "task"}
     result = ClaudeCodeHarness().run("hi", log_path=log, log_fields=fields)
     assert result.output == "firstsecond"
 
@@ -219,7 +219,7 @@ def test_run_writes_structured_jsonl_with_merged_fields(mock_popen, tmp_path):
     assert len(records) == 2
     first = records[0]
     # caller fields merged in, plus timestamp/level/message
-    assert first["execution_id"] == "job#x#type#task"
+    assert first["execution_id"] == "job#j1#task#task-9f#attempt#0"
     assert first["type"] == "task"
     assert first["level"] == "info"
     assert first["message"] == "first"

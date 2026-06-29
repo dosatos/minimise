@@ -1120,17 +1120,17 @@ git commit -m "feat: job-total estimate sums hook durations too"
 
 **Note:** No example currently *uses* `post_task_hook:` as a live plan field — the only references are inside `description:` prose in `refactor-plan-model.yaml`. So this is a text edit, not a plan migration that would break parsing. Verify with grep that no example YAML has a top-level/task-level `pre_plan_hook`/`post_plan_hook`/`pre_task_hook`/`post_task_hook` key.
 
-- [ ] **Step 1: Verify no example uses the old fields as live keys**
+- [x] **Step 1: Verify no example uses the old fields as live keys**
 
 Run: `grep -rnE '^\s*(pre|post)_(plan|task)_hook\s*:' examples/`
 Expected: no matches (only in-prose mentions). If any live key exists, convert it to the `post_hooks:` list form.
 
-- [ ] **Step 2: Update the prose in `examples/refactor-plan-model.yaml`**
+- [x] **Step 2: Update the prose in `examples/refactor-plan-model.yaml`**
 
 Line 17: change `pre_plan_hook, post_plan_hook` → `pre_hooks, post_hooks`.
 Line 45: change `briefing/hooks off the Plan` → `briefing and pre_hooks/post_hooks off the Plan` (no functional change — it's a description of a past refactor; keep it accurate to current field names).
 
-- [ ] **Step 3: Add a hooks blurb to README**
+- [x] **Step 3: Add a hooks blurb to README**
 
 After line 261 (the Task Executor bullet), add a short plan-format section:
 
@@ -1158,7 +1158,7 @@ queryable via `mini job logs --query`. A failed `post_hook` fails the task.
 
 (Use real triple-backticks in the README — the `\`\`\`` above is escaped for this plan only.)
 
-- [ ] **Step 4: Refresh stale `execution_id` fixtures (hygiene)**
+- [x] **Step 4: Refresh stale `execution_id` fixtures (hygiene)**
 
 These tests hardcode the OLD `execution_id` format but are self-contained (they echo/feed the string, never parse it) — so they pass either way, leaving dead-format strings in the suite. Update them to the new readable format so the codebase has one canonical shape:
 - `tests/test_harness.py:214,222` — `"job#x#type#task"` → `"job#j1#task#task-9f#attempt#0"`.
@@ -1166,12 +1166,12 @@ These tests hardcode the OLD `execution_id` format but are self-contained (they 
 
 Run after editing: `PYTHONPATH=src pytest tests/test_harness.py tests/test_cli.py -q` → PASS.
 
-- [ ] **Step 5: Run the full suite**
+- [x] **Step 5: Run the full suite**
 
 Run: `PYTHONPATH=src pytest tests/ -q`
 Expected: PASS (~342 + new tests; the 2 known dirty-tree `test_cli.py` env failures, if present, are out of scope).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add examples/refactor-plan-model.yaml README.md tests/test_harness.py tests/test_cli.py

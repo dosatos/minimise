@@ -265,6 +265,26 @@ PENDING ──[start]──> RUNNING ──[complete]──> COMPLETED
 
 See [architecture diagram](docs/architecture/minimise-architecture.excalidraw)
 
+### Hooks
+
+A hook is a named, timed step that runs a shell command in your project's
+environment. Add `pre_hooks:` / `post_hooks:` lists at the plan level (run
+before/after the whole job) or under any task (run before/after that task):
+
+```yaml
+tasks:
+  - id: build
+    name: Build feature
+    estimated_duration_min: 25
+    post_hooks:
+      - name: Run tests
+        command: "pytest -q"
+        estimated_duration_min: 3
+```
+
+Each hook shows on the Gantt by name with its estimate, and its output is
+queryable via `mini job logs --query`. A failed `post_hook` fails the task.
+
 ## Development
 
 ```bash
