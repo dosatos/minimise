@@ -562,7 +562,7 @@ git commit -m "feat: run_shell_command env param + project_env venv detection (B
   - Streams one log line via `backend.record(log_path, {"execution_id":…, "type": execution_type}, message, level="error" if failed else "info")` when `log_path` + `backend` are set.
   - Returns `True`/`False`. (A `None` command can't reach here — rejected at parse time, Task 2.)
 
-- [ ] **Step 1: Overwrite `tests/test_hook_executor.py`**
+- [x] **Step 1: Overwrite `tests/test_hook_executor.py`**
 
 The file exists with four old-API tests (`test_run_without_store_unchanged`, `test_records_success`, `test_records_failure`, `test_empty_command_records_nothing`) that call `run("exit 0", "Pre-plan")`. **Replace the entire file** with:
 
@@ -608,12 +608,12 @@ def test_failed_hook_logs_error_line(tmp_path):
     assert "post_task_hook#pytest" in err[0]["execution_id"]
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `PYTHONPATH=src pytest tests/test_hook_executor.py -q`
 Expected: FAIL — `run()` signature mismatch (old `run(command, label)`).
 
-- [ ] **Step 3: Rewrite `hook_executor.py`**
+- [x] **Step 3: Rewrite `hook_executor.py`**
 
 ```python
 """HookExecutor — runs a named, timed hook (plan- or task-level).
@@ -678,12 +678,12 @@ if __name__ == "__main__":
     demo()
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `PYTHONPATH=src pytest tests/test_hook_executor.py -q && PYTHONPATH=src python src/minimise/orchestration/hook_executor.py`
 Expected: PASS; demo prints `OK`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/minimise/orchestration/hook_executor.py tests/test_hook_executor.py
