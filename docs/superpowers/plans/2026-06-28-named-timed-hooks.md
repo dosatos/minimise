@@ -52,7 +52,7 @@
     - plan hook: `job#{job_id}#{execution_type}_hook#{hook_name}`
   - `Execution.to_dict()` gains `"hook_name"`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Replace `test_execution_id_derivation` in `tests/test_models.py` and add `Hook` + format tests:
 
@@ -98,12 +98,12 @@ def test_execution_to_dict_has_hook_name():
 
 Delete the old `test_execution_id_derivation` (it asserts the dropped `#type#` format).
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `PYTHONPATH=src pytest tests/test_models.py -q`
 Expected: FAIL — `ImportError: cannot import name 'Hook'` / `hook_name` unexpected keyword / old id format.
 
-- [ ] **Step 3: Add `Hook` and update `Execution`**
+- [x] **Step 3: Add `Hook` and update `Execution`**
 
 In `src/minimise/models.py`, after the `Plan` model (or anywhere the pydantic imports are in scope), add `Hook` as a pydantic model — it must be a `BaseModel` so Task 2 can use it as a typed `Plan`/`PlanTask` field:
 
@@ -150,12 +150,12 @@ Add `hook_name` to `to_dict()` (after `commit_sha`):
         }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `PYTHONPATH=src pytest tests/test_models.py -q`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/minimise/models.py tests/test_models.py

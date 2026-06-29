@@ -75,21 +75,43 @@ def test_job_to_dict_empty_tasks():
     assert j.to_dict()["tasks"] == []
 
 
-def test_execution_id_derivation():
-    """execution_id is deterministic and distinguishes the three run shapes."""
-    task_attempt = Execution(task_id="t1", attempt=2, job_id="j1")
-    plan_hook = Execution(task_id=None, attempt=0, job_id="j1", execution_type="pre_plan")
-    per_task_hook = Execution(task_id="t1", attempt=0, job_id="j1", execution_type="pre_task")
+def test_execution_id_format():
+    """Readable {key}#{value} segments; a segment present only when meaningful."""
+    from minimise.models import Execution
+    attempt = Execution(task_id="task-9f", attempt=1, job_id="job-ab12")
+    task_hook = Execution(task_id="task-9f", attempt=0, job_id="job-ab12",
+                          execution_type="post_task", hook_name="pytest")
+    plan_hook = Execution(task_id=None, attempt=0, job_id="job-ab12",
+                          execution_type="post_plan", hook_name="deploy")
 
-    # task default type
-    assert task_attempt.execution_type == "task"
-    # opaque but deterministic: same logical run -> same id
-    assert task_attempt.execution_id == Execution(task_id="t1", attempt=2, job_id="j1").execution_id
-    # the three shapes are distinct
-    ids = {task_attempt.execution_id, plan_hook.execution_id, per_task_hook.execution_id}
-    assert len(ids) == 3
-    # plan hook has no task_id
-    assert plan_hook.task_id is None
+    assert attempt.execution_id == "job#job-ab12#task#task-9f#attempt#1"
+    assert task_hook.execution_id == "job#job-ab12#task#task-9f#post_task_hook#pytest"
+    assert plan_hook.execution_id == "job#job-ab12#post_plan_hook#deploy"
+
+
+def test_execution_id_deterministic_and_distinct():
+    from minimise.models import Execution
+    a = Execution(task_id="t1", attempt=2, job_id="j1")
+    assert a.execution_id == Execution(task_id="t1", attempt=2, job_id="j1").execution_id
+    h1 = Execution(task_id="t1", attempt=0, job_id="j1", execution_type="post_task", hook_name="ruff")
+    h2 = Execution(task_id="t1", attempt=0, job_id="j1", execution_type="post_task", hook_name="pytest")
+    assert h1.execution_id != h2.execution_id  # named hooks no longer collide
+
+
+def test_hook_dataclass_shape():
+    from minimise.models import Hook
+    script = Hook(name="Run tests", estimated_duration_min=3, command="pytest -q")
+    ref = Hook(name="security", estimated_duration_min=5)
+    assert script.command == "pytest -q"
+    assert ref.command is None
+
+
+def test_execution_to_dict_has_hook_name():
+    from minimise.models import Execution
+    d = Execution(task_id="t1", attempt=0, job_id="j1",
+                  execution_type="post_task", hook_name="pytest").to_dict()
+    assert d["hook_name"] == "pytest"
+    assert d["execution_id"].endswith("post_task_hook#pytest")
 
 
 def test_execution_to_dict_carries_new_fields():

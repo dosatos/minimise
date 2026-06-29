@@ -69,14 +69,20 @@ class Execution:
     output: Optional[str] = None
     diff_path: Optional[str] = None
     commit_sha: Optional[str] = None
+    hook_name: Optional[str] = None  # set on hooks; NULL for task attempts
 
     @property
     def execution_id(self) -> str:
-        """Deterministic opaque id for this logical run. Never parse it."""
-        return (
-            f"job_id#{self.job_id}#type#{self.execution_type}"
-            f"#task#{self.task_id or ''}#attempt#{self.attempt}"
-        )
+        """Deterministic opaque id. Readable {key}#{value} pairs; a segment is
+        present only when meaningful. Never parse it — it's the PK / resume key."""
+        parts = [f"job#{self.job_id}"]
+        if self.task_id:
+            parts.append(f"task#{self.task_id}")
+        if self.hook_name:
+            parts.append(f"{self.execution_type}_hook#{self.hook_name}")
+        else:
+            parts.append(f"attempt#{self.attempt}")
+        return "#".join(parts)
 
     def to_dict(self) -> dict:
         return {
@@ -91,6 +97,7 @@ class Execution:
             "output": self.output,
             "diff_path": self.diff_path,
             "commit_sha": self.commit_sha,
+            "hook_name": self.hook_name,
         }
 
 
@@ -120,6 +127,14 @@ class Job:
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "tasks": [t.to_dict() for t in self.tasks] if self.tasks else [],
         }
+
+class Hook(BaseModel):
+    """A named, timed lifecycle step. Has a command -> a shell script;
+    no command -> a bare name resolved from config (deferred). No type, no when."""
+    name: str
+    estimated_duration_min: int = Field(gt=0, strict=True)
+    command: Optional[str] = None
+
 
 class PlanTask(BaseModel):
     model_config = ConfigDict(extra="allow")  # preserve per-task hooks (pre_task_hook, post_task_hook)
