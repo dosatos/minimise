@@ -450,7 +450,7 @@ git commit -m "feat: hook_name column on executions (identity for named hooks)"
   - `run_shell_command(command, cwd=None, timeout=3600, env=None)` — forwards `env` to `subprocess.run(env=…)`; `env=None` keeps today's inherited-environment behavior.
   - `project_env(repo_root: Path) -> Optional[dict]` — if `<repo_root>/.venv/bin` or `<repo_root>/venv/bin` exists, return `{**os.environ, "PATH": "<venv_bin>:<PATH>", "VIRTUAL_ENV": "<venv>"}`; else `None` (caller falls back to inherited PATH).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/test_utils.py`:
 
@@ -479,12 +479,12 @@ def test_project_env_none_when_no_venv(tmp_path):
     assert project_env(tmp_path) is None
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `PYTHONPATH=src pytest tests/test_utils.py -q`
 Expected: FAIL — `run_shell_command() got unexpected keyword 'env'`; `cannot import name 'project_env'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src/minimise/utils.py`, add `import os` at top, then:
 
@@ -528,12 +528,12 @@ def project_env(repo_root: Path) -> Optional[dict]:
     return None
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `PYTHONPATH=src pytest tests/test_utils.py -q`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/minimise/utils.py tests/test_utils.py

@@ -1,3 +1,4 @@
+import os
 import subprocess
 import uuid
 from pathlib import Path
@@ -9,17 +10,12 @@ def new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:6]}"
 
 
-def run_shell_command(command: str, cwd: Optional[Path] = None, timeout: int = 3600) -> tuple[bool, str]:
-    """
-    Execute a shell command and return success status and output.
+def run_shell_command(command: str, cwd: Optional[Path] = None, timeout: int = 3600,
+                      env: Optional[dict] = None) -> tuple[bool, str]:
+    """Execute a shell command; return (success, combined stdout+stderr).
 
-    Args:
-        command: Shell command to execute
-        cwd: Working directory
-        timeout: Timeout in seconds
-
-    Returns:
-        (success, output)
+    env=None inherits the current process environment (today's behavior);
+    pass a dict to run with a replaced environment (e.g. the target repo's venv).
     """
     try:
         result = subprocess.run(
@@ -29,12 +25,33 @@ def run_shell_command(command: str, cwd: Optional[Path] = None, timeout: int = 3
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
         return result.returncode == 0, result.stdout + result.stderr
     except subprocess.TimeoutExpired:
         return False, "Command timed out"
     except Exception as e:
         return False, str(e)
+
+
+def project_env(repo_root: Path) -> Optional[dict]:
+    """Environment for running a hook inside the TARGET repo's venv (fixes BUG-4).
+
+    If the repo has a .venv/ (or venv/), prepend its bin to PATH and set
+    VIRTUAL_ENV so `pytest`/`ruff`/etc. resolve to the project's, not minimise's.
+    Returns None when no venv exists -> caller runs with inherited PATH.
+    """
+    repo_root = Path(repo_root)
+    for name in (".venv", "venv"):
+        venv = repo_root / name
+        venv_bin = venv / "bin"
+        if venv_bin.exists():
+            return {
+                **os.environ,
+                "PATH": f"{venv_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+                "VIRTUAL_ENV": str(venv),
+            }
+    return None
 
 
 def ensure_directory(path: Path) -> Path:
