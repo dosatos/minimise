@@ -26,6 +26,16 @@ from minimise.interfaces.cli._shared import (
 from minimise.interfaces.cli.results import job_results
 
 
+def job_estimate_total(tasks, plan=None) -> int:
+    """Sum of task estimates plus every hook estimate (plan- and task-level)."""
+    total = sum(t.estimated_duration_min for t in tasks)
+    if plan is not None:
+        total += sum(h.estimated_duration_min for h in plan.pre_hooks + plan.post_hooks)
+        for pt in plan.tasks:
+            total += sum(h.estimated_duration_min for h in pt.pre_hooks + pt.post_hooks)
+    return total
+
+
 @click.group(name="job")
 def job():
     """Manage jobs"""
@@ -234,7 +244,11 @@ def job_status(job_id: str, format: str):
             _error_job_not_found(job_id)
 
         # Job-level estimated-duration total, shared by both output formats.
-        est_total = sum(t.estimated_duration_min for t in job_obj.tasks)
+        try:
+            plan = job_controller.store.load_plan(job_obj.id)
+        except Exception:
+            plan = None
+        est_total = job_estimate_total(job_obj.tasks, plan)
 
         if format == "json":
             # Build JSON output with task metadata

@@ -1044,7 +1044,7 @@ git commit -m "feat: Step view-model — Gantt renders hooks by name in plan ord
 
 **Note:** `est_total` today sums `job_obj.tasks` durations. Hooks live in the plan, not the DB tasks — load the cached plan and add hook estimates. Guard: a job whose plan file is missing should still render (fall back to task-only sum).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add a focused helper test. First extract the sum into a pure function `job_estimate_total(tasks, plan) -> int` in `cli/job.py`, then:
 
@@ -1064,12 +1064,12 @@ def test_job_estimate_total_includes_hooks():
     assert job_estimate_total(tasks, plan) == 2 + 3 + 4
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `PYTHONPATH=src pytest tests/test_cli.py::test_job_estimate_total_includes_hooks -q`
 Expected: FAIL — `cannot import name 'job_estimate_total'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `cli/job.py`, add the helper:
 
@@ -1096,12 +1096,12 @@ Replace line 237 `est_total = sum(...)` with a plan-aware load:
 
 (`tasks_summary.estimated_duration_min` at line 277 and the `Estimated Duration` print at 287 already use `est_total` — no further change.)
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `PYTHONPATH=src pytest tests/test_cli.py -q`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/minimise/interfaces/cli/job.py tests/test_cli.py

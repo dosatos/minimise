@@ -2236,3 +2236,18 @@ def test_job_not_found_path_prints_message_and_exits_nonzero(runner, mock_config
     result = runner.invoke(mini, ["job", "status", "deadbeef"])
     assert result.exit_code != 0
     assert "Error: Job 'deadbeef' not found" in result.output
+
+
+def test_job_estimate_total_includes_hooks():
+    from minimise.interfaces.cli.job import job_estimate_total
+    from minimise.models import Plan, Task
+    plan = Plan.model_validate({
+        "name": "P",
+        "pre_hooks": [{"name": "init", "command": "true", "estimated_duration_min": 2}],
+        "tasks": [{"id": "t1", "name": "B", "description": "d", "goal": "g",
+                   "estimated_duration_min": 3,
+                   "post_hooks": [{"name": "pytest", "command": "p", "estimated_duration_min": 4}]}],
+    })
+    tasks = [Task(id="task-1", job_id="j1", name="B", description="d",
+                  estimated_duration_min=3, goal="g")]
+    assert job_estimate_total(tasks, plan) == 2 + 3 + 4
