@@ -55,6 +55,7 @@ def _row_to_task(row: sqlite3.Row) -> Task:
 
 
 def _row_to_execution(row: sqlite3.Row) -> Execution:
+    keys = row.keys()
     return Execution(
         task_id=row['task_id'],
         attempt=row['attempt'],
@@ -66,6 +67,7 @@ def _row_to_execution(row: sqlite3.Row) -> Execution:
         output=row['output'],
         diff_path=row['diff_path'],
         commit_sha=row['commit_sha'],
+        hook_name=row['hook_name'] if 'hook_name' in keys else None,
     )
 
 
@@ -128,7 +130,7 @@ class Database:
         finally:
             conn.close()
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def init_db(self):
         """Create/migrate the schema once per DB.
@@ -250,10 +252,15 @@ class Database:
                 output TEXT,
                 diff_path TEXT,
                 commit_sha TEXT,
+                hook_name TEXT,
                 FOREIGN KEY(job_id) REFERENCES jobs(id),
                 FOREIGN KEY(task_id) REFERENCES tasks(id)
             )
         """)
+
+        # Add hook_name for existing executions tables (no drop/backfill).
+        if 'hook_name' not in _column_names(cursor, "executions"):
+            cursor.execute("ALTER TABLE executions ADD COLUMN hook_name TEXT")
 
         cursor.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
         conn.commit()
@@ -403,13 +410,14 @@ class Database:
             cursor.execute("""
                 INSERT OR REPLACE INTO executions
                     (execution_id, job_id, task_id, execution_type, attempt, status,
-                     started_at, completed_at, output, diff_path, commit_sha)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     started_at, completed_at, output, diff_path, commit_sha, hook_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (execution.execution_id, execution.job_id, execution.task_id,
                   execution.execution_type, execution.attempt, execution.status.value,
                   execution.started_at.isoformat() if execution.started_at else None,
                   execution.completed_at.isoformat() if execution.completed_at else None,
-                  execution.output, execution.diff_path, execution.commit_sha))
+                  execution.output, execution.diff_path, execution.commit_sha,
+                  execution.hook_name))
 
     def list_executions_for_task(self, task_id: str) -> List[Execution]:
         """Fetch a task's executions in attempt order."""

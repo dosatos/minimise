@@ -464,6 +464,25 @@ def test_fresh_db_has_new_schema(tmp_path):
     assert db.list_executions_for_job("j1")[0].job_id == "j1"
 
 
+def test_execution_hook_name_round_trips(tmp_path):
+    from minimise.storage.database import Database
+    from minimise.models import Execution, Job, JobStatus, TaskStatus
+    from datetime import datetime
+    db = Database(tmp_path / "t.db")
+    db.init_db()
+    db.create_job(Job(id="j1", name="J", status=JobStatus.RUNNING,
+                      created_at=datetime.utcnow()))
+    ex = Execution(task_id="t1", attempt=0, job_id="j1",
+                   execution_type="post_task", hook_name="pytest",
+                   status=TaskStatus.FAILED, started_at=datetime.utcnow(),
+                   completed_at=datetime.utcnow())
+    db.save_execution(ex)
+    loaded = db.list_executions_for_job("j1")
+    assert len(loaded) == 1
+    assert loaded[0].hook_name == "pytest"
+    assert loaded[0].execution_id.endswith("post_task_hook#pytest")
+
+
 def test_create_job_with_tasks_is_atomic(db):
     """A failing task insert rolls back the whole job — no orphan job row."""
     import pytest

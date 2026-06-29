@@ -338,7 +338,7 @@ git commit -m "feat: plan pre_hooks/post_hooks lists replace string hook fields"
 
 **Note:** Pre-customer — the `executions` table is recreated, no backfill. Because `init_db` guards on `PRAGMA user_version == SCHEMA_VERSION`, **bump `SCHEMA_VERSION` to 2** so existing dev DBs re-run `init_db`. The `executions` table is `CREATE TABLE IF NOT EXISTS` — add the column with an `ALTER TABLE … ADD COLUMN` guard mirroring the `tasks` migration pattern (lines 187-193), so an existing table gains the column without a drop.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `tests/test_database.py`:
 
@@ -362,12 +362,12 @@ def test_execution_hook_name_round_trips(tmp_path):
     assert loaded[0].execution_id.endswith("post_task_hook#pytest")
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `PYTHONPATH=src pytest tests/test_database.py::test_execution_hook_name_round_trips -q`
 Expected: FAIL — `sqlite3.OperationalError: table executions has no column named hook_name` (or `hook_name` not read back).
 
-- [ ] **Step 3: Implement the column**
+- [x] **Step 3: Implement the column**
 
 In `database.py`, bump the version constant (line 131):
 
@@ -425,12 +425,12 @@ def _row_to_execution(row: sqlite3.Row) -> Execution:
     )
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `PYTHONPATH=src pytest tests/test_database.py -q`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/minimise/storage/database.py tests/test_database.py
