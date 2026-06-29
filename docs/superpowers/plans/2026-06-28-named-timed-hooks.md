@@ -868,7 +868,7 @@ git commit -m "feat: run task + plan hooks through HookExecutor in plan order"
 
 **Do NOT delete the legacy renderer tests.** `tests/test_terminal_ui.py` has hook-label tests that call `render_execution_table_with_gantt(..., executions=[...])` with **no `plan` arg** and assert labels like `"Pre-plan hook"`, `"Post-task hook  · Build"` (around lines 557-665). Task 7 ADDS a `plan` branch but leaves the existing `executions is not None` branch (terminal_ui.py:214-236) untouched, so these stay green. Leave them as-is — they cover the legacy path until callers migrate.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `tests/test_terminal_ui.py`:
 
@@ -921,12 +921,12 @@ def test_build_steps_brackets_plan_hooks():
     assert [s.name for s in steps] == ["init", "Build", "deploy"]  # all PENDING, plan order
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `PYTHONPATH=src pytest tests/test_terminal_ui.py -q`
 Expected: FAIL — `cannot import name 'build_steps'`.
 
-- [ ] **Step 3: Implement `Step` + `build_steps`**
+- [x] **Step 3: Implement `Step` + `build_steps`**
 
 In `terminal_ui.py`, add near the top (after imports):
 
@@ -992,7 +992,7 @@ def build_steps(plan: Plan, tasks: list, executions: list) -> list:
     return steps
 ```
 
-- [ ] **Step 4: Render `Step`s in the table**
+- [x] **Step 4: Render `Step`s in the table**
 
 Add a `plan` param to `render_execution_table_with_gantt` and a Step-driven branch (keep legacy branches intact). After the signature gains `plan: Optional[Plan] = None`, add as the FIRST branch inside the function (after `add_row` is defined):
 
@@ -1003,7 +1003,7 @@ Add a `plan` param to `render_execution_table_with_gantt` and a Step-driven bran
         return table
 ```
 
-- [ ] **Step 5: Pass the plan from the CLI**
+- [x] **Step 5: Pass the plan from the CLI**
 
 In `cli/job.py` (around line 308-317), load the cached plan and pass it:
 
@@ -1018,12 +1018,12 @@ In `cli/job.py` (around line 308-317), load the cached plan and pass it:
                 )
 ```
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [x] **Step 6: Run tests to verify they pass**
 
 Run: `PYTHONPATH=src pytest tests/test_terminal_ui.py -q`
 Expected: PASS (new Step tests + existing legacy tests).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/minimise/interfaces/terminal_ui.py src/minimise/interfaces/cli/job.py tests/test_terminal_ui.py

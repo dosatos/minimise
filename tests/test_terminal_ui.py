@@ -735,3 +735,51 @@ class TestRenderTaskTableWithGantt:
         )
         assert table.columns[0]._cells == ["Task 1", "Task 2", "Task 3"]
         assert [c.plain for c in table.columns[1]._cells] == ["pending"] * 3
+
+
+def test_build_steps_plan_order_with_pending_hook():
+    from datetime import datetime
+    from minimise.interfaces.terminal_ui import build_steps
+    from minimise.models import Plan, Execution, Task, TaskStatus
+
+    plan = Plan.model_validate({
+        "name": "P",
+        "tasks": [{
+            "id": "t1", "name": "Build", "description": "d", "goal": "g",
+            "estimated_duration_min": 3,
+            "pre_hooks": [{"name": "setup", "command": "true", "estimated_duration_min": 1}],
+            "post_hooks": [{"name": "pytest", "command": "pytest", "estimated_duration_min": 2}],
+        }],
+    })
+    tasks = [Task(id="task-1", job_id="j1", name="Build", description="d",
+                  estimated_duration_min=3, goal="g")]
+    # only the pre-hook + the task attempt have run; post-hook is pending
+    execs = [
+        Execution(task_id="task-1", attempt=0, job_id="j1", execution_type="pre_task",
+                  hook_name="setup", status=TaskStatus.COMPLETED,
+                  started_at=datetime(2026,1,1,0,0,0), completed_at=datetime(2026,1,1,0,0,1)),
+        Execution(task_id="task-1", attempt=0, job_id="j1", execution_type="task",
+                  status=TaskStatus.COMPLETED,
+                  started_at=datetime(2026,1,1,0,0,1), completed_at=datetime(2026,1,1,0,0,5)),
+    ]
+    steps = build_steps(plan, tasks, execs)
+    assert [s.name for s in steps] == ["setup", "Build  · try 1", "pytest"]
+    assert steps[0].status == TaskStatus.COMPLETED
+    assert steps[2].status == TaskStatus.PENDING  # post-hook not run, drawn from plan
+    assert steps[2].estimate == 2
+
+
+def test_build_steps_brackets_plan_hooks():
+    from minimise.interfaces.terminal_ui import build_steps
+    from minimise.models import Plan, Task
+    plan = Plan.model_validate({
+        "name": "P",
+        "pre_hooks": [{"name": "init", "command": "true", "estimated_duration_min": 1}],
+        "post_hooks": [{"name": "deploy", "command": "true", "estimated_duration_min": 5}],
+        "tasks": [{"id": "t1", "name": "Build", "description": "d", "goal": "g",
+                   "estimated_duration_min": 3}],
+    })
+    tasks = [Task(id="task-1", job_id="j1", name="Build", description="d",
+                  estimated_duration_min=3, goal="g")]
+    steps = build_steps(plan, tasks, [])
+    assert [s.name for s in steps] == ["init", "Build", "deploy"]  # all PENDING, plan order

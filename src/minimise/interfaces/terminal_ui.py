@@ -1,10 +1,67 @@
 """Terminal UI formatting for job status display."""
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 from rich.table import Table
 from rich.text import Text
-from minimise.models import Job, Task, JobStatus, TaskStatus
+from minimise.models import Job, Task, JobStatus, TaskStatus, Plan
+
+
+@dataclass
+class Step:
+    """One Gantt row — a task attempt or a hook. Name/estimate from the plan,
+    status/timing from the execution (PENDING when none)."""
+    name: str
+    estimate: Optional[int]
+    status: TaskStatus
+    started_at: Optional[datetime] = None
+    ended_at: Optional[datetime] = None
+
+
+def _match_hook(execs, execution_type, task_id, hook_name):
+    return next((e for e in execs if e.execution_type == execution_type
+                 and e.task_id == task_id and e.hook_name == hook_name), None)
+
+
+def _hook_steps(hooks, execs, execution_type, task_id):
+    steps = []
+    for hook in hooks:
+        ex = _match_hook(execs, execution_type, task_id, hook.name)
+        steps.append(Step(
+            name=hook.name, estimate=hook.estimated_duration_min,
+            status=ex.status if ex else TaskStatus.PENDING,
+            started_at=ex.started_at if ex else None,
+            ended_at=ex.completed_at if ex else None,
+        ))
+    return steps
+
+
+def build_steps(plan: Plan, tasks: list, executions: list) -> list:
+    """Assemble Gantt rows in plan order: plan.pre_hooks, then per task
+    (pre_hooks -> attempts -> post_hooks), then plan.post_hooks."""
+    steps = list(_hook_steps(plan.pre_hooks, executions, "pre_plan", None))
+    for idx, ptask in enumerate(plan.tasks):
+        task = tasks[idx] if idx < len(tasks) else None
+        task_id = task.id if task else None
+        steps += _hook_steps(ptask.pre_hooks, executions, "pre_task", task_id)
+
+        attempts = sorted(
+            (e for e in executions if e.execution_type == "task" and e.task_id == task_id),
+            key=lambda e: e.attempt,
+        )
+        if attempts:
+            for e in attempts:
+                steps.append(Step(name=f"{ptask.name}  · try {e.attempt + 1}",
+                                  estimate=ptask.estimated_duration_min, status=e.status,
+                                  started_at=e.started_at, ended_at=e.completed_at))
+        else:
+            steps.append(Step(name=ptask.name, estimate=ptask.estimated_duration_min,
+                              status=TaskStatus.PENDING))
+
+        steps += _hook_steps(ptask.post_hooks, executions, "post_task", task_id)
+    steps += _hook_steps(plan.post_hooks, executions, "post_plan", None)
+    return steps
 
 
 def _now_or_default(now: Optional[datetime]) -> datetime:
@@ -163,6 +220,7 @@ def render_execution_table_with_gantt(
     now: Optional[datetime] = None,
     executions: Optional[list] = None,
     executions_by_task: Optional[dict] = None,
+    plan: Optional[Plan] = None,
 ) -> Table:
     """
     Render task progress table with Duration, Expected, and Timeline (Gantt) columns.
@@ -210,6 +268,11 @@ def render_execution_table_with_gantt(
                 now=now,
             ),
         )
+
+    if plan is not None:
+        for step in build_steps(plan, tasks, executions or []):
+            add_row(step.name, step.status, step.started_at, step.ended_at, step.estimate)
+        return table
 
     if executions is not None:
         names = {t.id: t.name for t in tasks}
