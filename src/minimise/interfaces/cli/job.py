@@ -323,10 +323,6 @@ def job_status(job_id: str, format: str):
             if job_obj.tasks:
                 console.print(f"\n[bold]Task Progress[/bold]")
                 executions = db.list_executions_for_job(job_obj.id)
-                try:
-                    plan = job_controller.store.load_plan(job_obj.id)
-                except Exception:
-                    plan = None
                 table = render_execution_table_with_gantt(
                     job_obj,
                     job_obj.tasks,

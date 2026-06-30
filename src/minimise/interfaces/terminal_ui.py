@@ -40,7 +40,7 @@ def _hook_steps(hooks, execs, execution_type, task_id):
 def build_steps(plan: Plan, tasks: list, executions: list) -> list:
     """Assemble Gantt rows in plan order: plan.pre_hooks, then per task
     (pre_hooks -> attempts -> post_hooks), then plan.post_hooks."""
-    steps = list(_hook_steps(plan.pre_hooks, executions, "pre_plan", None))
+    steps = _hook_steps(plan.pre_hooks, executions, "pre_plan", None)
     for idx, ptask in enumerate(plan.tasks):
         task = tasks[idx] if idx < len(tasks) else None
         task_id = task.id if task else None

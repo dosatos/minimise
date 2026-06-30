@@ -326,7 +326,7 @@ docs/
 ## Status
 
 ✅ **Production-ready backend**
-- 350/350 tests passing
+- 358/358 tests passing
 - All core components complete
 - Full deferred execution workflow implemented
 - Tested with Anthropic & Bedrock backends

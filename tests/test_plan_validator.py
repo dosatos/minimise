@@ -157,3 +157,21 @@ def test_bare_name_hook_without_command_rejected():
                 "post_hooks": [{"name": "security", "estimated_duration_min": 5}],
             }],
         })
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n\t"])
+def test_blank_command_hook_rejected(blank):
+    import pytest
+    from pydantic import ValidationError
+    from minimise.models import Plan
+    # A blank/whitespace command is as good as no command — reject it rather
+    # than later running an empty shell string.
+    with pytest.raises(ValidationError, match="command"):
+        Plan.model_validate({
+            "name": "P",
+            "pre_hooks": [{"name": "noop", "command": blank, "estimated_duration_min": 1}],
+            "tasks": [{
+                "id": "t1", "name": "Build", "description": "d", "goal": "g",
+                "estimated_duration_min": 3,
+            }],
+        })

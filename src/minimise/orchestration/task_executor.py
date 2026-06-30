@@ -7,7 +7,7 @@ from minimise.agents.harness import AgentHarness, ClaudeCodeHarness
 
 
 class TaskExecutor:
-    """Executes individual tasks with retry logic and hooks."""
+    """Executes individual tasks with retry logic. Hooks run in JobExecutor."""
 
     MAX_RETRIES = 3
 

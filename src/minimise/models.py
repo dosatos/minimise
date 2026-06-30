@@ -141,7 +141,7 @@ def _validate_hook_list(hooks: list["Hook"], where: str) -> None:
     if len(names) != len(set(names)):
         raise ValueError(f"hook names must be unique within {where}")
     for h in hooks:
-        if h.command is None:
+        if h.command is None or not h.command.strip():
             # Bare name = a config-hook reference; resolver not built yet.
             raise ValueError(
                 f"hook '{h.name}' in {where} has no command "
