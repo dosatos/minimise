@@ -81,3 +81,33 @@ def _captured_execution(executor, hook):
     executor.store = type("S", (), {"save_execution": lambda self, e: captured.append(e)})()
     executor.run(hook, "post_task", task_id="t1")
     return captured[0]
+
+
+def test_hook_log_records_carry_step(tmp_path):
+    log = tmp_path / "job.log"
+    HookExecutor(job_id="j1", log_path=log, backend=JsonlLogBackend()).run(
+        Hook(name="lint", shell="exit 0", estimated_duration_min=1),
+        "pre_plan", task_id=None)
+    recs = [json.loads(l) for l in log.read_text().splitlines()]
+    assert recs and all(r["step"] == "lint" for r in recs)
+
+
+def test_failing_hook_multiline_output_makes_one_record_per_line(tmp_path):
+    log = tmp_path / "job.log"
+    HookExecutor(job_id="j1", log_path=log, backend=JsonlLogBackend()).run(
+        Hook(name="pytest", shell="printf 'line1\\nline2\\n'; exit 1",
+             estimated_duration_min=1),
+        "post_task", task_id="t1")
+    errs = [json.loads(l) for l in log.read_text().splitlines() if json.loads(l)["level"] == "error"]
+    msgs = [r["message"] for r in errs]
+    assert "line1" in msgs and "line2" in msgs
+    assert all(r["step"] == "pytest" for r in errs)
+
+
+def test_empty_output_hook_still_emits_status_line(tmp_path):
+    log = tmp_path / "job.log"
+    HookExecutor(job_id="j1", log_path=log, backend=JsonlLogBackend()).run(
+        Hook(name="noop", shell="exit 0", estimated_duration_min=1),
+        "pre_plan", task_id=None)
+    recs = [json.loads(l) for l in log.read_text().splitlines()]
+    assert [r for r in recs if r["level"] == "info" and r["step"] == "noop"]

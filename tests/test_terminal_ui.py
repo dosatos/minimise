@@ -417,12 +417,13 @@ class TestRenderTaskTableWithGantt:
         # Check that table was created
         assert table is not None
         # Check that table has the expected columns
-        assert len(table.columns) == 5
+        assert len(table.columns) == 6
         assert table.columns[0].header == "Task Name"
         assert table.columns[1].header == "Status"
         assert table.columns[2].header == "Duration"
         assert table.columns[3].header == "Expected"
         assert table.columns[4].header == "Timeline (relative)"
+        assert table.columns[5].header == "Type"
 
     def test_render_execution_table_with_gantt_row_count(self, sample_job, sample_tasks, base_time):
         """Test that table has correct number of rows."""
@@ -437,7 +438,7 @@ class TestRenderTaskTableWithGantt:
 
         assert table is not None
         assert len(table.rows) == 0
-        assert len(table.columns) == 5
+        assert len(table.columns) == 6
 
     def test_render_execution_table_with_gantt_contains_duration_data(self, sample_job, sample_tasks, base_time):
         """Test that table includes duration information."""
@@ -783,3 +784,66 @@ def test_build_steps_brackets_plan_hooks():
                   estimated_duration_min=3, goal="g")]
     steps = build_steps(plan, tasks, [])
     assert [s.name for s in steps] == ["init", "Build", "deploy"]  # all PENDING, plan order
+
+
+def test_type_column_marks_hook_vs_task():
+    from minimise.interfaces.terminal_ui import render_execution_table_with_gantt
+    from minimise.models import Job, JobStatus, Plan, Task
+
+    job = Job(id="j1", name="J", plan_path="p.yaml", status=JobStatus.RUNNING)
+    plan = Plan.model_validate({
+        "name": "P",
+        "pre_hooks": [{"name": "init", "shell": "true", "estimated_duration_min": 1}],
+        "tasks": [{"id": "t1", "name": "Build", "description": "d", "goal": "g",
+                   "estimated_duration_min": 3}],
+    })
+    tasks = [Task(id="task-1", job_id="j1", name="Build", description="d",
+                  estimated_duration_min=3, goal="g")]
+    table = render_execution_table_with_gantt(job, tasks, plan=plan)
+    assert table.columns[5]._cells == ["hook", "task"]
+
+
+def test_project_steps_chains_pending_after_completed():
+    from minimise.interfaces.terminal_ui import project_steps, Step
+    js = datetime(2026, 1, 1, 0, 0, 0)
+    # a completed step [0..60s], then a pending step estimated 2 min
+    steps = [
+        Step(name="a", estimate=1, status=TaskStatus.COMPLETED,
+             started_at=js, ended_at=js + timedelta(seconds=60)),
+        Step(name="b", estimate=2, status=TaskStatus.PENDING),
+    ]
+    now = js + timedelta(seconds=60)
+    placements, total_secs, now_off = project_steps(steps, js, now)
+    # pending step starts where the completed one ended
+    assert placements[0][2] == 60          # proj end of completed
+    assert placements[1][0] == 60          # pending starts at cursor
+    assert placements[1][2] == 60 + 120    # + 2min estimate
+    assert total_secs == 180
+    assert now_off == 60
+
+
+def test_render_projected_bar_solid_light_and_now_line():
+    from minimise.interfaces.terminal_ui import render_projected_bar
+    # actual [0..90], projected to 180, total 180, now at 90 -> boundary
+    bar = render_projected_bar(0, 90, 180, total_secs=180, now_off=90, width=28)
+    assert len(bar) == 28
+    assert "█" in bar and "░" in bar and "╎" in bar
+    # first half solid, second half light with a now-line where they meet
+    assert bar[0] == "█"
+    assert bar[-1] == "░"
+    now_col = min(27, int((90 / 180) * 28))
+    assert bar[now_col] == "╎"  # boundary col is not solid actual
+
+
+def test_project_steps_total_is_elapsed_plus_remaining():
+    from minimise.interfaces.terminal_ui import project_steps, Step
+    js = datetime(2026, 1, 1, 0, 0, 0)
+    now = js + timedelta(seconds=30)
+    # running step started at 0, elapsed 30s, est 1min; pending est 1min
+    steps = [
+        Step(name="a", estimate=1, status=TaskStatus.RUNNING, started_at=js),
+        Step(name="b", estimate=1, status=TaskStatus.PENDING),
+    ]
+    placements, total_secs, now_off = project_steps(steps, js, now)
+    # elapsed 30s + remaining: running projects to 60, pending adds 60 -> 120
+    assert total_secs == 120

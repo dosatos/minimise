@@ -47,12 +47,16 @@ class HookExecutor:
         if self.store:
             self.store.save_execution(ex)
         if self.log_path and self.backend:
+            fields = {"execution_id": ex.execution_id, "type": execution_type, "step": hook.name}
+            level = "error" if not success else "info"
             self.backend.record(
-                self.log_path,
-                {"execution_id": ex.execution_id, "type": execution_type},
-                f"{hook.name} — {'ok' if success else 'failed'}: {output.strip()[:500]}",
-                level="error" if not success else "info",
+                self.log_path, fields,
+                f"{hook.name} — {'ok' if success else 'failed'}",
+                level=level,
             )
+            for line in output.splitlines():
+                if line.strip():
+                    self.backend.record(self.log_path, fields, line, level=level)
         if not success:
             print(f"Hook '{hook.name}' ({execution_type}) failed: {output}")
         return success, output

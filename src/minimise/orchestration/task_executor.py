@@ -65,7 +65,11 @@ class TaskExecutor:
                 "task_goal": task.goal,
                 "handoff_path": str(handoff_path),
                 "log_path": str(job_log_path),
-                "log_fields": {"execution_id": ex.execution_id, "type": ex.execution_type},
+                "log_fields": {
+                    "execution_id": ex.execution_id,
+                    "type": ex.execution_type,
+                    "step": task.name + (f"  · try {attempt + 1}" if attempt > 0 else ""),
+                },
             })
             final_output = output
 

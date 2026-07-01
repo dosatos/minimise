@@ -17,6 +17,7 @@ class Step:
     status: TaskStatus
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
+    is_hook: bool = False
 
 
 def _match_hook(execs, execution_type, task_id, hook_name):
@@ -33,6 +34,7 @@ def _hook_steps(hooks, execs, execution_type, task_id):
             status=ex.status if ex else TaskStatus.PENDING,
             started_at=ex.started_at if ex else None,
             ended_at=ex.completed_at if ex else None,
+            is_hook=True,
         ))
     return steps
 
@@ -214,6 +216,57 @@ def render_gantt_bar(
     )
 
 
+def project_steps(steps, job_start, now):
+    """Project the whole plan onto one shared timeline (seconds from job_start).
+
+    Walks steps in order carrying a projected cursor so pending work chains
+    after the last known end. Returns (placements, total_secs, now_off) where
+    each placement is (start_off, actual_end_off, proj_end_off) in seconds."""
+    placements = []
+    cursor = 0.0
+    for step in steps:
+        est = (step.estimate or 0) * 60
+        done = step.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.STOPPED)
+        if done and step.started_at and step.ended_at:
+            start_off = (step.started_at - job_start).total_seconds()
+            actual_end_off = proj_end_off = (step.ended_at - job_start).total_seconds()
+        elif step.status == TaskStatus.RUNNING and step.started_at:
+            start_off = (step.started_at - job_start).total_seconds()
+            actual_end_off = (now - job_start).total_seconds()
+            proj_end_off = max(actual_end_off, start_off + est)
+        else:  # PENDING (or no start time)
+            start_off = cursor
+            actual_end_off = start_off
+            proj_end_off = start_off + est
+        start_off = max(0, start_off)
+        actual_end_off = max(0, actual_end_off)
+        proj_end_off = max(0, proj_end_off)
+        cursor = max(cursor, proj_end_off)
+        placements.append((start_off, actual_end_off, proj_end_off))
+    now_off = max(0, (now - job_start).total_seconds())
+    total_secs = max(cursor, now_off, 1)  # never divide by zero
+    return placements, total_secs, now_off
+
+
+def render_projected_bar(start_off, actual_end_off, proj_end_off,
+                         total_secs, now_off, width=28):
+    """One row on the shared projected timeline: solid actual, light projected
+    estimate, then a single "╎" now-line unless it lands on solid actual."""
+    cols = []
+    for i in range(width):
+        t = (i / width) * total_secs
+        if start_off <= t < actual_end_off:
+            cols.append("█")
+        elif actual_end_off <= t < proj_end_off:
+            cols.append("░")
+        else:
+            cols.append(" ")
+    now_col = min(width - 1, int((now_off / total_secs) * width))
+    if cols[now_col] != "█":
+        cols[now_col] = "╎"
+    return "".join(cols)
+
+
 def render_execution_table_with_gantt(
     job: Job,
     tasks: list[Task],
@@ -251,15 +304,17 @@ def render_execution_table_with_gantt(
     table.add_column("Duration", style="yellow")
     table.add_column("Expected", style="dim")
     table.add_column("Timeline (relative)", style="green")
+    table.add_column("Type", style="dim")
 
-    def add_row(name, status, started_at, completed_at, estimated_duration_min):
+    def add_row(name, status, started_at, completed_at, estimated_duration_min, is_hook,
+                timeline=None):
         is_running = status == TaskStatus.RUNNING
         table.add_row(
             name,
             Text(status.value, style=get_status_color(status)),
             format_duration(started_at, completed_at, is_running=is_running, now=now),
             humanize_duration(estimated_duration_min * 60) if estimated_duration_min else "—",
-            render_gantt_bar(
+            timeline if timeline is not None else render_gantt_bar(
                 started_at,
                 completed_at,
                 job.started_at,
@@ -267,11 +322,21 @@ def render_execution_table_with_gantt(
                 is_running=is_running,
                 now=now,
             ),
+            "hook" if is_hook else "task",
         )
 
     if plan is not None:
-        for step in build_steps(plan, tasks, executions or []):
-            add_row(step.name, step.status, step.started_at, step.ended_at, step.estimate)
+        steps = build_steps(plan, tasks, executions or [])
+        placements = total_secs = now_off = None
+        if job.started_at:
+            placements, total_secs, now_off = project_steps(steps, job.started_at, now)
+        for i, step in enumerate(steps):
+            timeline = None
+            if placements is not None:
+                s, a, p = placements[i]
+                timeline = render_projected_bar(s, a, p, total_secs, now_off)
+            add_row(step.name, step.status, step.started_at, step.ended_at,
+                    step.estimate, step.is_hook, timeline=timeline)
         return table
 
     if executions is not None:
@@ -291,11 +356,12 @@ def render_execution_table_with_gantt(
                 label, expected = f"Pre-task hook  · {tname}", None
             else:  # post_task
                 label, expected = f"Post-task hook  · {tname}", None
-            add_row(label, ex.status, ex.started_at, ex.completed_at, expected)
+            add_row(label, ex.status, ex.started_at, ex.completed_at, expected,
+                    ex.execution_type != "task")
         # PENDING tasks (no task-type execution yet) shown as placeholder rows in plan order.
         for task in tasks:
             if task.id not in started_task_ids:
-                add_row(task.name, TaskStatus.PENDING, None, None, task.estimated_duration_min)
+                add_row(task.name, TaskStatus.PENDING, None, None, task.estimated_duration_min, False)
         return table
 
     for task in tasks:
@@ -308,6 +374,7 @@ def render_execution_table_with_gantt(
                     ex.started_at,
                     ex.completed_at,
                     task.estimated_duration_min,
+                    False,
                 )
         else:
             add_row(
@@ -316,6 +383,7 @@ def render_execution_table_with_gantt(
                 task.started_at,
                 task.completed_at,
                 task.estimated_duration_min,
+                False,
             )
 
     return table

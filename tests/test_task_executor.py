@@ -608,7 +608,47 @@ def test_execute_task_passes_execution_log_fields_to_harness(temp_db_dir, db, gi
     expected_id = Execution(
         job_id=job_id, task_id=task.id, attempt=0, execution_type="task"
     ).execution_id
-    assert log_fields == {"execution_id": expected_id, "type": "task"}
+    assert log_fields == {"execution_id": expected_id, "type": "task", "step": task.name}
+
+
+def test_execute_task_step_is_task_name_on_first_attempt(temp_db_dir, db, git_repo):
+    git_tracker = GitTracker(git_repo)
+    fake = Mock(spec=AgentHarness)
+    fake.run.return_value = HarnessResult(success=True, output="ok")
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
+    job_id, task = _setup_job_and_task(db, git_tracker)
+
+    executor.execute_task(task, job_id, "")
+
+    assert fake.run.call_args.kwargs["log_fields"]["step"] == task.name
+
+
+def test_execute_task_step_marks_retry_attempt(temp_db_dir, db, git_repo):
+    """A retried attempt's `step` ends with '· try 2'."""
+    from minimise.models import Job, JobStatus
+
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
+    job_id = str(uuid.uuid4())
+    db.create_job(Job(id=job_id, name="J", status=JobStatus.PENDING,
+                      base_commit=git_tracker.get_current_commit()))
+    task = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
+                name="Implement endpoint", description="d", status=TaskStatus.PENDING)
+    db.create_task(task)
+
+    seen_steps = []
+    calls = {"n": 0}
+
+    def mock_invoke(context):
+        seen_steps.append(context["log_fields"]["step"])
+        calls["n"] += 1
+        return (calls["n"] > 1), "boom" if calls["n"] == 1 else "ok"
+
+    executor._invoke_claude_code = mock_invoke
+    executor.execute_task(task, job_id, "")
+
+    assert seen_steps[0] == "Implement endpoint"
+    assert seen_steps[1].endswith("· try 2")
 
 
 def test_execute_task_writes_no_banner_to_log(temp_db_dir, db, git_repo):
