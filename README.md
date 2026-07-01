@@ -256,7 +256,7 @@ PENDING ──[start]──> RUNNING ──[complete]──> COMPLETED
 
 ## Architecture
 
-- **CLI** → **REST API** (Flask + WebSocket)
+- **CLI** → **REST API** (Flask)
 - **Job Manager** → orchestrates tasks sequentially
 - **Task Executor** → runs tasks with retry (3x) & hooks
 - **Handover Manager** → passes context between tasks
@@ -322,6 +322,22 @@ The example above uses `/mini-plan-review`, a Claude Code skill that reads the p
 stdin and prints a `REVIEW: PASS` / `REVIEW: FAIL` verdict plus a findings JSON. Point
 the hook at whatever reviewer fits your project.
 
+**Reviewing the produced code, not just the plan.** The same contract works as a
+`post_task` hook, where the reviewer runs *after* a task's commit and sees the real
+diff (`git diff`). Set `on_failure: retry` and a failing review re-runs the task with
+the findings fed back in — a bounded fix-loop capped by the task's retry budget.
+
+```yaml
+tasks:
+  - name: implement-feature
+    # ...
+    post_hooks:
+      - name: review-implementation
+        estimated_duration_min: 8
+        on_failure: retry   # failing review re-runs the task with findings; capped by retries
+        shell: "claude -p '/mini-implementation-review' --dangerously-skip-permissions | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+```
+
 ## Development
 
 ```bash
@@ -348,9 +364,7 @@ src/minimise/
 ├── database.py         # SQLite
 └── models.py           # Data classes
 
-examples/
-└── example-plan.yaml   # Example plan
-
+examples/               # Sample plans
 docs/
 └── architecture/       # System diagrams
 ```
@@ -358,32 +372,4 @@ docs/
 ## More Info
 
 - **TESTING.md** — detailed testing guide
-- **examples/example-plan.yaml** — full example with 5 tasks
-
-## Status
-
-✅ **Production-ready backend**
-- 358/358 tests passing
-- All core components complete
-- Full deferred execution workflow implemented
-- Tested with Anthropic & Bedrock backends
-- Ready for multi-job orchestration
-
-### Core Features
-- ✅ Deterministic task sequencing with retry logic (3x)
-- ✅ Fresh context per task via structured handover
-- ✅ Git-based state validation and diff tracking (per-task commits)
-- ✅ Job timing & progress monitoring (accurate task durations)
-- ✅ Concurrent job orchestration
-- ✅ **Deferred execution workflow** (new/show/start/stop/resume)
-- ✅ Job lifecycle management (PENDING → RUNNING → COMPLETED/FAILED/STOPPED)
-- ✅ Named, timed pre/post hooks (plan- and task-level) — run in the project venv, render on the Gantt, queryable in the job log
-- ✅ Failed plan persistence & recovery (automatic lock release)
-- ✅ Results retrieval (logs, diffs, full context)
-- ✅ REST API + WebSocket support
-- ✅ SQLite persistence
-
-### Next Phase
-- Real-time job monitoring dashboard
-- Advanced filtering and bulk operations
-- Additional output formats (CSV, HTML reports)
+- **examples/** — sample plans
