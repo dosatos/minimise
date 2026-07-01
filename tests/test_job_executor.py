@@ -110,6 +110,59 @@ def test_post_task_hook_failure_fails_task(temp_db_dir, db, git_repo):
     assert "Post-task hook failed" in failed.output
 
 
+def test_post_task_hook_retry_reruns_with_findings(temp_db_dir, db, git_repo, tmp_path):
+    """on_failure=retry: hook fails first attempt, agent re-runs seeing findings."""
+    git_tracker = GitTracker(git_repo)
+    store = JobStore(db, temp_db_dir)
+    # A hook that fails while a sentinel file is absent, then passes once present.
+    flag = tmp_path / "fixed"
+    job, plan, t1 = _single_task_job(
+        db, git_tracker,
+        post=[{"name": "gate", "shell": f"test -f {flag} && echo PASS || (echo NEEDS_FIX; exit 1)",
+               "estimated_duration_min": 1, "on_failure": "retry"}])
+
+    class FixOnRetryHarness(HandoffWritingHarness):
+        def run(self, prompt, **kw):
+            r = super().run(prompt, **kw)
+            if len(self.prompts) >= 2:  # second attempt "fixes" it
+                flag.write_text("done")
+            return r
+
+    harness = FixOnRetryHarness()
+    executor = JobExecutor(TaskExecutor(store, git_tracker, harness=harness), HookExecutor())
+    assert executor.execute(job, plan) is True
+    assert len(harness.prompts) == 2  # re-ran once
+    assert "NEEDS_FIX" in harness.prompts[1]  # findings fed into retry
+    assert "Post-task review findings" in harness.prompts[1]
+    # The agent DID write a handoff on attempt 0, so the findings ride the real
+    # agent handoff (prepended), NOT _read_handoff's empty-handoff fallback —
+    # if they only survived via the fallback, this invariant would be masked.
+    assert "TASK1_AGENT_HANDOFF marker" in harness.prompts[1]
+    assert "(agent-written handoff)" in harness.prompts[1]
+    assert db.get_task(t1.id).status == TaskStatus.COMPLETED
+
+
+def test_post_task_hook_skip_never_blocks(temp_db_dir, db, git_repo):
+    """on_failure=skip: nonzero hook is recorded but the task still completes."""
+    git_tracker = GitTracker(git_repo)
+    store = JobStore(db, temp_db_dir)
+    job, plan, t1 = _single_task_job(
+        db, git_tracker,
+        post=[{"name": "flaky", "shell": "exit 1", "estimated_duration_min": 1,
+               "on_failure": "skip"}])
+
+    harness = HandoffWritingHarness()
+    # Store-backed HookExecutor so the failing hook is persisted as an Execution.
+    hooks = HookExecutor(store=store, job_id=job.id, repo_root=git_repo)
+    executor = JobExecutor(TaskExecutor(store, git_tracker, harness=harness), hooks)
+    assert executor.execute(job, plan) is True
+    assert len(harness.prompts) == 1  # no retry
+    assert db.get_task(t1.id).status == TaskStatus.COMPLETED
+    # The skipped hook still ran and was recorded, marked FAILED but non-blocking.
+    flaky = [e for e in db.list_executions_for_task(t1.id) if e.hook_name == "flaky"]
+    assert len(flaky) == 1 and flaky[0].status == TaskStatus.FAILED
+
+
 def test_pre_task_hook_failure_skips_task(temp_db_dir, db, git_repo):
     git_tracker = GitTracker(git_repo)
     store = JobStore(db, temp_db_dir)

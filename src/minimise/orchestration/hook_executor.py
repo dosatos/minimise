@@ -24,19 +24,26 @@ class HookExecutor:
         self.backend = backend
 
     def run(self, hook: Hook, execution_type: str, task_id: Optional[str],
-            stdin: Optional[str] = None) -> bool:
-        """Run one hook in the project env; record + log; return success."""
+            stdin: Optional[str] = None) -> tuple[bool, str]:
+        """Run one hook in the project env; record + log; return (success, output)."""
         started_at = datetime.utcnow()
-        env = project_env(self.repo_root) if self.repo_root else None
-        success, output = run_shell_command(hook.shell, cwd=self.repo_root, env=env, stdin=stdin)
-        completed_at = datetime.utcnow()
-
+        # Record RUNNING before the shell runs so the status table shows the hook
+        # as running (a `claude -p` reviewer can take minutes). save_execution is
+        # keyed on execution_id, so the post-run save below upserts this row in place.
         ex = Execution(
             job_id=self.job_id, task_id=task_id, execution_type=execution_type,
-            attempt=0, hook_name=hook.name,
-            status=TaskStatus.COMPLETED if success else TaskStatus.FAILED,
-            started_at=started_at, completed_at=completed_at, output=output,
+            attempt=0, hook_name=hook.name, status=TaskStatus.RUNNING,
+            started_at=started_at,
         )
+        if self.store:
+            self.store.save_execution(ex)
+
+        env = project_env(self.repo_root) if self.repo_root else None
+        success, output = run_shell_command(hook.shell, cwd=self.repo_root, env=env, stdin=stdin)
+
+        ex.status = TaskStatus.COMPLETED if success else TaskStatus.FAILED
+        ex.completed_at = datetime.utcnow()
+        ex.output = output
         if self.store:
             self.store.save_execution(ex)
         if self.log_path and self.backend:
@@ -48,12 +55,12 @@ class HookExecutor:
             )
         if not success:
             print(f"Hook '{hook.name}' ({execution_type}) failed: {output}")
-        return success
+        return success, output
 
 
 def demo():
-    assert HookExecutor().run(Hook(name="ok", shell="exit 0", estimated_duration_min=1), "post_task", "t1") is True
-    assert HookExecutor().run(Hook(name="bad", shell="exit 1", estimated_duration_min=1), "pre_plan", None) is False
+    assert HookExecutor().run(Hook(name="ok", shell="exit 0", estimated_duration_min=1), "post_task", "t1")[0] is True
+    assert HookExecutor().run(Hook(name="bad", shell="exit 1", estimated_duration_min=1), "pre_plan", None)[0] is False
     print("OK")
 
 

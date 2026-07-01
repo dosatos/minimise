@@ -7,12 +7,12 @@ from minimise.logging.backend import JsonlLogBackend
 
 def test_run_success_returns_true():
     h = Hook(name="ok", shell="exit 0", estimated_duration_min=1)
-    assert HookExecutor().run(h, "post_task", task_id="t1") is True
+    assert HookExecutor().run(h, "post_task", task_id="t1")[0] is True
 
 
 def test_run_failure_returns_false():
     h = Hook(name="bad", shell="exit 1", estimated_duration_min=1)
-    assert HookExecutor().run(h, "post_task", task_id="t1") is False
+    assert HookExecutor().run(h, "post_task", task_id="t1")[0] is False
 
 
 def test_records_execution_with_hook_name(tmp_path):

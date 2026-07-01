@@ -27,6 +27,7 @@ class TaskExecutor:
         job_id: str,
         handover_context: str,
         next_task: Optional[Task] = None,
+        verify=None,
     ) -> tuple[bool, str]:
         """Execute a task with retries; returns (success, output_or_handover).
 
@@ -69,6 +70,28 @@ class TaskExecutor:
             final_output = output
 
             if success:
+                # verify (post_task hooks) gates the commit. None => today's behavior.
+                if verify is not None:
+                    outcome, combined = verify(attempt)
+                    if outcome == "fail":
+                        msg = f"Post-task hook failed\n{combined}"
+                        self.store.mark_task_failed(task, msg)
+                        return False, msg
+                    if outcome == "retry":
+                        if attempt >= self.MAX_RETRIES:
+                            msg = f"Post-task hook failed (retries exhausted)\n{combined}"
+                            self.store.mark_task_failed(task, msg)
+                            return False, msg
+                        self.store.record_attempt(task, attempt, combined)
+                        # Agent succeeded and wrote its handoff, so build the next
+                        # context unconditionally and PREPEND the review findings —
+                        # can't rely on build_retry_prompt's empty-handoff fallback.
+                        base_context = self._read_handoff(
+                            handoff_path,
+                            lambda: HandoverManager.build_retry_prompt(handover_context, task, attempt, output),
+                        )
+                        context = f"## Post-task review findings (fix these)\n\n{combined}\n\n{base_context}"
+                        continue
                 final_success = True
                 break
             if attempt < self.MAX_RETRIES:

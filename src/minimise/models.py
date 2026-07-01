@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -134,13 +134,20 @@ class Hook(BaseModel):
     name: str
     estimated_duration_min: int = Field(gt=0, strict=True)
     shell: Optional[str] = None
+    on_failure: Literal["fail", "retry", "skip"] = "fail"
 
 
 def _validate_hook_list(hooks: list["Hook"], where: str) -> None:
     names = [h.name for h in hooks]
     if len(names) != len(set(names)):
         raise ValueError(f"hook names must be unique within {where}")
+    is_task_post = "pre_hooks" not in where and not where.startswith("plan ")
     for h in hooks:
+        if h.on_failure != "fail" and not is_task_post:
+            raise ValueError(
+                f"hook '{h.name}' in {where} has on_failure='{h.on_failure}', "
+                "which (any non-default value) is only valid for a task's post_hooks"
+            )
         if h.shell is None or not h.shell.strip():
             # Bare name = a config-hook reference; resolver not built yet.
             raise ValueError(

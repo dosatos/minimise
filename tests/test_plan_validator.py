@@ -159,6 +159,50 @@ def test_bare_name_hook_without_command_rejected():
         })
 
 
+def test_on_failure_skip_on_plan_post_hooks_rejected():
+    # Non-default on_failure is only honored on a task's post_hooks.
+    with pytest.raises(ValidationError, match="only valid for a task"):
+        Plan.model_validate({
+            "name": "P",
+            "post_hooks": [{"name": "deploy", "shell": "deploy.sh",
+                            "estimated_duration_min": 5, "on_failure": "skip"}],
+            "tasks": [{
+                "id": "t1", "name": "Build", "description": "d", "goal": "g",
+                "estimated_duration_min": 3,
+            }],
+        })
+
+
+def test_on_failure_skip_on_task_pre_hooks_rejected():
+    with pytest.raises(ValidationError, match="only valid for a task"):
+        Plan.model_validate({
+            "name": "P",
+            "tasks": [{
+                "id": "t1", "name": "Build", "description": "d", "goal": "g",
+                "estimated_duration_min": 3,
+                "pre_hooks": [{"name": "setup", "shell": "make init",
+                               "estimated_duration_min": 1, "on_failure": "skip"}],
+            }],
+        })
+
+
+def test_on_failure_accepted_on_task_post_hooks():
+    plan = Plan.model_validate({
+        "name": "P",
+        "tasks": [{
+            "id": "t1", "name": "Build", "description": "d", "goal": "g",
+            "estimated_duration_min": 3,
+            "post_hooks": [
+                {"name": "tests", "shell": "pytest -q",
+                 "estimated_duration_min": 3, "on_failure": "skip"},
+                {"name": "lint", "shell": "ruff check",
+                 "estimated_duration_min": 1, "on_failure": "retry"},
+            ],
+        }],
+    })
+    assert [h.on_failure for h in plan.tasks[0].post_hooks] == ["skip", "retry"]
+
+
 @pytest.mark.parametrize("blank", ["", "   ", "\n\t"])
 def test_blank_command_hook_rejected(blank):
     # A blank/whitespace command is as good as no command — reject it rather

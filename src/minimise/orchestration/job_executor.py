@@ -22,10 +22,27 @@ class JobExecutor:
 
     def _run_hooks(self, hooks, execution_type, task_id, stdin=None) -> bool:
         for hook in hooks:
-            if not self.hook_executor.run(hook, execution_type, task_id, stdin=stdin):
+            ok, _ = self.hook_executor.run(hook, execution_type, task_id, stdin=stdin)
+            if not ok:
                 print(f"{execution_type} hook '{hook.name}' failed")
                 return False
         return True
+
+    def _make_post_verify(self, hooks, task_id, stdin):
+        """Closure run after each successful attempt: run post_task hooks in
+        order, mapping on_failure to (outcome, combined_output)."""
+        def verify(attempt):
+            combined = ""
+            for hook in hooks:
+                ok, output = self.hook_executor.run(hook, "post_task", task_id, stdin=stdin)
+                if ok:
+                    continue
+                combined += f"### {hook.name}\n{output}\n"
+                if hook.on_failure == "skip":
+                    continue  # recorded, non-blocking
+                return hook.on_failure, combined  # "retry" or "fail"
+            return "ok", combined
+        return verify
 
     def execute(self, job: Job, plan: Plan) -> bool:
         """Run all of a job's tasks (and plan hooks); returns True on success."""
@@ -47,13 +64,10 @@ class JobExecutor:
 
             success, output = self.task_executor.execute_task(
                 task, job.id, handover, next_task=next_task,
+                verify=self._make_post_verify(post, task.id, plan_yaml),
             )
             if not success:
                 print(f"Task {task.name} failed: {output}")
-                return False
-
-            if not self._run_hooks(post, "post_task", task.id, stdin=plan_yaml):
-                self.task_executor.store.mark_task_failed(task, "Post-task hook failed")
                 return False
 
             # execute_task returns the completed task's handoff for the next one.
