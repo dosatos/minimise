@@ -285,8 +285,42 @@ tasks:
 Each hook shows on the Gantt by name with its estimate, and its output is
 queryable via `mini job logs --query`. A failed `post_hook` fails the task.
 
-Every hook receives the plan (YAML) on stdin, so a `pre_plan` hook can review the
-plan before implementation — e.g. `shell: "claude -p 'review the plan on stdin' | grep -q FAIL && exit 1 || exit 0"`. A nonzero exit aborts the run.
+### Plan review (bring your own reviewer)
+
+There is no built-in review gate. Every hook receives the plan (YAML) on
+**stdin**, so review is just a `pre_plan` hook you opt into: a command reads the
+plan, decides pass/fail, and **its exit code gates the run** — a nonzero exit
+aborts the job before any task runs. No hook means no review.
+
+```yaml
+pre_hooks:
+  - name: review-plan
+    estimated_duration_min: 5
+    # tee: print the review (so it lands in the logs), THEN gate on the verdict.
+    shell: "claude -p '/mini-plan-review' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+```
+
+**Writing your own reviewer.** A reviewer is any command that:
+
+1. Reads the plan YAML from `stdin` (the framework pipes it in).
+2. Prints its findings to stdout/stderr — minimise captures this into the hook's
+   Execution record, so it shows up in `mini job logs <job-id>`.
+3. Exits **nonzero to block**, zero to pass.
+
+It can be an LLM (`claude -p '<prompt>'`), a linter, a `jq`/`grep` policy check, or a
+script — anything that honors that contract. Two gotchas:
+
+- **Don't pipe straight into `grep -q`** — it swallows stdout, leaving an exit code
+  with no explanation. Use `tee /dev/stderr | grep -q ...` (as above) so the findings
+  are still recorded.
+- `claude -p` always exits 0 on a successful run regardless of the verdict, so an
+  agent reviewer must print a sentinel (e.g. `REVIEW: FAIL`) that your `shell:` string
+  greps to set the exit code. For structured parsing use
+  `claude -p '...' --output-format json | jq -e ...`.
+
+The example above uses `/mini-plan-review`, a Claude Code skill that reads the plan on
+stdin and prints a `REVIEW: PASS` / `REVIEW: FAIL` verdict plus a findings JSON. Point
+the hook at whatever reviewer fits your project.
 
 ## Development
 
