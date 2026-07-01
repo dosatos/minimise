@@ -65,3 +65,4 @@ docs/plans/*.md
 
 # Understand-Anything knowledge graph (untracked tooling output)
 .understand-anything/
+review.json

@@ -129,11 +129,11 @@ class Job:
         }
 
 class Hook(BaseModel):
-    """A named, timed lifecycle step. Has a command -> a shell script;
-    no command -> a bare name resolved from config (deferred). No type, no when."""
+    """A named, timed lifecycle step. Has a shell command -> a shell script;
+    no shell -> a bare name resolved from config (deferred). No type, no when."""
     name: str
     estimated_duration_min: int = Field(gt=0, strict=True)
-    command: Optional[str] = None
+    shell: Optional[str] = None
 
 
 def _validate_hook_list(hooks: list["Hook"], where: str) -> None:
@@ -141,10 +141,10 @@ def _validate_hook_list(hooks: list["Hook"], where: str) -> None:
     if len(names) != len(set(names)):
         raise ValueError(f"hook names must be unique within {where}")
     for h in hooks:
-        if h.command is None or not h.command.strip():
+        if h.shell is None or not h.shell.strip():
             # Bare name = a config-hook reference; resolver not built yet.
             raise ValueError(
-                f"hook '{h.name}' in {where} has no command "
+                f"hook '{h.name}' in {where} has no shell command "
                 "(named config-hooks are not supported yet)"
             )
 

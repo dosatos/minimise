@@ -278,7 +278,7 @@ tasks:
     estimated_duration_min: 25
     post_hooks:
       - name: Run tests
-        command: "pytest -q"
+        shell: "pytest -q"
         estimated_duration_min: 3
 ```
 

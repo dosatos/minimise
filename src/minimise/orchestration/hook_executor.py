@@ -27,7 +27,7 @@ class HookExecutor:
         """Run one hook in the project env; record + log; return success."""
         started_at = datetime.utcnow()
         env = project_env(self.repo_root) if self.repo_root else None
-        success, output = run_shell_command(hook.command, cwd=self.repo_root, env=env)
+        success, output = run_shell_command(hook.shell, cwd=self.repo_root, env=env)
         completed_at = datetime.utcnow()
 
         ex = Execution(
@@ -51,8 +51,8 @@ class HookExecutor:
 
 
 def demo():
-    assert HookExecutor().run(Hook(name="ok", command="exit 0", estimated_duration_min=1), "post_task", "t1") is True
-    assert HookExecutor().run(Hook(name="bad", command="exit 1", estimated_duration_min=1), "pre_plan", None) is False
+    assert HookExecutor().run(Hook(name="ok", shell="exit 0", estimated_duration_min=1), "post_task", "t1") is True
+    assert HookExecutor().run(Hook(name="bad", shell="exit 1", estimated_duration_min=1), "pre_plan", None) is False
     print("OK")
 
 

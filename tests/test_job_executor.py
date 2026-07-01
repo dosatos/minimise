@@ -100,7 +100,7 @@ def test_post_task_hook_failure_fails_task(temp_db_dir, db, git_repo):
     store = JobStore(db, temp_db_dir)
     job, plan, t1 = _single_task_job(
         db, git_tracker,
-        post=[{"name": "check", "command": "exit 1", "estimated_duration_min": 1}])
+        post=[{"name": "check", "shell": "exit 1", "estimated_duration_min": 1}])
 
     executor = JobExecutor(
         TaskExecutor(store, git_tracker, harness=HandoffWritingHarness()), HookExecutor())
@@ -115,7 +115,7 @@ def test_pre_task_hook_failure_skips_task(temp_db_dir, db, git_repo):
     store = JobStore(db, temp_db_dir)
     job, plan, t1 = _single_task_job(
         db, git_tracker,
-        pre=[{"name": "check", "command": "exit 1", "estimated_duration_min": 1}])
+        pre=[{"name": "check", "shell": "exit 1", "estimated_duration_min": 1}])
 
     harness = HandoffWritingHarness()
     executor = JobExecutor(TaskExecutor(store, git_tracker, harness=harness), HookExecutor())

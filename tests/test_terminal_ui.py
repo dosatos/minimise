@@ -747,8 +747,8 @@ def test_build_steps_plan_order_with_pending_hook():
         "tasks": [{
             "id": "t1", "name": "Build", "description": "d", "goal": "g",
             "estimated_duration_min": 3,
-            "pre_hooks": [{"name": "setup", "command": "true", "estimated_duration_min": 1}],
-            "post_hooks": [{"name": "pytest", "command": "pytest", "estimated_duration_min": 2}],
+            "pre_hooks": [{"name": "setup", "shell": "true", "estimated_duration_min": 1}],
+            "post_hooks": [{"name": "pytest", "shell": "pytest", "estimated_duration_min": 2}],
         }],
     })
     tasks = [Task(id="task-1", job_id="j1", name="Build", description="d",
@@ -774,8 +774,8 @@ def test_build_steps_brackets_plan_hooks():
     from minimise.models import Plan, Task
     plan = Plan.model_validate({
         "name": "P",
-        "pre_hooks": [{"name": "init", "command": "true", "estimated_duration_min": 1}],
-        "post_hooks": [{"name": "deploy", "command": "true", "estimated_duration_min": 5}],
+        "pre_hooks": [{"name": "init", "shell": "true", "estimated_duration_min": 1}],
+        "post_hooks": [{"name": "deploy", "shell": "true", "estimated_duration_min": 5}],
         "tasks": [{"id": "t1", "name": "Build", "description": "d", "goal": "g",
                    "estimated_duration_min": 3}],
     })

@@ -100,10 +100,10 @@ def test_execution_id_deterministic_and_distinct():
 
 def test_hook_dataclass_shape():
     from minimise.models import Hook
-    script = Hook(name="Run tests", estimated_duration_min=3, command="pytest -q")
+    script = Hook(name="Run tests", estimated_duration_min=3, shell="pytest -q")
     ref = Hook(name="security", estimated_duration_min=5)
-    assert script.command == "pytest -q"
-    assert ref.command is None
+    assert script.shell == "pytest -q"
+    assert ref.shell is None
 
 
 def test_execution_to_dict_has_hook_name():

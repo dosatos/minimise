@@ -108,19 +108,19 @@ def test_plan_task_hook_lists_parse():
     from minimise.models import Plan
     plan = Plan.model_validate({
         "name": "P",
-        "pre_hooks": [{"name": "setup", "command": "make init", "estimated_duration_min": 1}],
-        "post_hooks": [{"name": "deploy", "command": "deploy.sh", "estimated_duration_min": 5}],
+        "pre_hooks": [{"name": "setup", "shell": "make init", "estimated_duration_min": 1}],
+        "post_hooks": [{"name": "deploy", "shell": "deploy.sh", "estimated_duration_min": 5}],
         "tasks": [{
             "id": "t1", "name": "Build", "description": "d", "goal": "g",
             "estimated_duration_min": 3,
             "post_hooks": [
-                {"name": "Run tests", "command": "pytest -q", "estimated_duration_min": 3},
-                {"name": "Lint", "command": "ruff check", "estimated_duration_min": 1},
+                {"name": "Run tests", "shell": "pytest -q", "estimated_duration_min": 3},
+                {"name": "Lint", "shell": "ruff check", "estimated_duration_min": 1},
             ],
         }],
     })
     assert plan.pre_hooks[0].name == "setup"
-    assert plan.post_hooks[0].command == "deploy.sh"
+    assert plan.post_hooks[0].shell == "deploy.sh"
     assert [h.name for h in plan.tasks[0].post_hooks] == ["Run tests", "Lint"]
     assert plan.tasks[0].pre_hooks == []
 
@@ -136,8 +136,8 @@ def test_duplicate_hook_names_rejected():
                 "id": "t1", "name": "Build", "description": "d", "goal": "g",
                 "estimated_duration_min": 3,
                 "post_hooks": [
-                    {"name": "dup", "command": "a", "estimated_duration_min": 1},
-                    {"name": "dup", "command": "b", "estimated_duration_min": 1},
+                    {"name": "dup", "shell": "a", "estimated_duration_min": 1},
+                    {"name": "dup", "shell": "b", "estimated_duration_min": 1},
                 ],
             }],
         })
@@ -161,15 +161,12 @@ def test_bare_name_hook_without_command_rejected():
 
 @pytest.mark.parametrize("blank", ["", "   ", "\n\t"])
 def test_blank_command_hook_rejected(blank):
-    import pytest
-    from pydantic import ValidationError
-    from minimise.models import Plan
     # A blank/whitespace command is as good as no command — reject it rather
     # than later running an empty shell string.
     with pytest.raises(ValidationError, match="command"):
         Plan.model_validate({
             "name": "P",
-            "pre_hooks": [{"name": "noop", "command": blank, "estimated_duration_min": 1}],
+            "pre_hooks": [{"name": "noop", "shell": blank, "estimated_duration_min": 1}],
             "tasks": [{
                 "id": "t1", "name": "Build", "description": "d", "goal": "g",
                 "estimated_duration_min": 3,

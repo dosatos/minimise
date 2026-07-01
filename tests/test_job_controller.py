@@ -212,8 +212,8 @@ def test_job_runs_task_hooks_in_plan_order(job_controller, temp_db_dir):
         "tasks": [{
             "id": "task-1", "name": "Build", "description": "d", "goal": "g",
             "estimated_duration_min": 1,
-            "pre_hooks": [{"name": "setup", "command": "true", "estimated_duration_min": 1}],
-            "post_hooks": [{"name": "verify", "command": "true", "estimated_duration_min": 1}],
+            "pre_hooks": [{"name": "setup", "shell": "true", "estimated_duration_min": 1}],
+            "post_hooks": [{"name": "verify", "shell": "true", "estimated_duration_min": 1}],
         }],
     }
     plan_path = temp_db_dir / "hook_order.yaml"
@@ -575,7 +575,7 @@ def test_pre_plan_hook_failure_persists_job(job_controller, plan_file, temp_db_d
     plan_content = {
         "name": "Test Plan with Hook Failure",
         "briefing": "Plan with failing pre hook",
-        "pre_hooks": [{"name": "guard", "command": "exit 1", "estimated_duration_min": 1}],
+        "pre_hooks": [{"name": "guard", "shell": "exit 1", "estimated_duration_min": 1}],
         "tasks": [
             {
                 "id": "task-1",
@@ -614,7 +614,7 @@ def test_post_plan_hook_failure_persists_job(job_controller, plan_file):
     plan_content = {
         "name": "Test Plan with Post Hook Failure",
         "briefing": "Plan with failing post hook",
-        "post_hooks": [{"name": "guard", "command": "exit 1", "estimated_duration_min": 1}],
+        "post_hooks": [{"name": "guard", "shell": "exit 1", "estimated_duration_min": 1}],
         "tasks": [
             {
                 "id": "task-1",

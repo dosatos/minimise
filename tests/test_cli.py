@@ -2243,10 +2243,10 @@ def test_job_estimate_total_includes_hooks():
     from minimise.models import Plan, Task
     plan = Plan.model_validate({
         "name": "P",
-        "pre_hooks": [{"name": "init", "command": "true", "estimated_duration_min": 2}],
+        "pre_hooks": [{"name": "init", "shell": "true", "estimated_duration_min": 2}],
         "tasks": [{"id": "t1", "name": "B", "description": "d", "goal": "g",
                    "estimated_duration_min": 3,
-                   "post_hooks": [{"name": "pytest", "command": "p", "estimated_duration_min": 4}]}],
+                   "post_hooks": [{"name": "pytest", "shell": "p", "estimated_duration_min": 4}]}],
     })
     tasks = [Task(id="task-1", job_id="j1", name="B", description="d",
                   estimated_duration_min=3, goal="g")]

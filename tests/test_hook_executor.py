@@ -6,12 +6,12 @@ from minimise.logging.backend import JsonlLogBackend
 
 
 def test_run_success_returns_true():
-    h = Hook(name="ok", command="exit 0", estimated_duration_min=1)
+    h = Hook(name="ok", shell="exit 0", estimated_duration_min=1)
     assert HookExecutor().run(h, "post_task", task_id="t1") is True
 
 
 def test_run_failure_returns_false():
-    h = Hook(name="bad", command="exit 1", estimated_duration_min=1)
+    h = Hook(name="bad", shell="exit 1", estimated_duration_min=1)
     assert HookExecutor().run(h, "post_task", task_id="t1") is False
 
 
@@ -22,7 +22,7 @@ def test_records_execution_with_hook_name(tmp_path):
     db = Database(tmp_path / "t.db"); db.init_db()
     db.create_job(Job(id="j1", name="J", status=JobStatus.RUNNING, created_at=datetime.utcnow()))
     HookExecutor(store=db, job_id="j1").run(
-        Hook(name="pytest", command="exit 1", estimated_duration_min=1),
+        Hook(name="pytest", shell="exit 1", estimated_duration_min=1),
         "post_task", task_id="t1")
     rows = db.list_executions_for_job("j1")
     assert any(r.hook_name == "pytest" and r.execution_type == "post_task" for r in rows)
@@ -31,7 +31,7 @@ def test_records_execution_with_hook_name(tmp_path):
 def test_failed_hook_logs_error_line(tmp_path):
     log = tmp_path / "job.log"
     HookExecutor(job_id="j1", log_path=log, backend=JsonlLogBackend()).run(
-        Hook(name="pytest", command="exit 1", estimated_duration_min=1),
+        Hook(name="pytest", shell="exit 1", estimated_duration_min=1),
         "post_task", task_id="t1")
     recs = [json.loads(l) for l in log.read_text().splitlines()]
     err = [r for r in recs if r["level"] == "error"]
@@ -42,7 +42,7 @@ def test_failed_hook_logs_error_line(tmp_path):
 def test_success_hook_logs_info_line(tmp_path):
     log = tmp_path / "job.log"
     HookExecutor(job_id="j1", log_path=log, backend=JsonlLogBackend()).run(
-        Hook(name="lint", command="exit 0", estimated_duration_min=1),
+        Hook(name="lint", shell="exit 0", estimated_duration_min=1),
         "pre_plan", task_id=None)
     recs = [json.loads(l) for l in log.read_text().splitlines()]
     info = [r for r in recs if r["level"] == "info"]
@@ -50,14 +50,14 @@ def test_success_hook_logs_info_line(tmp_path):
 
 
 def test_runs_in_repo_root_cwd(tmp_path):
-    h = Hook(name="pwd", command="pwd", estimated_duration_min=1)
+    h = Hook(name="pwd", shell="pwd", estimated_duration_min=1)
     ex = _captured_execution(HookExecutor(repo_root=tmp_path), h)
     assert str(tmp_path.resolve()) in ex.output
 
 
 def test_runs_in_project_venv(tmp_path):
     (tmp_path / ".venv" / "bin").mkdir(parents=True)
-    h = Hook(name="env", command="echo $VIRTUAL_ENV", estimated_duration_min=1)
+    h = Hook(name="env", shell="echo $VIRTUAL_ENV", estimated_duration_min=1)
     ex = _captured_execution(HookExecutor(repo_root=tmp_path), h)
     assert str((tmp_path / ".venv")) in ex.output
 
