@@ -114,7 +114,7 @@ class TaskExecutor:
                 # Log commit failure but don't fail the task
                 final_output += f"\n[Note: Git commit failed: {str(e)}]"
             diff = self.git_tracker.get_diff(task.base_commit) if task.base_commit else ""
-            self.store.record_completed(task, final_output, diff, commit_sha=commit_sha)
+            self.store.record_completed(task, "", diff, commit_sha=commit_sha)
             if next_task is not None:
                 # Successful attempt's handoff becomes the next task's context.
                 return True, self._read_handoff(

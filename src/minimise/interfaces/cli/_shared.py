@@ -6,6 +6,7 @@ package __init__ so that monkeypatching ``minimise.interfaces.cli.DB_PATH`` (con
 We read them lazily through ``_cli`` here so a patched value is always honored.
 """
 
+import json
 import sqlite3
 from pathlib import Path  # noqa: F401  (kept for parity / type ergonomics)
 
@@ -69,6 +70,24 @@ def _format_datetime(dt, default: str = "N/A") -> str:
 def _filter_tasks_by_id(tasks, task_id_str: str):
     """Filter tasks by full ID or prefix match."""
     return [t for t in tasks if t.id == task_id_str or t.id.startswith(task_id_str)]
+
+
+def task_narration(job_id: str, task) -> str:
+    """Agent narration for display: task.output if set (FAILED/legacy jobs),
+    else reconstructed from job.log records tagged with this task's step.
+    Missing/partial log returns "" — this is a display fallback, not a query."""
+    if task.output:
+        return task.output
+    log_path = _cli.JOBS_DIR / job_id / "job.log"
+    try:
+        lines = []
+        for line in log_path.read_text(encoding="utf-8").splitlines():
+            rec = json.loads(line)
+            if rec.get("type") == "task" and rec.get("step", "").split("  · try")[0].strip() == task.name:
+                lines.append(rec.get("message", ""))
+        return "\n".join(lines)
+    except Exception:
+        return ""
 
 
 def _get_and_validate_job(job_id: str):

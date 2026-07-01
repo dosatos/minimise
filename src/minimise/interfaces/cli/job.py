@@ -22,6 +22,7 @@ from minimise.interfaces.cli._shared import (
     _format_datetime,
     _filter_tasks_by_id,
     _get_and_validate_job,
+    task_narration,
 )
 from minimise.interfaces.cli.results import job_results
 
@@ -531,9 +532,10 @@ def job_show(job_id: str, task_id: Optional[str]):
                 console.print(f"[dim]From previous task: {previous_task.name}[/dim]\n")
 
                 # Show previous task output
-                if previous_task.output:
+                prev_narration = task_narration(job_id, previous_task)
+                if prev_narration:
                     console.print(f"[bold]Previous Task Output:[/bold]")
-                    for line in previous_task.output.split("\n"):
+                    for line in prev_narration.split("\n"):
                         if line:
                             console.print(f"  {line}")
                     console.print()

@@ -11,6 +11,7 @@ from minimise.interfaces.cli._shared import (
     _get_and_validate_job,
     _format_datetime,
     _filter_tasks_by_id,
+    task_narration,
 )
 
 
@@ -61,9 +62,10 @@ def job_results_logs(job_id: str, task_id: Optional[str]):
             console.print(f"  [dim]Retries:[/dim] {task.retries}")
 
             # Output
-            if task.output:
+            narration = task_narration(job_id, task)
+            if narration:
                 console.print(f"\n  [bold]Output:[/bold]")
-                for line in task.output.split("\n"):
+                for line in narration.split("\n"):
                     if line:
                         console.print(f"    {line}")
             else:

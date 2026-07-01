@@ -112,7 +112,7 @@ def test_task_completion_without_base_commit(temp_db_dir, db, git_repo):
     assert success
     updated_task = db.get_task(task.id)
     assert updated_task.status == TaskStatus.COMPLETED
-    assert updated_task.output == "Task completed"
+    assert not updated_task.output
     assert updated_task.completed_at is not None
 
 
