@@ -62,6 +62,19 @@ def test_runs_in_project_venv(tmp_path):
     assert str((tmp_path / ".venv")) in ex.output
 
 
+def test_run_pipes_stdin_to_hook(tmp_path):
+    h = Hook(name="readplan", shell="cat", estimated_duration_min=1)
+    ex = _captured_execution_with_stdin(HookExecutor(repo_root=tmp_path), h, "PLAN-YAML-HERE")
+    assert "PLAN-YAML-HERE" in ex.output
+
+
+def _captured_execution_with_stdin(executor, hook, stdin):
+    captured = []
+    executor.store = type("S", (), {"save_execution": lambda self, e: captured.append(e)})()
+    executor.run(hook, "pre_plan", task_id=None, stdin=stdin)
+    return captured[0]
+
+
 def _captured_execution(executor, hook):
     """Run a hook, capturing the Execution it would persist."""
     captured = []

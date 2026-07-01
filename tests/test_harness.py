@@ -237,7 +237,7 @@ def test_run_no_log_path_writes_nothing(mock_popen, tmp_path):
 
 @patch("minimise.agents.harness.subprocess.Popen")
 def test_run_no_log_fields_writes_nothing(mock_popen, tmp_path):
-    # log_path given but log_fields=None (e.g. PlanReviewer) → nothing written.
+    # log_path given but log_fields=None (e.g. a review hook) → nothing written.
     mock_popen.side_effect = make_fake_popen([json.dumps(_assistant_event("x"))])
     log = tmp_path / "job.log"
     ClaudeCodeHarness().run("hi", log_path=log)

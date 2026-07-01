@@ -285,6 +285,9 @@ tasks:
 Each hook shows on the Gantt by name with its estimate, and its output is
 queryable via `mini job logs --query`. A failed `post_hook` fails the task.
 
+Every hook receives the plan (YAML) on stdin, so a `pre_plan` hook can review the
+plan before implementation — e.g. `shell: "claude -p 'review the plan on stdin' | grep -q FAIL && exit 1 || exit 0"`. A nonzero exit aborts the run.
+
 ## Development
 
 ```bash

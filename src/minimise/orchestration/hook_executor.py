@@ -23,11 +23,12 @@ class HookExecutor:
         self.log_path = log_path
         self.backend = backend
 
-    def run(self, hook: Hook, execution_type: str, task_id: Optional[str]) -> bool:
+    def run(self, hook: Hook, execution_type: str, task_id: Optional[str],
+            stdin: Optional[str] = None) -> bool:
         """Run one hook in the project env; record + log; return success."""
         started_at = datetime.utcnow()
         env = project_env(self.repo_root) if self.repo_root else None
-        success, output = run_shell_command(hook.shell, cwd=self.repo_root, env=env)
+        success, output = run_shell_command(hook.shell, cwd=self.repo_root, env=env, stdin=stdin)
         completed_at = datetime.utcnow()
 
         ex = Execution(

@@ -9,6 +9,19 @@ def test_run_shell_command_uses_env(tmp_path):
     assert ok and "xyz" in out
 
 
+def test_run_shell_command_pipes_stdin():
+    ok, out = run_shell_command("cat", stdin="hello-from-stdin")
+    assert ok is True
+    assert "hello-from-stdin" in out
+
+
+def test_run_shell_command_stdin_defaults_none():
+    # No stdin given: command that reads stdin sees EOF immediately, still succeeds.
+    ok, out = run_shell_command("cat", stdin=None)
+    assert ok is True
+    assert out == ""  # nothing was fed on stdin
+
+
 def test_project_env_detects_dotvenv(tmp_path):
     venv_bin = tmp_path / ".venv" / "bin"
     venv_bin.mkdir(parents=True)

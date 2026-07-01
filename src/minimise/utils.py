@@ -11,11 +11,12 @@ def new_id(prefix: str) -> str:
 
 
 def run_shell_command(command: str, cwd: Optional[Path] = None, timeout: int = 3600,
-                      env: Optional[dict] = None) -> tuple[bool, str]:
+                      env: Optional[dict] = None, stdin: Optional[str] = None) -> tuple[bool, str]:
     """Execute a shell command; return (success, combined stdout+stderr).
 
     env=None inherits the current process environment (today's behavior);
     pass a dict to run with a replaced environment (e.g. the target repo's venv).
+    stdin, when a string, is written to the child process's stdin.
     """
     try:
         result = subprocess.run(
@@ -26,6 +27,7 @@ def run_shell_command(command: str, cwd: Optional[Path] = None, timeout: int = 3
             text=True,
             timeout=timeout,
             env=env,
+            input=stdin,
         )
         return result.returncode == 0, result.stdout + result.stderr
     except subprocess.TimeoutExpired:

@@ -1782,7 +1782,7 @@ tasks:
         plan_path.write_text(plan_content)
 
         # Create job from plan
-        result = runner.invoke(mini, ["job", "new", "--plan", str(plan_path), "--skip-review"])
+        result = runner.invoke(mini, ["job", "new", "--plan", str(plan_path)])
 
         assert result.exit_code == 0
         assert "Job created" in result.output
@@ -1805,7 +1805,7 @@ tasks:
         plan_path.write_text(plan_content)
 
         # Create job from plan
-        result = runner.invoke(mini, ["job", "new", "--plan", str(plan_path), "--skip-review"])
+        result = runner.invoke(mini, ["job", "new", "--plan", str(plan_path)])
         assert result.exit_code == 0
 
         # Get job ID from output

@@ -80,7 +80,7 @@ def test_task1_agent_handoff_flows_to_task2(temp_db_dir, db, git_repo):
     assert "stdout-noise" not in harness.prompts[1]
 
 
-def _single_task_job(db, git_tracker, *, pre=None, post=None):
+def _single_task_job(db, git_tracker, *, pre=None, post=None, plan_pre=None):
     job_id = str(uuid.uuid4())
     db.create_job(Job(id=job_id, name="J", status=JobStatus.PENDING,
                       base_commit=git_tracker.get_current_commit()))
@@ -88,7 +88,7 @@ def _single_task_job(db, git_tracker, *, pre=None, post=None):
               name="T1", description="d1", status=TaskStatus.PENDING)
     db.create_task(t1)
     job = Job(id=job_id, name="J", status=JobStatus.PENDING, tasks=[t1])
-    plan = Plan(name="J", tasks=[{
+    plan = Plan(name="J", pre_hooks=plan_pre or [], tasks=[{
         "id": t1.id, "name": "T1", "description": "d1", "goal": "g1",
         "estimated_duration_min": 5, "pre_hooks": pre or [], "post_hooks": post or [],
     }])
@@ -124,3 +124,33 @@ def test_pre_task_hook_failure_skips_task(temp_db_dir, db, git_repo):
     failed = db.get_task(t1.id)
     assert failed.status == TaskStatus.FAILED
     assert "Pre-task hook failed" in failed.output
+
+
+def test_pre_plan_hook_receives_plan_yaml_on_stdin(temp_db_dir, db, git_repo, tmp_path):
+    """The whole point of the branch: a pre_plan hook can review the plan on stdin."""
+    git_tracker = GitTracker(git_repo)
+    store = JobStore(db, temp_db_dir)
+    captured = tmp_path / "captured.yaml"
+    job, plan, _ = _single_task_job(db, git_tracker, plan_pre=[
+        {"name": "review", "shell": f"cat > {captured}", "estimated_duration_min": 1}])
+
+    executor = JobExecutor(
+        TaskExecutor(store, git_tracker, harness=HandoffWritingHarness()), HookExecutor())
+    assert executor.execute(job, plan)
+
+    content = captured.read_text()
+    assert "name: J" in content       # plan name reached the hook
+    assert "T1" in content            # ...along with its tasks
+
+
+def test_pre_plan_hook_failure_aborts_before_any_task(temp_db_dir, db, git_repo):
+    """A nonzero pre_plan hook aborts the run before any task executes."""
+    git_tracker = GitTracker(git_repo)
+    store = JobStore(db, temp_db_dir)
+    job, plan, _ = _single_task_job(db, git_tracker, plan_pre=[
+        {"name": "reject", "shell": "exit 1", "estimated_duration_min": 1}])
+
+    harness = HandoffWritingHarness()
+    executor = JobExecutor(TaskExecutor(store, git_tracker, harness=harness), HookExecutor())
+    assert executor.execute(job, plan) is False
+    assert harness.prompts == []  # no task ran

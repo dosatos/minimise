@@ -10,7 +10,7 @@ import pydantic
 from rich.table import Table
 from rich.text import Text
 
-import minimise.interfaces.cli as _cli  # patchable constants/PlanReviewer; read at call time
+import minimise.interfaces.cli as _cli  # patchable constants; read at call time
 from minimise.models import JobStatus, TaskStatus, Plan
 from minimise.interfaces.terminal_ui import get_status_color, render_execution_table_with_gantt, humanize_duration
 from minimise.interfaces.cli._shared import (
@@ -44,8 +44,7 @@ def job():
 
 @job.command(name="new")
 @click.option("--plan", required=True, help="Path to plan.yaml file")
-@click.option("--skip-review", is_flag=True, help="Skip plan review (for trusted plans)")
-def job_new(plan: str, skip_review: bool):
+def job_new(plan: str):
     """Create a new job from a plan file (does not execute)."""
     try:
         plan_path = Path(plan).resolve()
@@ -66,39 +65,7 @@ def job_new(plan: str, skip_review: bool):
 
         console.print("[green]✓[/green] Plan syntax valid")
 
-        # 2. Run agent-based review (unless skipped)
-        if not skip_review:
-            reviewer = _cli.PlanReviewer()
-            console.print("[dim]🤖 Reviewing plan quality...[/dim]")
-            findings = reviewer.review(plan_obj)
-
-            if findings:
-                console.print(f"\n[red]📋 Plan review failed ({len(findings)} issue(s) to address):[/red]")
-                for i, finding in enumerate(findings, 1):
-                    severity_color = {
-                        "high": "red",
-                        "medium": "yellow",
-                        "low": "blue"
-                    }.get(finding.severity, "white")
-
-                    console.print(f"\n  {i}. [{severity_color}]{finding.title}[/{severity_color}]")
-                    console.print(f"     Task: {finding.task_id}")
-                    console.print(f"     {finding.description}")
-                    if finding.suggestion:
-                        console.print(f"     [dim]Suggestion: {finding.suggestion}[/dim]")
-
-                console.print(
-                    "\n[yellow]Address the findings above in the plan and re-run "
-                    "`mini job new`.[/yellow]"
-                )
-                console.print(
-                    "[dim]To bypass review for a trusted plan, re-run with --skip-review.[/dim]"
-                )
-                raise SystemExit(1)
-
-            console.print("[green]✓[/green] Plan review passed")
-
-        # 3. Create the job
+        # 2. Create the job
         db = get_db()
         job_controller = get_job_controller(db)
 

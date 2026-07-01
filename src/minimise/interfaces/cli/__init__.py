@@ -32,9 +32,6 @@ from minimise.interfaces.cli._shared import (  # noqa: E402  (constants must pre
 from minimise.interfaces.cli.job import job  # noqa: E402
 from minimise.interfaces.cli.view import view  # noqa: E402
 
-# PlanReviewer re-exported so tests can patch `minimise.interfaces.cli.PlanReviewer`.
-from minimise.agents.plan_reviewer import PlanReviewer  # noqa: E402,F401
-
 
 @click.group()
 def mini():
