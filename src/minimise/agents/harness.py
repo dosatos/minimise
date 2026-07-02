@@ -17,6 +17,7 @@ class HarnessResult:
     success: bool
     output: str
     error: Optional[str] = None
+    exit_reason: str = ""
 
 
 def _extract_text(event: dict) -> str:
@@ -163,7 +164,7 @@ class ClaudeCodeHarness(AgentHarness):
                 proc.kill()
                 proc.wait()  # reap the killed child so it doesn't linger as a zombie
                 reader.join()
-                return HarnessResult(success=False, output="".join(chunks), error=f"timeout after {timeout}s")
+                return HarnessResult(success=False, output="".join(chunks), error=f"timeout after {timeout}s", exit_reason="timeout")
 
             # stdout hit EOF; reap the child and drain stderr, but stay bounded.
             # A surviving grandchild can keep these pipes open and otherwise hang
@@ -177,15 +178,15 @@ class ClaudeCodeHarness(AgentHarness):
             output = "".join(chunks)
 
             if proc.returncode == 0:
-                return HarnessResult(success=True, output=output)
+                return HarnessResult(success=True, output=output, exit_reason="success")
             stderr = stderr_capture[0] if stderr_capture else ""
-            return HarnessResult(success=False, output=output, error=stderr or "")
+            return HarnessResult(success=False, output=output, error=stderr or "", exit_reason="agent_error")
 
         except Exception as e:
             if proc is not None:
                 proc.kill()
                 proc.wait()  # reap the child and let the reader thread close the log sink
-            return HarnessResult(success=False, output="", error=str(e))
+            return HarnessResult(success=False, output="", error=str(e), exit_reason="agent_error")
 
     @staticmethod
     def _feed_stdin(proc: "subprocess.Popen", prompt: str) -> None:

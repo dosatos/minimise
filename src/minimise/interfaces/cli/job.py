@@ -230,6 +230,8 @@ def job_status(job_id: str, format: str):
                     "started_at": task.started_at.isoformat() if task.started_at else None,
                     "completed_at": task.completed_at.isoformat() if task.completed_at else None,
                 }
+                task_execs = [e for e in db.list_executions_for_task(task.id) if e.execution_type == "task"]
+                task_data["exit_reason"] = task_execs[-1].exit_reason if task_execs else None
                 # Add duration_seconds if both start and end times exist
                 if task.started_at and task.completed_at:
                     duration = (task.completed_at - task.started_at).total_seconds()
@@ -515,7 +517,10 @@ def job_show(job_id: str, task_id: Optional[str]):
             console.print(f"\n[bold]Full Prompt for Task[/bold]")
             console.print(f"[bold]Job:[/bold] {job_obj.name} ({job_id})")
             console.print(f"[bold]Task:[/bold] {task.name} ({task.id})")
-            console.print(f"[bold]Status:[/bold] {task.status.value}\n")
+            task_execs = [e for e in db.list_executions_for_task(task.id) if e.execution_type == "task"]
+            latest_reason = task_execs[-1].exit_reason if task_execs else None
+            console.print(f"[bold]Status:[/bold] {task.status.value}")
+            console.print(f"[bold]Exit Reason:[/bold] {latest_reason or '—'}\n")
 
             # Display task description
             console.print(f"[bold cyan]Task Description[/bold cyan]")

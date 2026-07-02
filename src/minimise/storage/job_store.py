@@ -100,31 +100,33 @@ class JobStore:
                 status=TaskStatus.RUNNING, started_at=datetime.utcnow(),
             ), conn=conn)
 
-    def record_attempt(self, task: Task, attempt: int, output: str) -> None:
-        """Record a failed-but-retrying attempt (back to PENDING with the failure note)."""
-        with self._close_attempt(task, attempt, TaskStatus.FAILED, output=output) as conn:
-            self.db.update_task_status(
-                task.id, TaskStatus.PENDING, output=f"Attempt {attempt} failed: {output}",
-                conn=conn,
-            )
+    def record_attempt(self, task: Task, attempt: int, output: str, exit_reason: str = "") -> None:
+        """Record a failed-but-retrying attempt (back to PENDING).
 
-    def record_completed(self, task: Task, output: str, diff: str, commit_sha: Optional[str] = None) -> None:
+        ``output`` is no longer stored — job.log is the sole narration store; the
+        executor writes the failure detail there. exit_reason carries the class.
+        """
+        with self._close_attempt(task, attempt, TaskStatus.FAILED, exit_reason=exit_reason) as conn:
+            self.db.update_task_status(task.id, TaskStatus.PENDING, conn=conn)
+
+    def record_completed(self, task: Task, output: str, diff: str, commit_sha: Optional[str] = None, exit_reason: str = "success") -> None:
         """Persist a successful task: save its diff and mark it COMPLETED."""
         if task.base_commit:
             self._save_diff(task, diff)
         with self._close_attempt(
             task, task.retries, TaskStatus.COMPLETED,
-            output=output, diff_path=task.diff_path, commit_sha=commit_sha,
+            diff_path=task.diff_path, commit_sha=commit_sha,
+            exit_reason=exit_reason,
         ) as conn:
             self.db.update_task_status(
-                task.id, TaskStatus.COMPLETED, output=output, retries=task.retries,
+                task.id, TaskStatus.COMPLETED, retries=task.retries,
                 completed_at=datetime.utcnow(), conn=conn,
             )
 
-    def mark_task_failed(self, task: Task, output: str) -> None:
-        with self._close_attempt(task, task.retries, TaskStatus.FAILED, output=output) as conn:
+    def mark_task_failed(self, task: Task, output: str, exit_reason: str = "") -> None:
+        with self._close_attempt(task, task.retries, TaskStatus.FAILED, exit_reason=exit_reason) as conn:
             self.db.update_task_status(
-                task.id, TaskStatus.FAILED, output=output, retries=task.retries,
+                task.id, TaskStatus.FAILED, retries=task.retries,
                 completed_at=datetime.utcnow(), conn=conn,
             )
 

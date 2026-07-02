@@ -4,6 +4,7 @@ from minimise.storage.git_tracker import GitTracker
 from minimise.storage.job_store import JobStore
 from minimise.orchestration.handover_manager import HandoverManager
 from minimise.agents.harness import AgentHarness, ClaudeCodeHarness
+from minimise.logging.backend import JsonlLogBackend
 
 
 class TaskExecutor:
@@ -49,6 +50,19 @@ class TaskExecutor:
         context = handover_context
 
         job_log_path = self.store.job_log_path(job_id)
+        log_backend = JsonlLogBackend()
+
+        def _log_failure(step_label, detail):
+            """Write terminal failure detail to job.log — the sole narration store."""
+            if detail:
+                log_backend.record(
+                    str(job_log_path),
+                    {"type": "task", "step": step_label},
+                    detail, level="error",
+                )
+
+        def _step_label(attempt):
+            return task.name + (f"  · try {attempt + 1}" if attempt > 0 else "")
 
         for attempt in range(self.MAX_RETRIES + 1):
             self.store.mark_running(task, attempt)
@@ -58,7 +72,7 @@ class TaskExecutor:
                 job_id=job_id, task_id=task.id, attempt=attempt, execution_type="task"
             )
             handoff_path = self.store.handoff_path(job_id, task.id, attempt)
-            success, output = self._invoke_claude_code({
+            success, output, exit_reason = self._invoke_claude_code({
                 "handover": context,
                 "task_name": task.name,
                 "task_description": task.description,
@@ -79,14 +93,17 @@ class TaskExecutor:
                     outcome, combined = verify(attempt)
                     if outcome == "fail":
                         msg = f"Post-task hook failed\n{combined}"
-                        self.store.mark_task_failed(task, msg)
+                        _log_failure(_step_label(attempt), msg)
+                        self.store.mark_task_failed(task, msg, exit_reason="hook_failed")
                         return False, msg
                     if outcome == "retry":
                         if attempt >= self.MAX_RETRIES:
                             msg = f"Post-task hook failed (retries exhausted)\n{combined}"
-                            self.store.mark_task_failed(task, msg)
+                            _log_failure(_step_label(attempt), msg)
+                            self.store.mark_task_failed(task, msg, exit_reason="hook_failed")
                             return False, msg
-                        self.store.record_attempt(task, attempt, combined)
+                        _log_failure(_step_label(attempt), combined)
+                        self.store.record_attempt(task, attempt, combined, exit_reason=exit_reason)
                         # Agent succeeded and wrote its handoff, so build the next
                         # context unconditionally and PREPEND the review findings —
                         # can't rely on build_retry_prompt's empty-handoff fallback.
@@ -99,7 +116,8 @@ class TaskExecutor:
                 final_success = True
                 break
             if attempt < self.MAX_RETRIES:
-                self.store.record_attempt(task, attempt, output)
+                _log_failure(_step_label(attempt), output)
+                self.store.record_attempt(task, attempt, output, exit_reason=exit_reason)
                 # learn-from-failure: feed this attempt's handoff into the next.
                 context = self._read_handoff(
                     handoff_path,
@@ -114,7 +132,7 @@ class TaskExecutor:
                 # Log commit failure but don't fail the task
                 final_output += f"\n[Note: Git commit failed: {str(e)}]"
             diff = self.git_tracker.get_diff(task.base_commit) if task.base_commit else ""
-            self.store.record_completed(task, "", diff, commit_sha=commit_sha)
+            self.store.record_completed(task, "", diff, commit_sha=commit_sha, exit_reason="success")
             if next_task is not None:
                 # Successful attempt's handoff becomes the next task's context.
                 return True, self._read_handoff(
@@ -122,7 +140,8 @@ class TaskExecutor:
                     lambda: HandoverManager.build_handover_prompt(final_output, diff, next_task),
                 )
         else:
-            self.store.mark_task_failed(task, final_output)
+            _log_failure(_step_label(task.retries), final_output)
+            self.store.mark_task_failed(task, final_output, exit_reason=exit_reason)
 
         return final_success, final_output
 
@@ -134,7 +153,7 @@ class TaskExecutor:
             return f"(agent-written handoff)\n\n{content}"
         return f"WARNING auto-generated from diff - not reviewed\n\n{fallback()}"
 
-    def _invoke_claude_code(self, context: dict) -> tuple[bool, str]:
+    def _invoke_claude_code(self, context: dict) -> tuple[bool, str, str]:
         """
         Invoke Claude Code agent to execute task.
 
@@ -145,7 +164,7 @@ class TaskExecutor:
             context: Context dictionary with task_name, task_description, task_goal, handover
 
         Returns:
-            (success, output)
+            (success, output, exit_reason)
         """
         task_name = context.get("task_name", "Task")
         task_description = context.get("task_description", "")
@@ -176,7 +195,7 @@ Context from previous tasks:
 {handover if handover else "(no prior context)"}
 
 ⚠️  CRITICAL: Do not create exploratory jobs with 'mini job new'. If you accidentally create any jobs (test plans, temporary explorations, etc.), delete them before finishing:
-   mini job delete <job_id> --force
+   mini job delete <job_id>
 
 ⚠️  COMMITS: If you create any git commits, do NOT add co-author trailers (no "Co-Authored-By:" lines, no "Generated with Claude Code" lines). Use a plain commit message only. Prefer to leave changes uncommitted — the orchestrator commits your work for you.
 
@@ -191,4 +210,4 @@ Execute this task by modifying the codebase as needed. When done, write a summar
         )
         return result.success, (
             result.output if result.success else (result.error or result.output)
-        )
+        ), result.exit_reason

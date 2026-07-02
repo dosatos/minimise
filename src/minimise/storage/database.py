@@ -42,7 +42,6 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         name=row['name'],
         description=row['description'],
         status=TaskStatus(row['status']),
-        output=row['output'],
         retries=row['retries'],
         created_at=datetime.fromisoformat(row['created_at']),
         started_at=_dt(row['started_at']),
@@ -64,10 +63,10 @@ def _row_to_execution(row: sqlite3.Row) -> Execution:
         status=TaskStatus(row['status']),
         started_at=_dt(row['started_at']),
         completed_at=_dt(row['completed_at']),
-        output=row['output'],
         diff_path=row['diff_path'],
         commit_sha=row['commit_sha'],
         hook_name=row['hook_name'] if 'hook_name' in keys else None,
+        exit_reason=row['exit_reason'] if 'exit_reason' in keys else None,
     )
 
 
@@ -130,7 +129,7 @@ class Database:
         finally:
             conn.close()
 
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 4
 
     def init_db(self):
         """Create/migrate the schema once per DB.
@@ -172,7 +171,6 @@ class Database:
                 name TEXT NOT NULL,
                 description TEXT,
                 status TEXT NOT NULL,
-                output TEXT,
                 retries INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL,
                 started_at TEXT,
@@ -213,7 +211,6 @@ class Database:
                         name TEXT NOT NULL,
                         description TEXT,
                         status TEXT NOT NULL,
-                        output TEXT,
                         retries INTEGER DEFAULT 0,
                         created_at TEXT NOT NULL,
                         started_at TEXT,
@@ -249,10 +246,10 @@ class Database:
                 status TEXT NOT NULL,
                 started_at TEXT,
                 completed_at TEXT,
-                output TEXT,
                 diff_path TEXT,
                 commit_sha TEXT,
                 hook_name TEXT,
+                exit_reason TEXT,
                 FOREIGN KEY(job_id) REFERENCES jobs(id),
                 FOREIGN KEY(task_id) REFERENCES tasks(id)
             )
@@ -261,10 +258,76 @@ class Database:
         # Add hook_name for existing executions tables (no drop/backfill).
         if 'hook_name' not in _column_names(cursor, "executions"):
             cursor.execute("ALTER TABLE executions ADD COLUMN hook_name TEXT")
+        if 'exit_reason' not in _column_names(cursor, "executions"):
+            cursor.execute("ALTER TABLE executions ADD COLUMN exit_reason TEXT")
+
+        # v4: retire the free-text `output` column — job.log is the sole narration
+        # store. Two guarded table rebuilds drop it from live DBs (SQLite has no
+        # DROP COLUMN before 3.35); the col list comes from the *_new schema, so
+        # `output` is naturally excluded and columns stay aligned.
+        self._drop_output_column(cursor, "executions", """
+            CREATE TABLE executions_new (
+                execution_id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                task_id TEXT,
+                execution_type TEXT NOT NULL DEFAULT 'task',
+                attempt INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                diff_path TEXT,
+                commit_sha TEXT,
+                hook_name TEXT,
+                exit_reason TEXT,
+                FOREIGN KEY(job_id) REFERENCES jobs(id),
+                FOREIGN KEY(task_id) REFERENCES tasks(id)
+            )
+        """)
+        self._drop_output_column(cursor, "tasks", """
+            CREATE TABLE tasks_new (
+                id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                status TEXT NOT NULL,
+                retries INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                diff_path TEXT,
+                base_commit TEXT,
+                goal TEXT,
+                estimated_duration_min INTEGER NOT NULL DEFAULT 5,
+                FOREIGN KEY(job_id) REFERENCES jobs(id)
+            )
+        """)
 
         cursor.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
         conn.commit()
         conn.close()
+
+    @staticmethod
+    def _drop_output_column(cursor, table: str, create_new_sql: str) -> None:
+        """Rebuild ``table`` without its `output` column, if it still has one.
+
+        Follows the SAVEPOINT table-rebuild precedent: create <table>_new (with
+        the desired schema, no `output`), copy the shared columns derived from
+        the new table's PRAGMA, drop the old, rename. No-op once `output` is gone.
+        """
+        if 'output' not in _column_names(cursor, table):
+            return
+        cursor.execute(f"SAVEPOINT drop_output_{table}")
+        try:
+            cursor.execute(create_new_sql)
+            cursor.execute(f"PRAGMA table_info({table}_new)")
+            col_list = ", ".join(c[1] for c in cursor.fetchall())
+            cursor.execute(f"INSERT INTO {table}_new ({col_list}) SELECT {col_list} FROM {table}")
+            cursor.execute(f"DROP TABLE {table}")
+            cursor.execute(f"ALTER TABLE {table}_new RENAME TO {table}")
+            cursor.execute(f"RELEASE SAVEPOINT drop_output_{table}")
+        except Exception:
+            cursor.execute(f"ROLLBACK TO SAVEPOINT drop_output_{table}")
+            raise
 
     def create_job(self, job: Job, conn: Optional[sqlite3.Connection] = None) -> None:
         """Insert a new job."""
@@ -326,13 +389,13 @@ class Database:
         """Insert a new task."""
         with self._write(conn) as cursor:
             cursor.execute("""
-                INSERT INTO tasks (id, job_id, name, description, status, output, retries, created_at, started_at, completed_at, diff_path, base_commit, goal, estimated_duration_min)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (task.id, task.job_id, task.name, task.description, task.status.value, task.output, task.retries,
+                INSERT INTO tasks (id, job_id, name, description, status, retries, created_at, started_at, completed_at, diff_path, base_commit, goal, estimated_duration_min)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (task.id, task.job_id, task.name, task.description, task.status.value, task.retries,
                   task.created_at.isoformat(), task.started_at.isoformat() if task.started_at else None,
                   task.completed_at.isoformat() if task.completed_at else None, task.diff_path, task.base_commit, task.goal, task.estimated_duration_min))
 
-    def update_task_status(self, task_id: str, status: TaskStatus, output: Optional[str] = None, retries: int = 0, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, conn: Optional[sqlite3.Connection] = None) -> None:
+    def update_task_status(self, task_id: str, status: TaskStatus, retries: int = 0, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, conn: Optional[sqlite3.Connection] = None) -> None:
         """Update task status.
 
         Only updates fields that are explicitly provided. If started_at or completed_at
@@ -341,10 +404,6 @@ class Database:
         # Build dynamic UPDATE statement to only update provided fields
         update_fields = ["status = ?", "retries = ?"]
         params = [status.value, retries]
-
-        # Always update output if provided (even if None)
-        update_fields.append("output = ?")
-        params.append(output)
 
         if started_at is not None:
             update_fields.append("started_at = ?")
@@ -372,7 +431,6 @@ class Database:
                     name = ?,
                     description = ?,
                     status = ?,
-                    output = ?,
                     retries = ?,
                     created_at = ?,
                     started_at = ?,
@@ -382,7 +440,7 @@ class Database:
                     goal = ?,
                     estimated_duration_min = ?
                 WHERE id = ?
-            """, (task.job_id, task.name, task.description, task.status.value, task.output, task.retries,
+            """, (task.job_id, task.name, task.description, task.status.value, task.retries,
                   task.created_at.isoformat(), task.started_at.isoformat() if task.started_at else None,
                   task.completed_at.isoformat() if task.completed_at else None, task.diff_path, task.base_commit, task.goal, task.estimated_duration_min, task.id))
 
@@ -410,14 +468,15 @@ class Database:
             cursor.execute("""
                 INSERT OR REPLACE INTO executions
                     (execution_id, job_id, task_id, execution_type, attempt, status,
-                     started_at, completed_at, output, diff_path, commit_sha, hook_name)
+                     started_at, completed_at, diff_path, commit_sha, hook_name,
+                     exit_reason)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (execution.execution_id, execution.job_id, execution.task_id,
                   execution.execution_type, execution.attempt, execution.status.value,
                   execution.started_at.isoformat() if execution.started_at else None,
                   execution.completed_at.isoformat() if execution.completed_at else None,
-                  execution.output, execution.diff_path, execution.commit_sha,
-                  execution.hook_name))
+                  execution.diff_path, execution.commit_sha,
+                  execution.hook_name, execution.exit_reason))
 
     def list_executions_for_task(self, task_id: str) -> List[Execution]:
         """Fetch a task's executions in attempt order."""

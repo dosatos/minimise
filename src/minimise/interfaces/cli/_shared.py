@@ -73,11 +73,9 @@ def _filter_tasks_by_id(tasks, task_id_str: str):
 
 
 def task_narration(job_id: str, task) -> str:
-    """Agent narration for display: task.output if set (FAILED/legacy jobs),
-    else reconstructed from job.log records tagged with this task's step.
+    """Agent narration for display: reconstructed from job.log records tagged
+    with this task's step (job.log is the sole narration store).
     Missing/partial log returns "" — this is a display fallback, not a query."""
-    if task.output:
-        return task.output
     log_path = _cli.JOBS_DIR / job_id / "job.log"
     try:
         lines = []

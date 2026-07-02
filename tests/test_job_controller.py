@@ -226,7 +226,7 @@ def test_job_runs_task_hooks_in_plan_order(job_controller, temp_db_dir):
         if verify is not None:
             verify(0)  # post_task hooks now run inside execute_task via verify
         job_controller.db.update_task_status(task.id, TaskStatus.COMPLETED,
-                                             output="ok", completed_at=datetime.utcnow())
+                                             completed_at=datetime.utcnow())
         return True, "ok"
 
     job_controller.task_executor.execute_task = mock_execute_task
@@ -350,7 +350,7 @@ def test_task_commit_message_format(temp_db_dir, git_repo, plan_file):
             )
 
             # Update status before returning
-            self.store.db.update_task_status(task.id, TaskStatus.COMPLETED, output=f"Executed {task.name}", completed_at=datetime.utcnow())
+            self.store.db.update_task_status(task.id, TaskStatus.COMPLETED, completed_at=datetime.utcnow())
             return True, f"Executed {task.name}"
 
     import minimise.orchestration.job_controller
@@ -450,7 +450,7 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, git_repo, plan_file)
             task.diff_path = str(diff_path)
 
             self.store.db.update_task(task)
-            self.store.db.update_task_status(task.id, TaskStatus.COMPLETED, output=f"Executed {task.name}", completed_at=datetime.utcnow())
+            self.store.db.update_task_status(task.id, TaskStatus.COMPLETED, completed_at=datetime.utcnow())
 
             return True, f"Executed {task.name}"
 
@@ -501,7 +501,7 @@ def test_failed_job_persists_in_db(job_controller, plan_file):
         if execution_count[0] == 1:
             # Fail on first task
             error_msg = "Task execution failed: simulated failure"
-            job_controller.db.update_task_status(task.id, TaskStatus.FAILED, output=error_msg, completed_at=datetime.utcnow())
+            job_controller.db.update_task_status(task.id, TaskStatus.FAILED, completed_at=datetime.utcnow())
             return False, error_msg
         # This shouldn't be reached
         return True, f"Executed {task.name}"
@@ -537,13 +537,13 @@ def test_failed_job_persists_in_db(job_controller, plan_file):
 
 
 def test_failed_job_stores_error_reason(job_controller, plan_file):
-    """Test that failed jobs store error reason in job.output."""
+    """A failed task is persisted as FAILED (failure detail lives in job.log now)."""
     error_reason = "Database connection timeout"
     original_method = job_controller.task_executor.execute_task
 
     def mock_execute_task(task, job_id, handover_context, next_task=None, verify=None):
         error_msg = f"Task execution failed: {error_reason}"
-        job_controller.db.update_task_status(task.id, TaskStatus.FAILED, output=error_msg, completed_at=datetime.utcnow())
+        job_controller.db.update_task_status(task.id, TaskStatus.FAILED, completed_at=datetime.utcnow())
         return False, error_msg
 
     job_controller.task_executor.execute_task = mock_execute_task
@@ -561,11 +561,8 @@ def test_failed_job_stores_error_reason(job_controller, plan_file):
         job = job_controller.get_job_status(job_id)
         assert job.status == JobStatus.FAILED
 
-        # Verify job has output (error reason would be stored)
-        # The error should be accessible via the job or first failed task
         failed_tasks = [t for t in job.tasks if t.status == TaskStatus.FAILED]
         assert len(failed_tasks) > 0
-        assert error_reason in failed_tasks[0].output
 
     finally:
         job_controller.task_executor.execute_task = original_method
@@ -638,7 +635,7 @@ def test_post_plan_hook_failure_persists_job(job_controller, plan_file):
         original_method = job_controller.task_executor.execute_task
 
         def mock_execute_task(task, job_id, handover_context, next_task=None, verify=None):
-            job_controller.db.update_task_status(task.id, TaskStatus.COMPLETED, output=f"Executed {task.name}", completed_at=datetime.utcnow())
+            job_controller.db.update_task_status(task.id, TaskStatus.COMPLETED, completed_at=datetime.utcnow())
             return True, f"Executed {task.name}"
 
         job_controller.task_executor.execute_task = mock_execute_task
@@ -786,7 +783,6 @@ def test_estimated_duration_min_survives_refetch(job_controller, temp_db_dir):
     job_controller.db.update_task_status(
         db_tasks[0].id,
         TaskStatus.COMPLETED,
-        output="Completed",
         completed_at=datetime.utcnow()
     )
 

@@ -28,7 +28,6 @@ class Task:
     description: str
     estimated_duration_min: int
     status: TaskStatus = TaskStatus.PENDING
-    output: Optional[str] = None
     retries: int = 0
     created_at: datetime = field(default_factory=datetime.utcnow)
     started_at: Optional[datetime] = None
@@ -45,7 +44,6 @@ class Task:
             "name": self.name,
             "description": self.description,
             "status": self.status.value,
-            "output": self.output,
             "retries": self.retries,
             "created_at": self.created_at.isoformat(),
             "started_at": self.started_at.isoformat() if self.started_at else None,
@@ -66,10 +64,10 @@ class Execution:
     status: TaskStatus = TaskStatus.RUNNING
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    output: Optional[str] = None
     diff_path: Optional[str] = None
     commit_sha: Optional[str] = None
     hook_name: Optional[str] = None  # set on hooks; NULL for task attempts
+    exit_reason: Optional[str] = None  # machine classification of how the run ended
 
     @property
     def execution_id(self) -> str:
@@ -94,10 +92,10 @@ class Execution:
             "status": self.status.value,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
-            "output": self.output,
             "diff_path": self.diff_path,
             "commit_sha": self.commit_sha,
             "hook_name": self.hook_name,
+            "exit_reason": self.exit_reason,
         }
 
 

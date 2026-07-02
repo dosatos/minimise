@@ -107,7 +107,9 @@ def test_post_task_hook_failure_fails_task(temp_db_dir, db, git_repo):
     assert executor.execute(job, plan) is False
     failed = db.get_task(t1.id)
     assert failed.status == TaskStatus.FAILED
-    assert "Post-task hook failed" in failed.output
+    # Failure detail now lives in job.log (the sole narration store), not task.output.
+    log = (temp_db_dir / job.id / "job.log").read_text()
+    assert "Post-task hook failed" in log
 
 
 def test_post_task_hook_retry_reruns_with_findings(temp_db_dir, db, git_repo, tmp_path):
@@ -176,7 +178,6 @@ def test_pre_task_hook_failure_skips_task(temp_db_dir, db, git_repo):
     assert harness.prompts == []  # task never ran
     failed = db.get_task(t1.id)
     assert failed.status == TaskStatus.FAILED
-    assert "Pre-task hook failed" in failed.output
 
 
 def test_pre_plan_hook_receives_plan_yaml_on_stdin(temp_db_dir, db, git_repo, tmp_path):

@@ -317,6 +317,51 @@ def test_run_timeout(mock_popen):
     assert result.error == "timeout after 0.2s"
 
 
+# --- exit_reason classification ---
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_exit_reason_success(mock_popen):
+    mock_popen.side_effect = make_fake_popen([json.dumps(_assistant_event("ok"))], returncode=0)
+    res = ClaudeCodeHarness().run("hi")
+    assert res.success
+    assert res.exit_reason == "success"
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_exit_reason_agent_error_on_nonzero(mock_popen):
+    mock_popen.side_effect = make_fake_popen([], returncode=1, stderr="boom")
+    res = ClaudeCodeHarness().run("hi")
+    assert not res.success
+    assert res.exit_reason == "agent_error"
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_exit_reason_timeout(mock_popen):
+    import threading
+
+    released = threading.Event()
+
+    class _BlockingStdout:
+        def __iter__(self):
+            return self
+        def __next__(self):
+            released.wait()
+            raise StopIteration
+
+    def factory(*args, **kwargs):
+        proc = MagicMock()
+        proc.stdin = MagicMock()
+        proc.stdout = _BlockingStdout()
+        proc.stderr = MagicMock()
+        proc.stderr.read.return_value = ""
+        proc.kill.side_effect = lambda: released.set()
+        return proc
+    mock_popen.side_effect = factory
+    res = ClaudeCodeHarness().run("hi", timeout=0.2)
+    assert not res.success
+    assert res.exit_reason == "timeout"
+
+
 @patch("minimise.agents.harness.subprocess.Popen")
 def test_run_generic_exception(mock_popen):
     mock_popen.side_effect = FileNotFoundError("claude not found")

@@ -417,13 +417,14 @@ class TestRenderTaskTableWithGantt:
         # Check that table was created
         assert table is not None
         # Check that table has the expected columns
-        assert len(table.columns) == 6
+        assert len(table.columns) == 7
         assert table.columns[0].header == "Task Name"
         assert table.columns[1].header == "Status"
         assert table.columns[2].header == "Duration"
         assert table.columns[3].header == "Expected"
         assert table.columns[4].header == "Timeline (relative)"
         assert table.columns[5].header == "Type"
+        assert table.columns[6].header == "Reason"
 
     def test_render_execution_table_with_gantt_row_count(self, sample_job, sample_tasks, base_time):
         """Test that table has correct number of rows."""
@@ -438,7 +439,7 @@ class TestRenderTaskTableWithGantt:
 
         assert table is not None
         assert len(table.rows) == 0
-        assert len(table.columns) == 6
+        assert len(table.columns) == 7
 
     def test_render_execution_table_with_gantt_contains_duration_data(self, sample_job, sample_tasks, base_time):
         """Test that table includes duration information."""
@@ -801,6 +802,22 @@ def test_type_column_marks_hook_vs_task():
                   estimated_duration_min=3, goal="g")]
     table = render_execution_table_with_gantt(job, tasks, plan=plan)
     assert table.columns[5]._cells == ["hook", "task"]
+
+
+def test_reason_column_shows_exit_reason():
+    """A failed execution's exit_reason renders under the Reason column."""
+    from minimise.interfaces.terminal_ui import render_execution_table_with_gantt
+    from minimise.models import Job, JobStatus, Execution, Task, TaskStatus
+
+    job = Job(id="j1", name="J", plan_path="p.yaml", status=JobStatus.RUNNING)
+    tasks = [Task(id="t1", job_id="j1", name="Slow", description="d",
+                  estimated_duration_min=3, status=TaskStatus.FAILED)]
+    ex = Execution(task_id="t1", attempt=0, job_id="j1", status=TaskStatus.FAILED,
+                   exit_reason="timeout")
+    table = render_execution_table_with_gantt(job, tasks, executions=[ex])
+
+    assert table.columns[6].header == "Reason"
+    assert table.columns[6]._cells == ["timeout"]
 
 
 def test_project_steps_chains_pending_after_completed():

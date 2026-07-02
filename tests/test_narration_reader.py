@@ -6,8 +6,8 @@ from types import SimpleNamespace
 from minimise.interfaces.cli._shared import task_narration
 
 
-def _task(name, output=""):
-    return SimpleNamespace(name=name, output=output)
+def _task(name):
+    return SimpleNamespace(name=name)
 
 
 def _write_log(tmp_path, monkeypatch, job_id="job1"):
@@ -32,10 +32,10 @@ def test_joins_and_attributes_retries(tmp_path, monkeypatch):
     assert task_narration(job_id, _task("Beta")) == "beta line"
 
 
-def test_output_takes_precedence_and_skips_log(tmp_path, monkeypatch):
+def test_always_reconstructs_from_log(tmp_path, monkeypatch):
     job_id = _write_log(tmp_path, monkeypatch)
-    # A failed task's output wins; log is not consulted (would be "alpha line 1\n...").
-    assert task_narration(job_id, _task("Alpha", output="it failed")) == "it failed"
+    # job.log is the sole narration store — there is no stored output to short-circuit.
+    assert task_narration(job_id, _task("Alpha")) == "alpha line 1\nalpha line 2"
 
 
 def test_missing_log_returns_empty(tmp_path, monkeypatch):

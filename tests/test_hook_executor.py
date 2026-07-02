@@ -51,36 +51,22 @@ def test_success_hook_logs_info_line(tmp_path):
 
 def test_runs_in_repo_root_cwd(tmp_path):
     h = Hook(name="pwd", shell="pwd", estimated_duration_min=1)
-    ex = _captured_execution(HookExecutor(repo_root=tmp_path), h)
-    assert str(tmp_path.resolve()) in ex.output
+    _, output = HookExecutor(repo_root=tmp_path).run(h, "post_task", task_id="t1")
+    assert str(tmp_path.resolve()) in output
 
 
 def test_runs_in_project_venv(tmp_path):
     (tmp_path / ".venv" / "bin").mkdir(parents=True)
     h = Hook(name="env", shell="echo $VIRTUAL_ENV", estimated_duration_min=1)
-    ex = _captured_execution(HookExecutor(repo_root=tmp_path), h)
-    assert str((tmp_path / ".venv")) in ex.output
+    _, output = HookExecutor(repo_root=tmp_path).run(h, "post_task", task_id="t1")
+    assert str((tmp_path / ".venv")) in output
 
 
 def test_run_pipes_stdin_to_hook(tmp_path):
     h = Hook(name="readplan", shell="cat", estimated_duration_min=1)
-    ex = _captured_execution_with_stdin(HookExecutor(repo_root=tmp_path), h, "PLAN-YAML-HERE")
-    assert "PLAN-YAML-HERE" in ex.output
-
-
-def _captured_execution_with_stdin(executor, hook, stdin):
-    captured = []
-    executor.store = type("S", (), {"save_execution": lambda self, e: captured.append(e)})()
-    executor.run(hook, "pre_plan", task_id=None, stdin=stdin)
-    return captured[0]
-
-
-def _captured_execution(executor, hook):
-    """Run a hook, capturing the Execution it would persist."""
-    captured = []
-    executor.store = type("S", (), {"save_execution": lambda self, e: captured.append(e)})()
-    executor.run(hook, "post_task", task_id="t1")
-    return captured[0]
+    _, output = HookExecutor(repo_root=tmp_path).run(
+        h, "pre_plan", task_id=None, stdin="PLAN-YAML-HERE")
+    assert "PLAN-YAML-HERE" in output
 
 
 def test_hook_log_records_carry_step(tmp_path):

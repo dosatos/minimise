@@ -43,7 +43,6 @@ class HookExecutor:
 
         ex.status = TaskStatus.COMPLETED if success else TaskStatus.FAILED
         ex.completed_at = datetime.utcnow()
-        ex.output = output
         if self.store:
             self.store.save_execution(ex)
         if self.log_path and self.backend:

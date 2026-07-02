@@ -18,6 +18,7 @@ class Step:
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
     is_hook: bool = False
+    exit_reason: str = ""
 
 
 def _match_hook(execs, execution_type, task_id, hook_name):
@@ -56,7 +57,8 @@ def build_steps(plan: Plan, tasks: list, executions: list) -> list:
             for e in attempts:
                 steps.append(Step(name=f"{ptask.name}  · try {e.attempt + 1}",
                                   estimate=ptask.estimated_duration_min, status=e.status,
-                                  started_at=e.started_at, ended_at=e.completed_at))
+                                  started_at=e.started_at, ended_at=e.completed_at,
+                                  exit_reason=e.exit_reason or ""))
         else:
             steps.append(Step(name=ptask.name, estimate=ptask.estimated_duration_min,
                               status=TaskStatus.PENDING))
@@ -305,9 +307,10 @@ def render_execution_table_with_gantt(
     table.add_column("Expected", style="dim")
     table.add_column("Timeline (relative)", style="green")
     table.add_column("Type", style="dim")
+    table.add_column("Reason", style="dim")
 
     def add_row(name, status, started_at, completed_at, estimated_duration_min, is_hook,
-                timeline=None):
+                timeline=None, exit_reason=""):
         is_running = status == TaskStatus.RUNNING
         table.add_row(
             name,
@@ -323,6 +326,7 @@ def render_execution_table_with_gantt(
                 now=now,
             ),
             "hook" if is_hook else "task",
+            exit_reason or "",
         )
 
     if plan is not None:
@@ -336,7 +340,8 @@ def render_execution_table_with_gantt(
                 s, a, p = placements[i]
                 timeline = render_projected_bar(s, a, p, total_secs, now_off)
             add_row(step.name, step.status, step.started_at, step.ended_at,
-                    step.estimate, step.is_hook, timeline=timeline)
+                    step.estimate, step.is_hook, timeline=timeline,
+                    exit_reason=getattr(step, "exit_reason", "") or "")
         return table
 
     if executions is not None:
@@ -357,7 +362,7 @@ def render_execution_table_with_gantt(
             else:  # post_task
                 label, expected = f"Post-task hook  · {tname}", None
             add_row(label, ex.status, ex.started_at, ex.completed_at, expected,
-                    ex.execution_type != "task")
+                    ex.execution_type != "task", exit_reason=ex.exit_reason or "")
         # PENDING tasks (no task-type execution yet) shown as placeholder rows in plan order.
         for task in tasks:
             if task.id not in started_task_ids:

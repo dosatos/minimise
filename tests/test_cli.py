@@ -703,28 +703,31 @@ def test_results_logs_all_tasks(db, runner, mock_config_dir):
     db.create_job(job)
 
     # Create tasks with output
-    task1 = Task(estimated_duration_min=5, 
+    task1 = Task(estimated_duration_min=5,
         id="task-1",
         job_id=job.id,
         name="Task 1",
         description="First task",
         status=TaskStatus.COMPLETED,
-        output="Output from task 1\nLine 2\nLine 3",
         started_at=datetime.utcnow(),
         completed_at=datetime.utcnow(),
     )
-    task2 = Task(estimated_duration_min=5, 
+    task2 = Task(estimated_duration_min=5,
         id="task-2",
         job_id=job.id,
         name="Task 2",
         description="Second task",
         status=TaskStatus.COMPLETED,
-        output="Output from task 2\nDifferent output",
         started_at=datetime.utcnow(),
         completed_at=datetime.utcnow(),
     )
     db.create_task(task1)
     db.create_task(task2)
+    # Narration now lives in job.log (the sole narration store).
+    _write_job_log(mock_config_dir, job.id, [
+        ("Task 1", "Output from task 1"),
+        ("Task 2", "Output from task 2"),
+    ])
 
     # Retrieve logs via CLI
     result = runner.invoke(mini, ["job", "results", "logs", job.id])
@@ -753,28 +756,30 @@ def test_results_logs_single_task_with_task_id(db, runner, mock_config_dir):
     )
     db.create_job(job)
 
-    task1 = Task(estimated_duration_min=5, 
+    task1 = Task(estimated_duration_min=5,
         id="task-alpha",
         job_id=job.id,
         name="Task Alpha",
         description="Alpha task",
         status=TaskStatus.COMPLETED,
-        output="Alpha output",
         started_at=datetime.utcnow(),
         completed_at=datetime.utcnow(),
     )
-    task2 = Task(estimated_duration_min=5, 
+    task2 = Task(estimated_duration_min=5,
         id="task-beta",
         job_id=job.id,
         name="Task Beta",
         description="Beta task",
         status=TaskStatus.COMPLETED,
-        output="Beta output",
         started_at=datetime.utcnow(),
         completed_at=datetime.utcnow(),
     )
     db.create_task(task1)
     db.create_task(task2)
+    _write_job_log(mock_config_dir, job.id, [
+        ("Task Alpha", "Alpha output"),
+        ("Task Beta", "Beta output"),
+    ])
 
     # Retrieve logs for specific task via CLI
     result = runner.invoke(mini, ["job", "results", "logs", job.id, "--task-id", "task-alpha"])
@@ -853,6 +858,15 @@ def test_results_logs_nonexistent_job_fails(runner, mock_config_dir):
 # JOB LOGS COMMAND TESTS (live narration file, not the DB summary)
 # ============================================================================
 
+def _write_job_log(mock_config_dir, job_id, step_messages):
+    """Write job.log records (type=task) attributing each message to a step/name."""
+    log_dir = mock_config_dir / "jobs" / job_id
+    log_dir.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps({"type": "task", "step": step, "message": msg})
+             for step, msg in step_messages]
+    (log_dir / "job.log").write_text("\n".join(lines) + "\n")
+
+
 def _make_job_with_log(mock_config_dir, content: str, status=JobStatus.COMPLETED):
     """Create a job (+ one task & execution) and write `content` to its job.log."""
     db = Database(mock_config_dir / "minimise.db")
@@ -872,7 +886,6 @@ def _make_job_with_log(mock_config_dir, content: str, status=JobStatus.COMPLETED
         description="A task",
         status=TaskStatus.COMPLETED,
         retries=2,
-        output="DB narration blob",
         diff_path="/some/diff.patch",
     )
     db.create_task(task)
@@ -1373,7 +1386,6 @@ tasks:
         name="Task 1",
         description="First task description",
         status=TaskStatus.COMPLETED,
-        output="Task 1 output",
         completed_at=datetime.utcnow(),
     )
     task2 = Task(estimated_duration_min=5, 
@@ -1503,16 +1515,16 @@ def test_results_logs_task_prefix_matching(db, runner, mock_config_dir):
     db.create_job(job)
 
     # Create a task
-    task = Task(estimated_duration_min=5, 
+    task = Task(estimated_duration_min=5,
         id="prefix-task-12345",
         job_id=job.id,
         name="Prefix Task",
         description="Task for prefix matching",
         status=TaskStatus.COMPLETED,
-        output="Task output",
         completed_at=datetime.utcnow(),
     )
     db.create_task(task)
+    _write_job_log(mock_config_dir, job.id, [("Prefix Task", "Task output")])
 
     # Retrieve with prefix
     result = runner.invoke(mini, ["job", "results", "logs", job.id, "--task-id", "prefix"])
@@ -1562,18 +1574,18 @@ def test_results_logs_displays_task_metadata(db, runner, mock_config_dir):
     db.create_job(job)
 
     # Create a task with metadata
-    task = Task(estimated_duration_min=5, 
+    task = Task(estimated_duration_min=5,
         id="task-metadata",
         job_id=job.id,
         name="Task with Metadata",
         description="Full task description",
         status=TaskStatus.COMPLETED,
-        output="Full output text",
         retries=2,
         started_at=datetime.utcnow(),
         completed_at=datetime.utcnow(),
     )
     db.create_task(task)
+    _write_job_log(mock_config_dir, job.id, [("Task with Metadata", "Full output text")])
 
     # Retrieve logs
     result = runner.invoke(mini, ["job", "results", "logs", job.id])

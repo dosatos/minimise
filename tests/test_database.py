@@ -127,10 +127,9 @@ def test_update_task_status(db):
     task = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job.id, name="Test Task", description="", status=TaskStatus.PENDING)
     db.create_task(task)
 
-    db.update_task_status(task.id, TaskStatus.COMPLETED, output="Task output", retries=0)
+    db.update_task_status(task.id, TaskStatus.COMPLETED, retries=0)
     updated = db.get_task(task.id)
     assert updated.status == TaskStatus.COMPLETED
-    assert updated.output == "Task output"
 
 def test_list_tasks_for_job(db):
     """Test listing tasks for a specific job."""
@@ -252,13 +251,12 @@ def test_task_timing_preservation(db):
     assert task2.started_at == start_time
     assert task2.completed_at is None
 
-    # Update to COMPLETED with completed_at and output (should preserve started_at)
+    # Update to COMPLETED with completed_at (should preserve started_at)
     time.sleep(0.01)
     end_time = datetime.utcnow()
     db.update_task_status(
         task.id,
         TaskStatus.COMPLETED,
-        output="Task output",
         retries=0,
         completed_at=end_time,
     )
@@ -267,7 +265,6 @@ def test_task_timing_preservation(db):
     assert task3.status == TaskStatus.COMPLETED
     assert task3.started_at == start_time, "started_at should be preserved"
     assert task3.completed_at == end_time
-    assert task3.output == "Task output"
     assert task3.completed_at > task3.started_at
 
 
@@ -324,7 +321,7 @@ def test_row_to_task_roundtrip(db):
     task = Task(
         estimated_duration_min=9, id=str(uuid.uuid4()), job_id=job.id,
         name="Task RT", description="d", status=TaskStatus.COMPLETED,
-        output="out", retries=2, base_commit="def456", goal="ship it",
+        retries=2, base_commit="def456", goal="ship it",
     )
     db.create_task(task)
 
@@ -481,6 +478,13 @@ def test_execution_hook_name_round_trips(tmp_path):
     assert len(loaded) == 1
     assert loaded[0].hook_name == "pytest"
     assert loaded[0].execution_id.endswith("post_task_hook#pytest")
+
+
+def test_execution_exit_reason_round_trips(db):
+    """An Execution's exit_reason persists and comes back via list_executions_for_task."""
+    db.save_execution(Execution(task_id="t1", attempt=0, job_id="j1",
+                                status=TaskStatus.FAILED, exit_reason="timeout"))
+    assert db.list_executions_for_task("t1")[0].exit_reason == "timeout"
 
 
 def test_create_job_with_tasks_is_atomic(db):

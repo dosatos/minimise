@@ -149,7 +149,6 @@ def test_get_job_by_id_endpoint(api_server, db):
         name="Task 1",
         description="First task",
         status=TaskStatus.COMPLETED,
-        output="Task completed",
     )
     task2 = Task(estimated_duration_min=5, 
         id=str(uuid.uuid4()),
@@ -189,7 +188,6 @@ def test_get_task_by_id_endpoint(api_server, db):
         name="Test Task",
         description="A test task",
         status=TaskStatus.COMPLETED,
-        output="Task output here",
         retries=1,
         diff_path="/path/to/diff",
     )
@@ -204,7 +202,6 @@ def test_get_task_by_id_endpoint(api_server, db):
         assert task_data["id"] == task_id
         assert task_data["name"] == "Test Task"
         assert task_data["status"] == TaskStatus.COMPLETED.value
-        assert task_data["output"] == "Task output here"
         assert task_data["retries"] == 1
         assert task_data["diff_path"] == "/path/to/diff"
 
