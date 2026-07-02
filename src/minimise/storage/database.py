@@ -49,6 +49,7 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         diff_path=row['diff_path'],
         base_commit=row['base_commit'] if 'base_commit' in keys else None,
         goal=row['goal'] if 'goal' in keys else None,
+        assignee=row['assignee'] if 'assignee' in keys else None,
         estimated_duration_min=dur if dur is not None else 5,
     )
 
@@ -129,7 +130,7 @@ class Database:
         finally:
             conn.close()
 
-    SCHEMA_VERSION = 4
+    SCHEMA_VERSION = 5
 
     def init_db(self):
         """Create/migrate the schema once per DB.
@@ -178,6 +179,7 @@ class Database:
                 diff_path TEXT,
                 base_commit TEXT,
                 goal TEXT,
+                assignee TEXT,
                 estimated_duration_min INTEGER NOT NULL DEFAULT 5,
                 FOREIGN KEY(job_id) REFERENCES jobs(id)
             )
@@ -189,6 +191,8 @@ class Database:
             cursor.execute("ALTER TABLE tasks ADD COLUMN base_commit TEXT")
         if 'goal' not in columns:
             cursor.execute("ALTER TABLE tasks ADD COLUMN goal TEXT")
+        if 'assignee' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN assignee TEXT")
         if 'estimated_duration_min' not in columns:
             cursor.execute("ALTER TABLE tasks ADD COLUMN estimated_duration_min INTEGER DEFAULT NULL")
 
@@ -218,6 +222,7 @@ class Database:
                         diff_path TEXT,
                         base_commit TEXT,
                         goal TEXT,
+                        assignee TEXT,
                         estimated_duration_min INTEGER NOT NULL DEFAULT 5,
                         FOREIGN KEY(job_id) REFERENCES jobs(id)
                     )
@@ -297,6 +302,7 @@ class Database:
                 diff_path TEXT,
                 base_commit TEXT,
                 goal TEXT,
+                assignee TEXT,
                 estimated_duration_min INTEGER NOT NULL DEFAULT 5,
                 FOREIGN KEY(job_id) REFERENCES jobs(id)
             )
@@ -389,11 +395,11 @@ class Database:
         """Insert a new task."""
         with self._write(conn) as cursor:
             cursor.execute("""
-                INSERT INTO tasks (id, job_id, name, description, status, retries, created_at, started_at, completed_at, diff_path, base_commit, goal, estimated_duration_min)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO tasks (id, job_id, name, description, status, retries, created_at, started_at, completed_at, diff_path, base_commit, goal, assignee, estimated_duration_min)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (task.id, task.job_id, task.name, task.description, task.status.value, task.retries,
                   task.created_at.isoformat(), task.started_at.isoformat() if task.started_at else None,
-                  task.completed_at.isoformat() if task.completed_at else None, task.diff_path, task.base_commit, task.goal, task.estimated_duration_min))
+                  task.completed_at.isoformat() if task.completed_at else None, task.diff_path, task.base_commit, task.goal, task.assignee, task.estimated_duration_min))
 
     def update_task_status(self, task_id: str, status: TaskStatus, retries: int = 0, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, conn: Optional[sqlite3.Connection] = None) -> None:
         """Update task status.
@@ -438,11 +444,12 @@ class Database:
                     diff_path = ?,
                     base_commit = ?,
                     goal = ?,
+                    assignee = ?,
                     estimated_duration_min = ?
                 WHERE id = ?
             """, (task.job_id, task.name, task.description, task.status.value, task.retries,
                   task.created_at.isoformat(), task.started_at.isoformat() if task.started_at else None,
-                  task.completed_at.isoformat() if task.completed_at else None, task.diff_path, task.base_commit, task.goal, task.estimated_duration_min, task.id))
+                  task.completed_at.isoformat() if task.completed_at else None, task.diff_path, task.base_commit, task.goal, task.assignee, task.estimated_duration_min, task.id))
 
     def update_task_diff_path(self, task_id: str, diff_path: str, conn: Optional[sqlite3.Connection] = None) -> None:
         """Update only the diff_path for a task.

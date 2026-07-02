@@ -40,7 +40,16 @@ def test_task_to_dict():
         "started_at": "2026-01-02T03:04:05",
         "completed_at": None,
         "diff_path": "/tmp/diff",
+        "assignee": None,
     }
+
+
+def test_task_to_dict_carries_assignee():
+    default = Task(id="t1", job_id="j1", name="n", description="d", estimated_duration_min=5)
+    assert default.to_dict()["assignee"] is None
+    assigned = Task(id="t1", job_id="j1", name="n", description="d",
+                    estimated_duration_min=5, assignee="coder")
+    assert assigned.to_dict()["assignee"] == "coder"
 
 
 def test_job_to_dict_with_nested_tasks():

@@ -350,6 +350,9 @@ def test_job_status_json_includes_task_ids(runner, mock_config_dir):
     assert "task-alpha" in task_ids
     assert "task-beta" in task_ids
 
+    # Every task entry carries an assignee key (null when unassigned)
+    assert all("assignee" in t for t in output_json["tasks"])
+
 
 def test_job_status_json_includes_timing(runner, mock_config_dir):
     """Test that job status JSON includes duration and timing information."""
@@ -2263,3 +2266,69 @@ def test_job_estimate_total_includes_hooks():
     tasks = [Task(id="task-1", job_id="j1", name="B", description="d",
                   estimated_duration_min=3, goal="g")]
     assert job_estimate_total(tasks, plan) == 2 + 3 + 4
+
+
+def test_job_new_rejects_unknown_assignee(runner, mock_config_dir, isolated_repo):
+    """An assignee with no matching persona rejects the job (no personas.yaml)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        plan_path = Path(tmpdir) / "plan.yaml"
+        plan_path.write_text("""
+name: Assignee Plan
+tasks:
+  - id: t1
+    name: Task 1
+    description: Task with an assignee that is not a defined persona
+    goal: Do the thing
+    assignee: nobody
+    estimated_duration_min: 30
+""")
+        result = runner.invoke(mini, ["job", "new", "--plan", str(plan_path)])
+
+        assert result.exit_code != 0
+        assert "Unknown persona" in result.output
+        assert "nobody" in result.output
+
+        db = Database(mock_config_dir / "minimise.db"); db.init_db()
+        assert db.list_jobs() == []
+
+
+def test_job_new_accepts_known_assignee(runner, mock_config_dir, isolated_repo):
+    """An assignee matching a persona in personas.yaml lets the job succeed."""
+    (mock_config_dir / "personas.yaml").write_text(
+        "reviewer:\n  prompt: You are a careful reviewer.\n"
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        plan_path = Path(tmpdir) / "plan.yaml"
+        plan_path.write_text("""
+name: Assignee Plan
+tasks:
+  - id: t1
+    name: Task 1
+    description: Task assigned to a persona that exists in the registry
+    goal: Do the thing
+    assignee: reviewer
+    estimated_duration_min: 30
+""")
+        result = runner.invoke(mini, ["job", "new", "--plan", str(plan_path)])
+
+        assert result.exit_code == 0
+        assert "Job created" in result.output
+
+
+def test_job_new_no_assignee_no_personas(runner, mock_config_dir, isolated_repo):
+    """No assignee + no personas.yaml -> gate is a no-op, job creation proceeds."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        plan_path = Path(tmpdir) / "plan.yaml"
+        plan_path.write_text("""
+name: Plain Plan
+tasks:
+  - id: t1
+    name: Task 1
+    description: Task without any assignee at all here
+    goal: Do the thing
+    estimated_duration_min: 30
+""")
+        result = runner.invoke(mini, ["job", "new", "--plan", str(plan_path)])
+
+        assert result.exit_code == 0
+        assert "Job created" in result.output

@@ -570,9 +570,11 @@ def test_invoke_delegates_to_harness_and_propagates_success(temp_db_dir, db, git
     args, kwargs = fake.run.call_args
     assert kwargs["allow_edits"] is True
     assert kwargs["cwd"] == str(git_repo)
-    # No timeout/model override is passed: harness defaults are preserved.
+    # No timeout override, and model/system_prompt are None (no persona) so the
+    # harness omits --model/--system-prompt: today's defaults are preserved.
     assert "timeout" not in kwargs
-    assert "model" not in kwargs
+    assert kwargs["model"] is None
+    assert kwargs["system_prompt"] is None
 
     # Prompt (first positional arg) carries the task name and description.
     prompt = args[0]
@@ -716,5 +718,42 @@ def test_execute_task_writes_no_banner_to_log(temp_db_dir, db, git_repo):
     log_path = store.job_log_path(job_id)
     content = log_path.read_text() if log_path.exists() else ""
     assert "--- task" not in content
+
+
+def test_assigned_task_passes_persona_system_prompt_and_model(temp_db_dir, db, git_repo):
+    """A task with an assignee runs with the persona's system_prompt and model,
+    proving the value threads through the context dict all the way to harness.run."""
+    from minimise.personas import Persona
+
+    git_tracker = GitTracker(git_repo)
+    fake = Mock(spec=AgentHarness)
+    fake.run.return_value = HarnessResult(success=True, output="ok")
+    persona = Persona(name="reviewer", model="claude-opus-4-8", system_prompt="You are a picky reviewer.")
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake,
+                            personas={"reviewer": persona})
+    job_id, task = _setup_job_and_task(db, git_tracker)
+    task.assignee = "reviewer"
+
+    executor.execute_task(task, job_id, "")
+
+    assert fake.run.call_args.kwargs["system_prompt"] == "You are a picky reviewer."
+    assert fake.run.call_args.kwargs["model"] == "claude-opus-4-8"
+
+
+def test_unassigned_task_passes_none_system_prompt_and_model(temp_db_dir, db, git_repo):
+    """A task with no assignee runs with system_prompt=None and model=None (today's behavior)."""
+    from minimise.personas import Persona
+
+    git_tracker = GitTracker(git_repo)
+    fake = Mock(spec=AgentHarness)
+    fake.run.return_value = HarnessResult(success=True, output="ok")
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake,
+                            personas={"reviewer": Persona(name="reviewer", system_prompt="x")})
+    job_id, task = _setup_job_and_task(db, git_tracker)  # no assignee
+
+    executor.execute_task(task, job_id, "")
+
+    assert fake.run.call_args.kwargs["system_prompt"] is None
+    assert fake.run.call_args.kwargs["model"] is None
 
 

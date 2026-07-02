@@ -50,6 +50,7 @@ class AgentHarness(ABC):
         cwd: Optional[str] = None,
         timeout: float = 900,
         model: Optional[str] = None,
+        system_prompt: Optional[str] = None,
         allow_edits: bool = False,
         log_path: Optional[Union[str, Path]] = None,
         log_fields: Optional[dict] = None,
@@ -115,6 +116,7 @@ class ClaudeCodeHarness(AgentHarness):
         cwd: Optional[str] = None,
         timeout: float = 900,
         model: Optional[str] = None,
+        system_prompt: Optional[str] = None,
         allow_edits: bool = False,
         log_path: Optional[Union[str, Path]] = None,
         log_fields: Optional[dict] = None,
@@ -126,6 +128,8 @@ class ClaudeCodeHarness(AgentHarness):
             cmd.append("--dangerously-skip-permissions")
         if model is not None:
             cmd += ["--model", model]
+        if system_prompt is not None:
+            cmd += ["--system-prompt", system_prompt]
 
         proc = None
         try:

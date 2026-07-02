@@ -547,3 +547,97 @@ def test_delete_job_removes_plan_hook_rows(db):
     assert len(db.list_executions_for_job("J")) == 1
     db.delete_job("J")
     assert db.list_executions_for_job("J") == []
+
+
+def test_assignee_round_trips(db):
+    """assignee persists through create/get and list; unset reloads as None."""
+    job = Job(id=str(uuid.uuid4()), name="Test Job", status=JobStatus.PENDING)
+    db.create_job(job)
+
+    with_assignee = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job.id,
+                         name="Assigned", description="", status=TaskStatus.PENDING,
+                         assignee="alice")
+    without = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job.id,
+                   name="Unassigned", description="", status=TaskStatus.PENDING)
+    db.create_task(with_assignee)
+    db.create_task(without)
+
+    assert db.get_task(with_assignee.id).assignee == "alice"
+    assert db.get_task(without.id).assignee is None
+
+    by_name = {t.name: t for t in db.list_tasks_for_job(job.id)}
+    assert by_name["Assigned"].assignee == "alice"
+    assert by_name["Unassigned"].assignee is None
+
+
+def test_update_task_persists_assignee(db):
+    """update_task writes assignee."""
+    job = Job(id=str(uuid.uuid4()), name="Test Job", status=JobStatus.PENDING)
+    db.create_job(job)
+    task = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job.id,
+                name="T", description="", status=TaskStatus.PENDING)
+    db.create_task(task)
+
+    task.assignee = "bob"
+    db.update_task(task)
+    assert db.get_task(task.id).assignee == "bob"
+
+
+def test_init_db_idempotent(tmp_path):
+    """init_db called twice does not error and leaves user_version at SCHEMA_VERSION."""
+    import sqlite3
+    from minimise.storage.database import Database
+
+    db_path = tmp_path / "idempotent.db"
+    Database(db_path).init_db()
+    Database(db_path).init_db()
+
+    conn = sqlite3.connect(db_path)
+    ver = conn.execute("PRAGMA user_version").fetchone()[0]
+    conn.close()
+    assert ver == Database.SCHEMA_VERSION
+
+
+def test_assignee_survives_both_rebuild_paths(tmp_path):
+    """A legacy tasks table with an `output` column AND a nullable duration fires
+    BOTH the dur_migration and _drop_output_column rebuilds. If either tasks_new
+    literal dropped assignee, create_task would raise OperationalError: no such
+    column. Round-tripping an assignee here proves both literals kept it."""
+    import sqlite3
+    from minimise.storage.database import Database
+
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE jobs (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL,
+            plan_path TEXT, base_commit TEXT, created_at TEXT NOT NULL,
+            started_at TEXT, completed_at TEXT, pid INTEGER
+        )
+    """)
+    # output column present (fires _drop_output_column) + estimated_duration_min
+    # NULLABLE (notnull flag 0 -> fires dur_migration rebuild). No assignee column.
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY, job_id TEXT NOT NULL, name TEXT NOT NULL,
+            description TEXT, status TEXT NOT NULL, output TEXT,
+            retries INTEGER DEFAULT 0, created_at TEXT NOT NULL, started_at TEXT,
+            completed_at TEXT, diff_path TEXT, base_commit TEXT, goal TEXT,
+            estimated_duration_min INTEGER DEFAULT NULL,
+            FOREIGN KEY(job_id) REFERENCES jobs(id)
+        )
+    """)
+    conn.execute("INSERT INTO jobs (id, name, status, created_at) "
+                 "VALUES ('j1','n','pending','2026-01-01T00:00:00')")
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path)
+    db.init_db()
+
+    job = Job(id="j2", name="n", status=JobStatus.PENDING)
+    db.create_job(job)
+    task = Task(estimated_duration_min=5, id="t2", job_id="j2", name="n",
+                description="", status=TaskStatus.PENDING, assignee="carol")
+    db.create_task(task)  # must NOT raise OperationalError: no such column: assignee
+    assert db.get_task("t2").assignee == "carol"

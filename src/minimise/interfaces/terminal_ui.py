@@ -19,6 +19,7 @@ class Step:
     ended_at: Optional[datetime] = None
     is_hook: bool = False
     exit_reason: str = ""
+    assignee: str = ""
 
 
 def _match_hook(execs, execution_type, task_id, hook_name):
@@ -53,15 +54,16 @@ def build_steps(plan: Plan, tasks: list, executions: list) -> list:
             (e for e in executions if e.execution_type == "task" and e.task_id == task_id),
             key=lambda e: e.attempt,
         )
+        assignee = (task.assignee or "") if task else ""
         if attempts:
             for e in attempts:
                 steps.append(Step(name=f"{ptask.name}  · try {e.attempt + 1}",
                                   estimate=ptask.estimated_duration_min, status=e.status,
                                   started_at=e.started_at, ended_at=e.completed_at,
-                                  exit_reason=e.exit_reason or ""))
+                                  exit_reason=e.exit_reason or "", assignee=assignee))
         else:
             steps.append(Step(name=ptask.name, estimate=ptask.estimated_duration_min,
-                              status=TaskStatus.PENDING))
+                              status=TaskStatus.PENDING, assignee=assignee))
 
         steps += _hook_steps(ptask.post_hooks, executions, "post_task", task_id)
     steps += _hook_steps(plan.post_hooks, executions, "post_plan", None)
@@ -222,8 +224,10 @@ def project_steps(steps, job_start, now):
     """Project the whole plan onto one shared timeline (seconds from job_start).
 
     Walks steps in order carrying a projected cursor so pending work chains
-    after the last known end. Returns (placements, total_secs, now_off) where
-    each placement is (start_off, actual_end_off, proj_end_off) in seconds."""
+    after the last known end. Returns (placements, total_secs) where each
+    placement is (start_off, actual_end_off, proj_end_off) in seconds. The
+    timeline spans the projected end of the last step, so bars fill the full
+    width regardless of when the job is viewed."""
     placements = []
     cursor = 0.0
     for step in steps:
@@ -245,15 +249,14 @@ def project_steps(steps, job_start, now):
         proj_end_off = max(0, proj_end_off)
         cursor = max(cursor, proj_end_off)
         placements.append((start_off, actual_end_off, proj_end_off))
-    now_off = max(0, (now - job_start).total_seconds())
-    total_secs = max(cursor, now_off, 1)  # never divide by zero
-    return placements, total_secs, now_off
+    total_secs = max(cursor, 1)  # never divide by zero
+    return placements, total_secs
 
 
 def render_projected_bar(start_off, actual_end_off, proj_end_off,
-                         total_secs, now_off, width=28):
-    """One row on the shared projected timeline: solid actual, light projected
-    estimate, then a single "╎" now-line unless it lands on solid actual."""
+                         total_secs, width=28):
+    """One row on the shared projected timeline: solid for actual elapsed,
+    light for the projected estimate remaining."""
     cols = []
     for i in range(width):
         t = (i / width) * total_secs
@@ -263,9 +266,6 @@ def render_projected_bar(start_off, actual_end_off, proj_end_off,
             cols.append("░")
         else:
             cols.append(" ")
-    now_col = min(width - 1, int((now_off / total_secs) * width))
-    if cols[now_col] != "█":
-        cols[now_col] = "╎"
     return "".join(cols)
 
 
@@ -300,20 +300,28 @@ def render_execution_table_with_gantt(
     now = _now_or_default(now)
     executions_by_task = executions_by_task or {}
 
+    # Size the Gantt bar to the terminal: the other 7 columns + chrome need
+    # ~66 cols, so give the rest to the bar (clamped) — otherwise a fixed-width
+    # bar gets cropped with "…" on narrow terminals.
+    from rich.console import Console
+    bar_width = max(8, min(28, Console().width - 66))
+
     table = Table()
     table.add_column("Task Name", style="cyan")
+    table.add_column("Assignee", style="dim")
     table.add_column("Status", style="cyan")
     table.add_column("Duration", style="yellow")
     table.add_column("Expected", style="dim")
-    table.add_column("Timeline (relative)", style="green")
+    table.add_column("Timeline (relative)", style="green", no_wrap=True)
     table.add_column("Type", style="dim")
     table.add_column("Reason", style="dim")
 
     def add_row(name, status, started_at, completed_at, estimated_duration_min, is_hook,
-                timeline=None, exit_reason=""):
+                timeline=None, exit_reason="", assignee=""):
         is_running = status == TaskStatus.RUNNING
         table.add_row(
             name,
+            assignee or "",
             Text(status.value, style=get_status_color(status)),
             format_duration(started_at, completed_at, is_running=is_running, now=now),
             humanize_duration(estimated_duration_min * 60) if estimated_duration_min else "—",
@@ -322,6 +330,7 @@ def render_execution_table_with_gantt(
                 completed_at,
                 job.started_at,
                 job.completed_at,
+                bar_width=bar_width,
                 is_running=is_running,
                 now=now,
             ),
@@ -331,22 +340,24 @@ def render_execution_table_with_gantt(
 
     if plan is not None:
         steps = build_steps(plan, tasks, executions or [])
-        placements = total_secs = now_off = None
+        placements = total_secs = None
         if job.started_at:
-            placements, total_secs, now_off = project_steps(steps, job.started_at, now)
+            placements, total_secs = project_steps(steps, job.started_at, now)
         for i, step in enumerate(steps):
             timeline = None
             if placements is not None:
                 s, a, p = placements[i]
-                timeline = render_projected_bar(s, a, p, total_secs, now_off)
+                timeline = render_projected_bar(s, a, p, total_secs, width=bar_width)
             add_row(step.name, step.status, step.started_at, step.ended_at,
                     step.estimate, step.is_hook, timeline=timeline,
-                    exit_reason=getattr(step, "exit_reason", "") or "")
+                    exit_reason=getattr(step, "exit_reason", "") or "",
+                    assignee=step.assignee)
         return table
 
     if executions is not None:
         names = {t.id: t.name for t in tasks}
         task_est = {t.id: t.estimated_duration_min for t in tasks}
+        task_assignee = {t.id: (t.assignee or "") for t in tasks}
         started_task_ids = set()
         for ex in executions:
             tname = names.get(ex.task_id, "")
@@ -362,11 +373,13 @@ def render_execution_table_with_gantt(
             else:  # post_task
                 label, expected = f"Post-task hook  · {tname}", None
             add_row(label, ex.status, ex.started_at, ex.completed_at, expected,
-                    ex.execution_type != "task", exit_reason=ex.exit_reason or "")
+                    ex.execution_type != "task", exit_reason=ex.exit_reason or "",
+                    assignee=task_assignee.get(ex.task_id, "") if ex.execution_type == "task" else "")
         # PENDING tasks (no task-type execution yet) shown as placeholder rows in plan order.
         for task in tasks:
             if task.id not in started_task_ids:
-                add_row(task.name, TaskStatus.PENDING, None, None, task.estimated_duration_min, False)
+                add_row(task.name, TaskStatus.PENDING, None, None, task.estimated_duration_min, False,
+                        assignee=task.assignee or "")
         return table
 
     for task in tasks:
@@ -380,6 +393,7 @@ def render_execution_table_with_gantt(
                     ex.completed_at,
                     task.estimated_duration_min,
                     False,
+                    assignee=task.assignee or "",
                 )
         else:
             add_row(
@@ -389,6 +403,7 @@ def render_execution_table_with_gantt(
                 task.completed_at,
                 task.estimated_duration_min,
                 False,
+                assignee=task.assignee or "",
             )
 
     return table

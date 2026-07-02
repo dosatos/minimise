@@ -25,6 +25,7 @@ from minimise.interfaces.cli._shared import (
     task_narration,
 )
 from minimise.interfaces.cli.results import job_results
+from minimise.personas import load_personas
 
 
 def job_estimate_total(tasks, plan=None) -> int:
@@ -66,7 +67,19 @@ def job_new(plan: str):
 
         console.print("[green]✓[/green] Plan syntax valid")
 
-        # 2. Create the job
+        # 2. Resolve every task assignee against the persona registry
+        try:
+            personas = load_personas(_cli.CONFIG_DIR)
+        except ValueError as e:
+            console.print(f"[red]Persona config error: {e}[/red]")
+            raise SystemExit(1)
+        unknown = sorted({t.assignee for t in plan_obj.tasks
+                          if t.assignee and t.assignee not in personas})
+        if unknown:
+            console.print(f"[red]Unknown persona(s): {', '.join(unknown)}[/red]")
+            raise SystemExit(1)
+
+        # 3. Create the job
         db = get_db()
         job_controller = get_job_controller(db)
 
@@ -229,6 +242,7 @@ def job_status(job_id: str, format: str):
                     "status": task.status.value,
                     "started_at": task.started_at.isoformat() if task.started_at else None,
                     "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+                    "assignee": task.assignee,
                 }
                 task_execs = [e for e in db.list_executions_for_task(task.id) if e.execution_type == "task"]
                 task_data["exit_reason"] = task_execs[-1].exit_reason if task_execs else None
@@ -520,6 +534,8 @@ def job_show(job_id: str, task_id: Optional[str]):
             task_execs = [e for e in db.list_executions_for_task(task.id) if e.execution_type == "task"]
             latest_reason = task_execs[-1].exit_reason if task_execs else None
             console.print(f"[bold]Status:[/bold] {task.status.value}")
+            if task.assignee:
+                console.print(f"[bold]Assignee:[/bold] {task.assignee}")
             console.print(f"[bold]Exit Reason:[/bold] {latest_reason or '—'}\n")
 
             # Display task description

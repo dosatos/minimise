@@ -41,6 +41,7 @@ class JobStore:
                 name=pt.name,
                 description=pt.description,
                 goal=pt.goal,
+                assignee=pt.assignee,
                 status=TaskStatus.PENDING,
                 created_at=datetime.utcnow(),
                 base_commit=base_commit,

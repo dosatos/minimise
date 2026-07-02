@@ -164,6 +164,43 @@ The **goal** is prepended to the agent's prompt, ensuring clarity on intent. Thi
 
 This separation ensures agents understand *what* is needed before tackling *how*.
 
+## Personas
+
+Personas let you pin a specific system prompt (and optionally model) to a task.
+They are defined in `~/.minimise/personas.yaml` (optional — no file means no
+personas). Each top-level key is a persona name mapping to:
+
+- `model:` — *optional*, pins the model for tasks assigned this persona.
+- exactly **one** of `prompt:` (inline text) or `prompt_file:` (a path resolved
+  relative to `~/.minimise/`).
+
+A persona's prompt **replaces** the default system prompt for that task; if
+`model` is set it pins the model. Setting both `prompt` and `prompt_file`, or
+neither, is an error.
+
+```yaml
+# ~/.minimise/personas.yaml
+reviewer:
+  model: claude-opus-4-8
+  prompt: "You are a meticulous code reviewer. Prioritize correctness and edge cases."
+
+architect:
+  prompt_file: prompts/architect.md   # resolved relative to ~/.minimise/
+```
+
+Assign a persona to a task with the optional per-task `assignee:` field naming a
+persona. A task with no `assignee` uses the default prompt and model. An unknown
+persona name causes `mini job new` to fail up front.
+
+```yaml
+tasks:
+  - id: task-1
+    name: "Review the diff"
+    goal: "Catch correctness bugs before merge"
+    description: "Review the changes for regressions and edge cases"
+    assignee: reviewer   # uses persona from ~/.minimise/personas.yaml
+```
+
 ## Commands
 
 ### Job Lifecycle Commands

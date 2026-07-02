@@ -30,7 +30,9 @@ def get_db() -> Database:
 
 def get_job_controller(db: Database) -> JobController:
     """Get job controller instance."""
-    return JobController.from_paths(db, _cli.REPO_PATH, _cli.JOBS_DIR)
+    from minimise.personas import load_personas
+    personas = load_personas(_cli.CONFIG_DIR)
+    return JobController.from_paths(db, _cli.REPO_PATH, _cli.JOBS_DIR, personas=personas)
 
 
 def resolve_job_id(job_id_or_prefix: str) -> str:

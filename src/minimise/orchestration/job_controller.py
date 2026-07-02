@@ -23,22 +23,23 @@ from minimise.utils import ensure_directory
 class JobController:
     """Orchestrates job creation, process control, and status callbacks."""
 
-    def __init__(self, db: Database, git_tracker: GitTracker, jobs_dir: Path, repo_path: Path):
+    def __init__(self, db: Database, git_tracker: GitTracker, jobs_dir: Path, repo_path: Path,
+                 personas: Optional[dict] = None):
         self.db = db
         self.git_tracker = git_tracker
         self.jobs_dir = ensure_directory(jobs_dir)
         self.repo_path = Path(repo_path)
         self.store = JobStore(db, jobs_dir)
-        self.task_executor = TaskExecutor(self.store, git_tracker)
+        self.task_executor = TaskExecutor(self.store, git_tracker, personas=personas)
         self.hook_executor = HookExecutor(
             store=self.store, repo_root=self.repo_path, backend=JsonlLogBackend(),
         )
         self.executor = JobExecutor(self.task_executor, self.hook_executor)
 
     @classmethod
-    def from_paths(cls, db, repo_path, jobs_dir) -> "JobController":
+    def from_paths(cls, db, repo_path, jobs_dir, personas=None) -> "JobController":
         """Build a controller, wiring a GitTracker for ``repo_path``."""
-        return cls(db, GitTracker(Path(repo_path)), jobs_dir, repo_path)
+        return cls(db, GitTracker(Path(repo_path)), jobs_dir, repo_path, personas=personas)
 
     def create_job(self, plan_path: Path) -> Optional[Job]:
         """Create a job from a plan.yaml file, or return None if creation failed."""

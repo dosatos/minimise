@@ -35,6 +35,7 @@ class Task:
     diff_path: Optional[str] = None
     base_commit: Optional[str] = None
     goal: Optional[str] = None
+    assignee: Optional[str] = None
 
     def to_dict(self) -> dict:
         """Convert Task object to dictionary for JSON serialization."""
@@ -49,6 +50,7 @@ class Task:
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "diff_path": self.diff_path,
+            "assignee": self.assignee,
         }
 
 @dataclass
@@ -162,6 +164,7 @@ class PlanTask(BaseModel):
     goal: str
     # strict rejects bool (an int subclass) and float; gt=0 keeps it positive
     estimated_duration_min: int = Field(gt=0, strict=True)
+    assignee: Optional[str] = None
     pre_hooks: list[Hook] = Field(default_factory=list)
     post_hooks: list[Hook] = Field(default_factory=list)
 

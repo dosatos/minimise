@@ -162,6 +162,19 @@ def test_command_includes_model_only_when_given(mock_popen):
 
 
 @patch("minimise.agents.harness.subprocess.Popen")
+def test_command_includes_system_prompt_only_when_given(mock_popen):
+    mock_popen.side_effect = make_fake_popen([])
+
+    ClaudeCodeHarness().run("hi")
+    assert "--system-prompt" not in mock_popen.call_args.args[0]
+
+    ClaudeCodeHarness().run("hi", system_prompt="PERSONA TEXT")
+    cmd = mock_popen.call_args.args[0]
+    assert "--system-prompt" in cmd
+    assert cmd[cmd.index("--system-prompt") + 1] == "PERSONA TEXT"
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
 def test_run_passes_prompt_cwd(mock_popen):
     mock_popen.side_effect = make_fake_popen([])
     ClaudeCodeHarness().run("the-prompt", cwd="/repo", timeout=120)

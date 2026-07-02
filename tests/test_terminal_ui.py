@@ -417,14 +417,15 @@ class TestRenderTaskTableWithGantt:
         # Check that table was created
         assert table is not None
         # Check that table has the expected columns
-        assert len(table.columns) == 7
+        assert len(table.columns) == 8
         assert table.columns[0].header == "Task Name"
-        assert table.columns[1].header == "Status"
-        assert table.columns[2].header == "Duration"
-        assert table.columns[3].header == "Expected"
-        assert table.columns[4].header == "Timeline (relative)"
-        assert table.columns[5].header == "Type"
-        assert table.columns[6].header == "Reason"
+        assert table.columns[1].header == "Assignee"
+        assert table.columns[2].header == "Status"
+        assert table.columns[3].header == "Duration"
+        assert table.columns[4].header == "Expected"
+        assert table.columns[5].header == "Timeline (relative)"
+        assert table.columns[6].header == "Type"
+        assert table.columns[7].header == "Reason"
 
     def test_render_execution_table_with_gantt_row_count(self, sample_job, sample_tasks, base_time):
         """Test that table has correct number of rows."""
@@ -439,7 +440,7 @@ class TestRenderTaskTableWithGantt:
 
         assert table is not None
         assert len(table.rows) == 0
-        assert len(table.columns) == 7
+        assert len(table.columns) == 8
 
     def test_render_execution_table_with_gantt_contains_duration_data(self, sample_job, sample_tasks, base_time):
         """Test that table includes duration information."""
@@ -505,10 +506,10 @@ class TestRenderTaskTableWithGantt:
         # Row labels distinguish attempts
         assert table.columns[0]._cells == ["Retried Task  · try 1", "Retried Task  · try 2"]
         # Status cells read failed then completed (per-execution, not task)
-        assert table.columns[1]._cells[0].plain == "failed"
-        assert table.columns[1]._cells[1].plain == "completed"
+        assert table.columns[2]._cells[0].plain == "failed"
+        assert table.columns[2]._cells[1].plain == "completed"
         # Timeline bars differ (computed from each execution's own span)
-        assert table.columns[4]._cells[0] != table.columns[4]._cells[1]
+        assert table.columns[5]._cells[0] != table.columns[5]._cells[1]
 
     def test_render_no_executions_falls_back_to_single_row(self, sample_job, sample_tasks, base_time):
         """A task with no executions renders exactly one row (today's behavior)."""
@@ -664,7 +665,7 @@ class TestRenderTaskTableWithGantt:
             now=base_time + timedelta(seconds=10),
             executions=[hook],
         )
-        assert table.columns[3]._cells == ["—"]
+        assert table.columns[4]._cells == ["—"]
 
     def test_executions_none_uses_legacy_path(self, sample_job, sample_tasks, base_time):
         """executions=None with executions_by_task reproduces today's per-attempt rows."""
@@ -720,10 +721,10 @@ class TestRenderTaskTableWithGantt:
             executions=[ex],
         )
         assert table.columns[0]._cells == ["Started  · try 1", "Not Started"]
-        assert table.columns[1]._cells[1].plain == "pending"
+        assert table.columns[2]._cells[1].plain == "pending"
         # Expected column reflects the pending task's estimated duration; bar is empty.
-        assert table.columns[3]._cells[1] == "7m 0s"
-        assert table.columns[4]._cells[1] == "—"
+        assert table.columns[4]._cells[1] == "7m 0s"
+        assert table.columns[5]._cells[1] == "—"
 
     def test_all_tasks_pending_with_empty_executions(self, sample_job, base_time):
         """First status call (no executions yet) shows the full plan as PENDING rows in order."""
@@ -736,7 +737,7 @@ class TestRenderTaskTableWithGantt:
             sample_job, tasks, now=base_time, executions=[],
         )
         assert table.columns[0]._cells == ["Task 1", "Task 2", "Task 3"]
-        assert [c.plain for c in table.columns[1]._cells] == ["pending"] * 3
+        assert [c.plain for c in table.columns[2]._cells] == ["pending"] * 3
 
 
 def test_build_steps_plan_order_with_pending_hook():
@@ -801,7 +802,27 @@ def test_type_column_marks_hook_vs_task():
     tasks = [Task(id="task-1", job_id="j1", name="Build", description="d",
                   estimated_duration_min=3, goal="g")]
     table = render_execution_table_with_gantt(job, tasks, plan=plan)
-    assert table.columns[5]._cells == ["hook", "task"]
+    assert table.columns[6]._cells == ["hook", "task"]
+
+
+def test_assignee_column_shown_on_plan_projected_path():
+    """A plan task with an assignee and no executions (default Step path) shows
+    the assignee; the hook row before it stays blank."""
+    from minimise.interfaces.terminal_ui import render_execution_table_with_gantt
+    from minimise.models import Job, JobStatus, Plan, Task
+
+    job = Job(id="j1", name="J", plan_path="p.yaml", status=JobStatus.RUNNING)
+    plan = Plan.model_validate({
+        "name": "P",
+        "pre_hooks": [{"name": "init", "shell": "true", "estimated_duration_min": 1}],
+        "tasks": [{"id": "t1", "name": "Build", "description": "d", "goal": "g",
+                   "estimated_duration_min": 3}],
+    })
+    tasks = [Task(id="task-1", job_id="j1", name="Build", description="d",
+                  estimated_duration_min=3, goal="g", assignee="reviewer")]
+    table = render_execution_table_with_gantt(job, tasks, plan=plan)
+    assert table.columns[1].header == "Assignee"
+    assert table.columns[1]._cells == ["", "reviewer"]
 
 
 def test_reason_column_shows_exit_reason():
@@ -816,8 +837,8 @@ def test_reason_column_shows_exit_reason():
                    exit_reason="timeout")
     table = render_execution_table_with_gantt(job, tasks, executions=[ex])
 
-    assert table.columns[6].header == "Reason"
-    assert table.columns[6]._cells == ["timeout"]
+    assert table.columns[7].header == "Reason"
+    assert table.columns[7]._cells == ["timeout"]
 
 
 def test_project_steps_chains_pending_after_completed():
@@ -830,26 +851,30 @@ def test_project_steps_chains_pending_after_completed():
         Step(name="b", estimate=2, status=TaskStatus.PENDING),
     ]
     now = js + timedelta(seconds=60)
-    placements, total_secs, now_off = project_steps(steps, js, now)
+    placements, total_secs = project_steps(steps, js, now)
     # pending step starts where the completed one ended
     assert placements[0][2] == 60          # proj end of completed
     assert placements[1][0] == 60          # pending starts at cursor
     assert placements[1][2] == 60 + 120    # + 2min estimate
     assert total_secs == 180
-    assert now_off == 60
 
 
-def test_render_projected_bar_solid_light_and_now_line():
+def test_render_projected_bar_solid_then_light():
     from minimise.interfaces.terminal_ui import render_projected_bar
-    # actual [0..90], projected to 180, total 180, now at 90 -> boundary
-    bar = render_projected_bar(0, 90, 180, total_secs=180, now_off=90, width=28)
+    # actual [0..90], projected to 180, total 180 -> first half solid, rest light
+    bar = render_projected_bar(0, 90, 180, total_secs=180, width=28)
     assert len(bar) == 28
-    assert "█" in bar and "░" in bar and "╎" in bar
-    # first half solid, second half light with a now-line where they meet
+    assert "█" in bar and "░" in bar
+    assert "╎" not in bar          # now-line removed
     assert bar[0] == "█"
     assert bar[-1] == "░"
-    now_col = min(27, int((90 / 180) * 28))
-    assert bar[now_col] == "╎"  # boundary col is not solid actual
+
+
+def test_render_projected_bar_fills_width_when_complete():
+    from minimise.interfaces.terminal_ui import render_projected_bar
+    # a fully-actual span across the whole timeline reaches the last column
+    bar = render_projected_bar(0, 180, 180, total_secs=180, width=28)
+    assert bar[-1] == "█"          # bars fill to the right edge, no trailing gap
 
 
 def test_project_steps_total_is_elapsed_plus_remaining():
@@ -861,6 +886,6 @@ def test_project_steps_total_is_elapsed_plus_remaining():
         Step(name="a", estimate=1, status=TaskStatus.RUNNING, started_at=js),
         Step(name="b", estimate=1, status=TaskStatus.PENDING),
     ]
-    placements, total_secs, now_off = project_steps(steps, js, now)
+    placements, total_secs = project_steps(steps, js, now)
     # elapsed 30s + remaining: running projects to 60, pending adds 60 -> 120
     assert total_secs == 120
