@@ -23,6 +23,20 @@ Minimise solves this by:
 - **Centralized orchestration** — Delegate multiple jobs to background processes and monitor them from one place
 - **Deterministic execution** — Structured task sequencing with retry logic guarantees plans complete as written
 
+## When to Use It
+
+Minimise earns its keep when a task is too big for one agent session, or when you need to walk away and trust the result:
+
+- **Long multi-step builds** — a feature that spans tests → implementation → verification, where a single session would rot before finishing. Each step gets fresh context and the previous step's diff.
+- **Overnight / unattended runs** — kick off a job, close the laptop, review the diffs in the morning. Retries, checkpoints, and resume mean a mid-flight failure doesn't lose the work.
+- **Several jobs at once** — refactoring three services in parallel without juggling three terminals. `mini job list` is the one place to see status and progress.
+- **Enforced quality gates** — a plan-review hook that blocks a bad plan before any code runs, or a post-task review that re-runs a task with the findings fed back in (a bounded fix-loop).
+- **Specialized steps** — pin a stricter reviewer model or a focused system prompt to just the review task via [personas](#personas), while the rest of the plan uses the default.
+- **Version-controlled pipelines** — the plan is a YAML file you commit, diff, and review like code. Your agentic pipeline lives in the repo with a history, instead of evaporating in a chat transcript.
+- **A/B testing pipelines** — run two variants of a plan (different task breakdown, models, or personas) over the same starting point and compare the resulting diffs and logs to see which approach wins.
+
+If you just need a quick one-off edit, use your agent directly — Minimise is for work that's large, unattended, parallel, or gated.
+
 ## Install
 
 Already installed in editable mode:
