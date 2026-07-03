@@ -25,6 +25,7 @@ from minimise.interfaces.cli._shared import (
     task_narration,
 )
 from minimise.interfaces.cli.results import job_results
+from minimise.orchestration import job_controller as controller
 from minimise.personas import load_personas
 
 
@@ -106,20 +107,26 @@ def job_new(plan: str):
 @job.command(name="start")
 @click.argument("job_id")
 def job_start(job_id: str):
-    """Start a job (runs to completion in the foreground)."""
+    """Start or resume a job in the foreground (idempotent).
+
+    A PENDING job runs; a crashed FAILED/STOPPED job resumes from its first
+    incomplete task; a live RUNNING job is left alone; a COMPLETED job is a no-op.
+    """
     try:
         job_id, db, job_obj = _get_and_validate_job(job_id)
         job_controller = get_job_controller(db)
 
-        if job_obj.status != JobStatus.PENDING:
-            console.print(f"[red]Error: Job must be in PENDING state to start (current: {job_obj.status.value})[/red]")
-            raise SystemExit(1)
+        outcome = job_controller.start_job(job_id)
 
-        success = job_controller.start_job(job_id)
-
-        if not success:
+        if outcome == controller.RAN_FAILED:
             console.print(f"[red]Error: Job failed[/red]")
             raise SystemExit(1)
+        if outcome == controller.BACKED_OFF:
+            console.print(f"[yellow]Job already running (pid {job_obj.pid})[/yellow]")
+            return
+        if outcome == controller.ALREADY_COMPLETE:
+            console.print(f"[green]Job already complete[/green]")
+            return
 
         console.print(f"[green]Job completed successfully[/green]")
         console.print(f"[bold]Job ID:[/bold] {job_id}")
@@ -137,7 +144,7 @@ def job_list(format, limit):
     """List all jobs."""
     try:
         db = get_db()
-        jobs = db.list_jobs(limit=limit)
+        jobs = get_job_controller(db).store.load_many(limit=limit)
 
         if not jobs:
             if format == "json":

@@ -19,6 +19,12 @@ from minimise.orchestration.job_executor import JobExecutor
 from minimise.logging.backend import JsonlLogBackend
 from minimise.utils import ensure_directory
 
+# start_job outcomes (a crashed RUNNING job arrives reconciled to FAILED).
+RAN_OK = "ran_ok"                 # executed to completion
+RAN_FAILED = "ran_failed"         # executed but the run failed
+BACKED_OFF = "backed_off"         # a live RUNNING job — left alone
+ALREADY_COMPLETE = "already_complete"
+
 
 class JobController:
     """Orchestrates job creation, process control, and status callbacks."""
@@ -65,22 +71,33 @@ class JobController:
         """Get a job with all its tasks attached, or None if not found."""
         return self.store.load(job_id)
 
-    def start_job(self, job_id: str) -> bool:
-        """Run a PENDING job to completion in-process; return True on success."""
+    def start_job(self, job_id: str) -> Optional[str]:
+        """Idempotent start: run/resume the job, or step aside. Returns an outcome
+        constant (RAN_OK / RAN_FAILED / BACKED_OFF / ALREADY_COMPLETE), or None if
+        the job doesn't exist.
+
+        store.load already reconciled the job, so a crashed RUNNING job arrives as
+        FAILED; anything still RUNNING is genuinely live.
+        """
         job = self.store.load(job_id)
         if not job:
             print(f"Job {job_id} not found")
-            return False
+            return None
 
-        if job.status != JobStatus.PENDING:
-            print(f"Job must be in PENDING state (current: {job.status.value})")
-            return False
+        if job.status == JobStatus.RUNNING:
+            print(f"Job already running (pid {job.pid})")
+            return BACKED_OFF
+        if job.status == JobStatus.COMPLETED:
+            print("Job already complete")
+            return ALREADY_COMPLETE
 
+        # PENDING (fresh) or FAILED/STOPPED (resume) both run the same path;
+        # execute() skips COMPLETED tasks using the live statuses store.load attached.
         try:
             plan = self.store.load_plan(job_id)
         except Exception as e:
             print(f"Error reading plan file: {e}")
-            return False
+            return RAN_FAILED
 
         self.store.mark_job_running(job_id)
         self.hook_executor.job_id = job_id
@@ -90,7 +107,7 @@ class JobController:
             self.store.mark_job_completed(job_id)
         else:
             self.store.mark_job_failed(job_id)
-        return success
+        return RAN_OK if success else RAN_FAILED
 
     def stop_job(self, job_id: str) -> bool:
         """Stop a job: mark it and its RUNNING/PENDING tasks STOPPED."""

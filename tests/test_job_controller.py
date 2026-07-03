@@ -4,7 +4,9 @@ import subprocess
 import yaml
 from pathlib import Path
 from datetime import datetime
-from minimise.orchestration.job_controller import JobController
+from minimise.orchestration.job_controller import (
+    JobController, RAN_OK, RAN_FAILED, BACKED_OFF, ALREADY_COMPLETE,
+)
 from minimise.models import Job, Task, JobStatus, TaskStatus
 from minimise.storage.database import Database
 from minimise.storage.git_tracker import GitTracker
@@ -516,7 +518,7 @@ def test_failed_job_persists_in_db(job_controller, plan_file):
 
         # Run the job
         success = job_controller.start_job(job_id)
-        assert not success
+        assert success == RAN_FAILED
 
         # Verify job status is FAILED
         job = job_controller.get_job_status(job_id)
@@ -555,7 +557,7 @@ def test_failed_job_stores_error_reason(job_controller, plan_file):
 
         # Run the job
         success = job_controller.start_job(job_id)
-        assert not success
+        assert success == RAN_FAILED
 
         # Verify job has failed status
         job = job_controller.get_job_status(job_id)
@@ -596,7 +598,7 @@ def test_pre_plan_hook_failure_persists_job(job_controller, plan_file, temp_db_d
 
     # Run the job
     success = job_controller.start_job(job_id)
-    assert not success
+    assert success == RAN_FAILED
 
     # Verify job persists with FAILED status
     job = job_controller.get_job_status(job_id)
@@ -647,7 +649,7 @@ def test_post_plan_hook_failure_persists_job(job_controller, plan_file):
 
             # Run the job
             success = job_controller.start_job(job_id)
-            assert not success
+            assert success == RAN_FAILED
 
             # Verify job persists with FAILED status (due to post-hook failure)
             job = job_controller.get_job_status(job_id)

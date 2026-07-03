@@ -414,6 +414,32 @@ def test_three_attempts_leave_three_handoff_files(temp_db_dir, db, git_repo):
         assert (handoff_dir / f"attempt-{n}.md").exists()
 
 
+def test_last_task_persists_handoff_when_agent_wrote_none(temp_db_dir, db, git_repo):
+    """A COMPLETED last task (next_task=None) whose agent wrote no handoff still
+    leaves a non-empty handoff file at handoff_path(job, task, task.retries)."""
+    from minimise.models import Job, JobStatus
+
+    git_tracker = GitTracker(git_repo)
+    store = JobStore(db, temp_db_dir)
+    executor = TaskExecutor(store, git_tracker)
+
+    job_id = str(uuid.uuid4())
+    db.create_job(Job(id=job_id, name="J", status=JobStatus.PENDING,
+                      base_commit=git_tracker.get_current_commit()))
+    task = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
+                name="Last", description="d", status=TaskStatus.PENDING)
+    db.create_task(task)
+
+    # Agent succeeds but writes NO handoff file, and there is no next_task.
+    executor._invoke_claude_code = lambda context: (True, "did the work", "success")
+    success, _ = executor.execute_task(task, job_id, "", next_task=None)
+
+    assert success
+    win_path = store.handoff_path(job_id, task.id, task.retries)
+    assert win_path.exists()
+    assert win_path.read_text().strip()
+
+
 def test_executions_recorded_across_retry(temp_db_dir, db, git_repo):
     """Each attempt writes its own Execution row: a failed attempt 0, then a committed attempt 1."""
     from minimise.models import Job, JobStatus

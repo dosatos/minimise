@@ -98,7 +98,7 @@ def _get_and_validate_job(job_id: str):
     """
     job_id = resolve_job_id(job_id)
     db = get_db()
-    job_obj = db.get_job(job_id)
+    job_obj = get_job_controller(db).store.load(job_id)
     if job_obj is None:
         _error_job_not_found(job_id)
     return job_id, db, job_obj

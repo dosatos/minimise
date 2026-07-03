@@ -20,7 +20,7 @@ Minimise solves this by:
 
 - **Fresh context per task** — Each task runs in an isolated session with only relevant context passed via structured handover
 - **Quality guardrails** — Add verification steps (previous result validation, quality gates) to ensure high-quality output
-- **Centralized orchestration** — Delegate multiple jobs to background processes and monitor them from one place
+- **Centralized orchestration** — Delegate multiple jobs and monitor them from one place
 - **Deterministic execution** — Structured task sequencing with retry logic guarantees plans complete as written
 
 ## When to Use It
@@ -28,7 +28,7 @@ Minimise solves this by:
 Minimise earns its keep when a task is too big for one agent session, or when you need to walk away and trust the result:
 
 - **Long multi-step builds** — a feature that spans tests → implementation → verification, where a single session would rot before finishing. Each step gets fresh context and the previous step's diff.
-- **Overnight / unattended runs** — kick off a job, close the laptop, review the diffs in the morning. Retries, checkpoints, and resume mean a mid-flight failure doesn't lose the work.
+- **Overnight / unattended runs** — kick off a job, review the diffs later. Retries plus an idempotent, reconcile-on-read start mean a mid-flight crash doesn't lose the work: re-running `mini job start` picks up from the first incomplete task.
 - **Several jobs at once** — refactoring three services in parallel without juggling three terminals. `mini job list` is the one place to see status and progress.
 - **Enforced quality gates** — a plan-review hook that blocks a bad plan before any code runs, or a post-task review that re-runs a task with the findings fed back in (a bounded fix-loop).
 - **Specialized steps** — pin a stricter reviewer model or a focused system prompt to just the review task via [personas](#personas), while the rest of the plan uses the default.
@@ -104,7 +104,7 @@ mini job show a1b2c3d4
 
 ```bash
 mini job start a1b2c3d4
-# Job spawned in background, execution begins
+# Runs in the foreground; execution begins
 ```
 
 #### Monitor progress
@@ -121,14 +121,17 @@ mini job status a1b2c3d4
 
 ```bash
 mini job stop a1b2c3d4
-# Sends SIGTERM to background process
+# Sends SIGTERM to the orchestrator process
 ```
 
-#### Resume a failed/stopped job (FAILED/STOPPED → RUNNING)
+#### Resume a failed/stopped/crashed job
+
+`mini job start` is idempotent — just run it again:
 
 ```bash
-mini job resume a1b2c3d4
-# Retries execution from last checkpoint
+mini job start a1b2c3d4
+# A FAILED/STOPPED/crashed job resumes from the first non-complete task;
+# already-committed tasks are not re-run. A live job is left alone.
 ```
 
 #### View results
@@ -223,9 +226,8 @@ tasks:
 mini job new --plan FILE                      # Create job (PENDING state)
 mini job show <ID>                            # Show plan structure
 mini job show <ID> --task-id <TASK_ID>        # Show full prompt with context for a task
-mini job start <ID>                           # Start job (PENDING → RUNNING)
+mini job start <ID>                           # Start/resume a job (idempotent); backs off a live one
 mini job stop <ID>                            # Stop job (RUNNING → STOPPED)
-mini job resume <ID>                          # Retry failed job (FAILED/STOPPED → RUNNING)
 ```
 
 ### Status & Monitoring
@@ -280,29 +282,31 @@ Each job progresses through well-defined states:
 ```
 PENDING ──[start]──> RUNNING ──[complete]──> COMPLETED
                         │
-                        ├─[stop]──> STOPPED ──[resume]──> RUNNING
-                        │
-                        └─[error]──> FAILED ──[resume]──> RUNNING
+                        ├─[stop]──> STOPPED ──┐
+                        │                     ├─[start]──> RUNNING
+                        └─[error/crash]──> FAILED ─┘
 ```
+
+`mini job start` is idempotent: on a STOPPED/FAILED/crashed job it resumes from
+the first non-complete task; on a live RUNNING job it backs off.
 
 ### State Transitions
 
 | From | To | Command | Condition |
 |------|-----|---------|-----------|
-| PENDING | RUNNING | `mini job start <ID>` | Job must be in PENDING state |
+| PENDING | RUNNING | `mini job start <ID>` | Job in PENDING state |
 | RUNNING | STOPPED | `mini job stop <ID>` | Job must be in RUNNING state |
-| STOPPED | RUNNING | `mini job resume <ID>` | Resume from checkpoint |
-| FAILED | RUNNING | `mini job resume <ID>` | Retry failed job |
+| STOPPED/FAILED | RUNNING | `mini job start <ID>` | Resumes from the first non-complete task |
+| RUNNING | RUNNING | `mini job start <ID>` | Backs off — a live job is left alone |
 | RUNNING | COMPLETED | (automatic) | All tasks complete successfully |
-| RUNNING | FAILED | (automatic) | Task fails after 3 retries |
+| RUNNING | FAILED | (automatic) | Task fails after 3 retries, or the orchestrator crashes |
 
 ### Deferred Execution Benefits
 
 - **🎯 Flexible scheduling** — Create jobs anytime, start when ready
-- **🔄 Non-blocking** — Jobs run in background, doesn't block terminal
-- **⏸️ Stop/Resume** — Control long-running operations mid-execution
+- **⏸️ Stop & resume** — Stop a job, then re-run `mini job start` to pick it back up
 - **📊 Centralized visibility** — Monitor multiple jobs from one command
-- **🔁 Resilience** — Resume from checkpoints if job fails
+- **🔁 Crash resilience** — An idempotent, reconcile-on-read start resumes a crashed job from the first non-complete task and backs off a live one
 - **✅ Fresh context** — Each task starts with clean environment
 
 ## Architecture

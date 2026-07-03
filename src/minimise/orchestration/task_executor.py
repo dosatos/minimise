@@ -137,13 +137,23 @@ class TaskExecutor:
                 # Log commit failure but don't fail the task
                 final_output += f"\n[Note: Git commit failed: {str(e)}]"
             diff = self.git_tracker.get_diff(task.base_commit) if task.base_commit else ""
-            self.store.record_completed(task, "", diff, commit_sha=commit_sha, exit_reason="success")
-            if next_task is not None:
-                # Successful attempt's handoff becomes the next task's context.
-                return True, self._read_handoff(
-                    handoff_path,
-                    lambda: HandoverManager.build_handover_prompt(final_output, diff, next_task),
+            # Read the return value BEFORE persisting the fallback — else the write
+            # below would mask the empty-file case the caller must still see.
+            chain_handover = self._read_handoff(
+                handoff_path,
+                lambda: HandoverManager.build_handover_prompt(final_output, diff, next_task or task),
+            ) if next_task is not None else None
+            # Completion invariant: every COMPLETED task (incl. the last) leaves a
+            # non-empty handoff on disk BEFORE the DB marks it COMPLETED — else a
+            # crash in the gap gives resume a COMPLETED task with no handoff file.
+            win_path = self.store.handoff_path(job_id, task.id, task.retries)
+            if not (win_path.exists() and win_path.read_text().strip()):
+                win_path.write_text(
+                    HandoverManager.build_handover_prompt(final_output, diff, next_task or task)
                 )
+            self.store.record_completed(task, "", diff, commit_sha=commit_sha, exit_reason="success")
+            if chain_handover is not None:
+                return True, chain_handover
         else:
             _log_failure(_step_label(task.retries), final_output)
             self.store.mark_task_failed(task, final_output, exit_reason=exit_reason)

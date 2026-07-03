@@ -492,64 +492,89 @@ def test_start_pending_job_sets_running_status(db):
     assert job_after.pid == 12345
 
 
-def test_start_already_running_job_fails(db, runner, mock_config_dir):
-    """Test that starting an already-RUNNING job returns error."""
-    # Create a RUNNING job
+def _make_start_job(mock_config_dir, status, pid=None):
+    """Create a job in the CLI's real DB (with a cached plan) at `status`."""
+    import yaml as _yaml
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
     job = Job(
         id=str(uuid.uuid4()),
-        name="Already Running Job",
-        status=JobStatus.RUNNING,
+        name="Start Job",
+        status=status,
         plan_path="/path/to/plan.yaml",
-        pid=99999
+        pid=pid,
     )
     db.create_job(job)
-
-    # Try to start it via CLI
-    result = runner.invoke(mini, ["job", "start", job.id])
-
-    # Should fail with error message
-    assert result.exit_code == 1
-    assert "Error" in result.output or "RUNNING" in result.output or "must be in PENDING" in result.output
-
-
-def test_start_completed_job_fails(db, runner, mock_config_dir):
-    """Test that starting a COMPLETED job returns error."""
-    # Create a COMPLETED job
-    job = Job(
-        id=str(uuid.uuid4()),
-        name="Completed Job",
-        status=JobStatus.COMPLETED,
-        plan_path="/path/to/plan.yaml",
-        completed_at=datetime.utcnow()
+    task = Task(
+        id="task-start", job_id=job.id, name="T1", description="d",
+        status=TaskStatus.PENDING, estimated_duration_min=1,
     )
-    db.create_job(job)
+    db.create_task(task)
+    job_dir = mock_config_dir / "jobs" / job.id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    with open(job_dir / "plan.yaml", "w") as f:
+        _yaml.dump({"name": "Start Job",
+                    "tasks": [{"id": "task-start", "name": "T1", "goal": "g",
+                               "description": "d", "estimated_duration_min": 1}]}, f)
+    return db, job
 
-    # Try to start it via CLI
+
+def test_start_live_running_job_backs_off(runner, mock_config_dir, monkeypatch):
+    """A live RUNNING job backs off (exit 0) and is never executed."""
+    import os
+    from minimise.orchestration.job_executor import JobExecutor
+    called = []
+    monkeypatch.setattr(JobExecutor, "execute", lambda self, j, p: called.append(1) or True)
+
+    _, job = _make_start_job(mock_config_dir, JobStatus.RUNNING, pid=os.getpid())
     result = runner.invoke(mini, ["job", "start", job.id])
 
-    # Should fail with error message
-    assert result.exit_code == 1
-    assert "Error" in result.output or "PENDING" in result.output
+    assert result.exit_code == 0
+    assert "already running" in result.output
+    assert not called  # executor never ran
 
 
-def test_start_failed_job_fails(db, runner, mock_config_dir):
-    """Test that starting a FAILED job returns error."""
-    # Create a FAILED job
-    job = Job(
-        id=str(uuid.uuid4()),
-        name="Failed Job",
-        status=JobStatus.FAILED,
-        plan_path="/path/to/plan.yaml",
-        completed_at=datetime.utcnow()
-    )
-    db.create_job(job)
+def test_start_completed_job_noops(runner, mock_config_dir, monkeypatch):
+    """A COMPLETED job is a no-op (exit 0, not executed)."""
+    from minimise.orchestration.job_executor import JobExecutor
+    called = []
+    monkeypatch.setattr(JobExecutor, "execute", lambda self, j, p: called.append(1) or True)
 
-    # Try to start it via CLI
+    _, job = _make_start_job(mock_config_dir, JobStatus.COMPLETED)
     result = runner.invoke(mini, ["job", "start", job.id])
 
-    # Should fail with error message
-    assert result.exit_code == 1
-    assert "Error" in result.output or "PENDING" in result.output
+    assert result.exit_code == 0
+    assert "already complete" in result.output
+    assert not called
+
+
+def test_start_failed_job_resumes(runner, mock_config_dir, monkeypatch):
+    """A FAILED job resumes: the executor runs, exit 0 on success."""
+    from minimise.orchestration.job_executor import JobExecutor
+    called = []
+    monkeypatch.setattr(JobExecutor, "execute", lambda self, j, p: called.append(1) or True)
+
+    _, job = _make_start_job(mock_config_dir, JobStatus.FAILED)
+    result = runner.invoke(mini, ["job", "start", job.id])
+
+    assert result.exit_code == 0
+    assert "completed successfully" in result.output
+    assert called  # resumed → executor ran
+
+
+def test_start_dead_running_job_resumes(runner, mock_config_dir, monkeypatch):
+    """A RUNNING job with a DEAD pid is reconciled to FAILED then resumed."""
+    from minimise.orchestration.job_executor import JobExecutor
+    called = []
+    monkeypatch.setattr(JobExecutor, "execute", lambda self, j, p: called.append(1) or True)
+
+    # pid 999999 is (essentially) never a live process → reconcile downgrades it.
+    _, job = _make_start_job(mock_config_dir, JobStatus.RUNNING, pid=999999)
+    result = runner.invoke(mini, ["job", "start", job.id])
+
+    assert result.exit_code == 0
+    assert "completed successfully" in result.output
+    assert called  # dead → reconciled to FAILED → resumed
 
 
 def test_start_nonexistent_job_fails(runner, mock_config_dir):
@@ -872,6 +897,7 @@ def _write_job_log(mock_config_dir, job_id, step_messages):
 
 def _make_job_with_log(mock_config_dir, content: str, status=JobStatus.COMPLETED):
     """Create a job (+ one task & execution) and write `content` to its job.log."""
+    import os
     db = Database(mock_config_dir / "minimise.db")
     db.init_db()
     job = Job(
@@ -879,6 +905,8 @@ def _make_job_with_log(mock_config_dir, content: str, status=JobStatus.COMPLETED
         name="Narration Job",
         status=status,
         plan_path="/path/to/plan.yaml",
+        # live pid so a RUNNING job isn't reconciled to FAILED on the read path
+        pid=os.getpid() if status == JobStatus.RUNNING else None,
     )
     db.create_job(job)
     task = Task(
@@ -2005,13 +2033,15 @@ def test_delete_running_job_fails(db, runner, mock_config_dir):
     db = Database(db_path)
     db.init_db()
 
-    # Create a RUNNING job
+    # Create a RUNNING job with a LIVE pid (dead-pid RUNNING now reconciles to
+    # FAILED on the read path, which would make it deletable).
+    import os
     job = Job(
         id=str(uuid.uuid4()),
         name="Running Job",
         status=JobStatus.RUNNING,
         plan_path="/path/to/plan.yaml",
-        pid=12345,
+        pid=os.getpid(),
         started_at=datetime.utcnow()
     )
     db.create_job(job)
@@ -2332,3 +2362,21 @@ tasks:
 
         assert result.exit_code == 0
         assert "Job created" in result.output
+
+
+def test_mini_job_list_shows_failed_for_dead_pid(runner, mock_config_dir):
+    """A RUNNING job whose orchestrator pid is dead lists as FAILED (reconciled on read)."""
+    import subprocess
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+
+    p = subprocess.Popen(["true"]); p.wait()  # a pid guaranteed dead
+    job = Job(id=str(uuid.uuid4()), name="Crashed Job", status=JobStatus.PENDING,
+              plan_path="/path/to/plan.yaml")
+    db.create_job(job)
+    db.update_job_status(job.id, JobStatus.RUNNING, pid=p.pid)
+
+    result = runner.invoke(mini, ["job", "list", "--format", "json"])
+    assert result.exit_code == 0
+    entry = next(j for j in json.loads(result.output) if j["id"] == job.id)
+    assert entry["status"] == "failed"

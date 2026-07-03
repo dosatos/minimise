@@ -1,3 +1,4 @@
+import os
 import pytest
 import json
 import uuid
@@ -7,14 +8,18 @@ from unittest.mock import Mock, MagicMock
 
 from minimise.models import Job, Task, JobStatus, TaskStatus
 from minimise.storage.database import Database
+from minimise.storage.job_store import JobStore
 from minimise.orchestration.job_controller import JobController
 from minimise.interfaces.api_server import APIServer
 
 
 @pytest.fixture
-def mock_job_controller():
-    """Create a mock job manager."""
-    return Mock(spec=JobController)
+def mock_job_controller(db, temp_db_dir):
+    """A mocked controller whose ``store`` is a real JobStore over the test db,
+    so read endpoints (which route through store.load / store.load_many) work."""
+    mock = Mock(spec=JobController)
+    mock.store = JobStore(db, temp_db_dir / "jobs")
+    return mock
 
 
 @pytest.fixture
@@ -50,6 +55,7 @@ def test_get_jobs_endpoint(api_server, db):
         name="Job 2",
         status=JobStatus.RUNNING,
         plan_path="/path/to/plan2.yaml",
+        pid=os.getpid(),  # live pid so read-path reconcile leaves it RUNNING
     )
     db.create_job(job1)
     db.create_job(job2)
@@ -139,11 +145,12 @@ def test_get_job_by_id_endpoint(api_server, db):
         name="Test Job",
         status=JobStatus.RUNNING,
         plan_path="/path/to/plan.yaml",
+        pid=os.getpid(),  # live pid so read-path reconcile leaves it RUNNING
     )
     db.create_job(job)
 
     # Create tasks for the job
-    task1 = Task(estimated_duration_min=5, 
+    task1 = Task(estimated_duration_min=5,
         id=str(uuid.uuid4()),
         job_id=job_id,
         name="Task 1",

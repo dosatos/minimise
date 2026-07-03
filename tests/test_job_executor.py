@@ -208,3 +208,59 @@ def test_pre_plan_hook_failure_aborts_before_any_task(temp_db_dir, db, git_repo)
     executor = JobExecutor(TaskExecutor(store, git_tracker, harness=harness), HookExecutor())
     assert executor.execute(job, plan) is False
     assert harness.prompts == []  # no task ran
+
+
+def test_resume_skips_completed_and_seeds_prev_handoff(temp_db_dir, db, git_repo):
+    """A COMPLETED task 1 is skipped; task 2 runs first and receives task 1's
+    persisted handoff — not the empty in-memory seed."""
+    git_tracker = GitTracker(git_repo)
+    harness = HandoffWritingHarness()
+    store = JobStore(db, temp_db_dir)
+
+    job_id = str(uuid.uuid4())
+    db.create_job(Job(id=job_id, name="J", status=JobStatus.PENDING,
+                      base_commit=git_tracker.get_current_commit()))
+    t1 = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
+              name="T1", description="d1", status=TaskStatus.COMPLETED, retries=0)
+    t2 = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
+              name="T2", description="d2", status=TaskStatus.PENDING)
+    db.create_task(t1)
+    db.create_task(t2)
+    # Task 1's handoff already on disk from its prior successful run.
+    store.handoff_path(job_id, t1.id, 0).write_text("PRIOR_RUN_HANDOFF marker")
+    job = Job(id=job_id, name="J", status=JobStatus.PENDING, tasks=[t1, t2])
+    plan = Plan(name="J", tasks=[
+        {"id": t1.id, "name": "T1", "description": "d1", "goal": "g1", "estimated_duration_min": 5},
+        {"id": t2.id, "name": "T2", "description": "d2", "goal": "g2", "estimated_duration_min": 5},
+    ])
+
+    executor = JobExecutor(TaskExecutor(store, git_tracker, harness=harness), HookExecutor())
+    assert executor.execute(job, plan)
+
+    # Only task 2 ran, and it got task 1's persisted handoff.
+    assert len(harness.prompts) == 1
+    assert "d2" in harness.prompts[0]
+    assert "PRIOR_RUN_HANDOFF marker" in harness.prompts[0]
+
+
+def test_mark_running_clears_stale_completed_at(temp_db_dir, db, git_repo):
+    """Re-running a FAILED task (attempt 0) clears its stale completed_at so
+    duration math never goes negative."""
+    from datetime import datetime, timedelta
+
+    git_tracker = GitTracker(git_repo)
+    store = JobStore(db, temp_db_dir)
+    job_id = str(uuid.uuid4())
+    db.create_job(Job(id=job_id, name="J", status=JobStatus.PENDING,
+                      base_commit=git_tracker.get_current_commit()))
+    task = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
+                name="T1", description="d1", status=TaskStatus.PENDING)
+    db.create_task(task)
+    # Simulate a prior FAILED run leaving a stale completed_at behind.
+    db.update_task_status(task.id, TaskStatus.FAILED,
+                          completed_at=datetime.utcnow() - timedelta(hours=1))
+    assert db.get_task(task.id).completed_at is not None
+
+    store.mark_running(task, 0)
+    reloaded = db.get_task(task.id)
+    assert reloaded.completed_at is None  # cleared → no negative duration

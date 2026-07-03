@@ -38,10 +38,7 @@ class APIServer:
 
     def _load_job_with_tasks(self, job_id: str) -> Optional[Job]:
         """Fetch a job and attach its task list, or None if it doesn't exist."""
-        job = self.db.get_job(job_id)
-        if job is not None:
-            job.tasks = self.db.list_tasks_for_job(job_id)
-        return job
+        return self.job_controller.store.load(job_id)
 
     def _register_routes(self):
         """Register all REST API routes."""
@@ -50,7 +47,7 @@ class APIServer:
         def get_jobs():
             """Get all jobs."""
             try:
-                jobs = self.db.list_jobs()
+                jobs = self.job_controller.store.load_many()
                 return jsonify([job.to_dict() for job in jobs]), 200
             except Exception as e:
                 return jsonify({"error": str(e)}), 500

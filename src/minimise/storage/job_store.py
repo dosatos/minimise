@@ -5,6 +5,8 @@ vocabulary — ``mark_running``, ``record_completed`` — and never touches the
 Database or the filesystem directly.
 """
 
+import functools
+import os
 import yaml
 from contextlib import contextmanager
 from datetime import datetime
@@ -12,8 +14,29 @@ from pathlib import Path
 from typing import Optional
 
 from minimise.models import Job, Task, Execution, JobStatus, TaskStatus, Plan
-from minimise.storage.database import Database
+from minimise.storage.database import Database, _UNSET
 from minimise.utils import ensure_directory, new_id
+
+
+def _pid_alive(pid) -> bool:
+    """True if a process with this pid exists. None pid → dead (never os.kill(None))."""
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but not ours
+
+
+def _reconciled(fn):
+    """Pass a load result (Job / Optional[Job] / list[Job]) through liveness reconcile."""
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        return self._reconcile(fn(self, *args, **kwargs))
+    return wrapper
 
 
 class JobStore:
@@ -58,6 +81,7 @@ class JobStore:
 
         return job
 
+    @_reconciled
     def load(self, job_id: str) -> Optional[Job]:
         """Load a job with all its tasks attached, or None if not found."""
         job = self.db.get_job(job_id)
@@ -66,8 +90,22 @@ class JobStore:
         job.tasks = self.db.list_tasks_for_job(job_id)
         return job
 
+    @_reconciled
+    def load_many(self, limit=None) -> list[Job]:
+        """List jobs (no tasks attached — matches db.list_jobs) with liveness reconciled."""
+        return self.db.list_jobs(limit=limit)
+
+    def _reconcile(self, result):
+        """Downgrade any dead RUNNING job(s) in result to FAILED, in-place. Idempotent."""
+        jobs = result if isinstance(result, list) else [] if result is None else [result]
+        for job in jobs:
+            if job.status == JobStatus.RUNNING and not _pid_alive(job.pid):
+                self.mark_job_failed(job.id)
+                job.status = JobStatus.FAILED
+        return result
+
     def mark_job_running(self, job_id: str) -> None:
-        self.db.update_job_status(job_id, JobStatus.RUNNING, started_at=datetime.utcnow())
+        self.db.update_job_status(job_id, JobStatus.RUNNING, started_at=datetime.utcnow(), pid=os.getpid())
 
     def mark_job_completed(self, job_id: str) -> None:
         self.db.update_job_status(job_id, JobStatus.COMPLETED, completed_at=datetime.utcnow())
@@ -94,6 +132,9 @@ class JobStore:
             self.db.update_task_status(
                 task.id, TaskStatus.RUNNING,
                 started_at=datetime.utcnow() if attempt == 0 else None,
+                # attempt 0 = a fresh (re-)run: clear any stale completed_at from a
+                # prior FAILED/STOPPED so duration math doesn't render negative.
+                completed_at=None if attempt == 0 else _UNSET,
                 conn=conn,
             )
             self.db.save_execution(Execution(

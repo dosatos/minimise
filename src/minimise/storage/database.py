@@ -6,6 +6,9 @@ from typing import Optional, List
 from minimise.models import Job, Task, Execution, JobStatus, TaskStatus
 
 
+_UNSET = object()  # sentinel: "field not provided" vs an explicit None (clear it)
+
+
 def _column_names(cursor, table: str) -> List[str]:
     """Return the column names of a table (PRAGMA table_info name field)."""
     cursor.execute(f"PRAGMA table_info({table})")
@@ -401,11 +404,12 @@ class Database:
                   task.created_at.isoformat(), task.started_at.isoformat() if task.started_at else None,
                   task.completed_at.isoformat() if task.completed_at else None, task.diff_path, task.base_commit, task.goal, task.assignee, task.estimated_duration_min))
 
-    def update_task_status(self, task_id: str, status: TaskStatus, retries: int = 0, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, conn: Optional[sqlite3.Connection] = None) -> None:
+    def update_task_status(self, task_id: str, status: TaskStatus, retries: int = 0, started_at: Optional[datetime] = None, completed_at=_UNSET, conn: Optional[sqlite3.Connection] = None) -> None:
         """Update task status.
 
-        Only updates fields that are explicitly provided. If started_at or completed_at
-        are None, their existing database values are preserved.
+        Only updates fields that are explicitly provided. If started_at is None,
+        its existing value is preserved. completed_at defaults to _UNSET (preserve);
+        pass an explicit None to clear it (e.g. re-running a task on resume).
         """
         # Build dynamic UPDATE statement to only update provided fields
         update_fields = ["status = ?", "retries = ?"]
@@ -415,9 +419,9 @@ class Database:
             update_fields.append("started_at = ?")
             params.append(started_at.isoformat())
 
-        if completed_at is not None:
+        if completed_at is not _UNSET:
             update_fields.append("completed_at = ?")
-            params.append(completed_at.isoformat())
+            params.append(completed_at.isoformat() if completed_at is not None else None)
 
         params.append(task_id)
 

@@ -31,17 +31,16 @@ These tests verify that:
 
 ### 1b. New Tests for Deferred Execution Workflow
 
-The test suite now includes 52 comprehensive tests for the new workflow commands:
+The test suite includes comprehensive tests for the workflow commands:
 
-- **5 START command tests** — PENDING → RUNNING state transitions
+- **START command tests** — PENDING → RUNNING, plus idempotent resume of a FAILED/STOPPED/crashed job and back-off from a live one
 - **7 STOP command tests** — RUNNING → STOPPED state transitions
-- **6 RESUME command tests** — FAILED/STOPPED → RUNNING retries
 - **5 RESULTS LOGS tests** — Task output retrieval with filtering
 - **4 RESULTS DIFF tests** — Git diff retrieval
 - **4 SHOW command tests** — Plan structure and full prompts
 - **6 edge case tests** — Prefix matching, state validation, workflows
 
-Total: **52 new tests** covering all deferred execution scenarios
+Covering all deferred execution scenarios, including idempotent start/resume.
 
 ---
 
@@ -136,7 +135,7 @@ mini job status <JOB_ID>
 
 ## Testing the Deferred Execution Workflow
 
-The new workflow supports **non-blocking job execution** with start/stop/resume lifecycle management.
+The workflow supports foreground job execution with a start/stop lifecycle, where `mini job start` is idempotent — it also resumes a FAILED/STOPPED/crashed job and backs off a live one.
 
 ### 1. Test Job Creation and Status
 
@@ -189,20 +188,19 @@ mini job show a1b2c3d4 --task-id task-2
 ### 3. Test Start Command (PENDING → RUNNING)
 
 ```bash
-# Start the job (spawns background process)
+# Start the job (runs in the foreground)
 mini job start a1b2c3d4
 # Output:
-#   Job started successfully
+#   Job completed successfully
 #   Job ID: a1b2c3d4
-#   PID: 12345
 
-# Verify job is running
+# Check status
 mini job status a1b2c3d4
-# Output: Status: running, Tasks: 0/5 in progress
+# Output: Status: running/completed, task progress
 
-# Verify only PENDING jobs can start
+# start is idempotent: on a live RUNNING job it backs off
 mini job start a1b2c3d4
-# Expected error: "Job must be in PENDING state to start (current: running)"
+# Expected: "Job already running (pid 12345)"
 ```
 
 ### 4. Test Stop Command (RUNNING → STOPPED)
@@ -227,21 +225,23 @@ mini job stop b2c3d4e5
 # Expected error: "Job must be in RUNNING state to stop (current: stopped)"
 ```
 
-### 5. Test Resume Command (FAILED/STOPPED → RUNNING)
+### 5. Test Resume via Idempotent Start (FAILED/STOPPED/crashed)
 
 ```bash
-# Resume a stopped job
-mini job resume b2c3d4e5
-# Output: Job b2c3d4e5 resumed and completed successfully
+# Resume a stopped job — just start it again
+mini job start b2c3d4e5
+# Output: Job completed successfully
+#   Resumes from the first non-complete task; committed tasks are not re-run.
 
-# Resume a failed job (simulated by creating a job in FAILED state)
-# Verify it retries execution
+# A crashed job (orchestrator killed) is reconciled to FAILED on the next read,
+# so `mini job list` shows FAILED (not stuck RUNNING). Start it again to resume:
+mini job start b2c3d4e5
 mini job status b2c3d4e5
 # Output: Status should show progress or completion
 
-# Try to resume a job in other states (should show message)
-mini job resume a1b2c3d4
-# Expected: Message showing current status (e.g., "already running")
+# start is idempotent: on a genuinely live job it backs off
+mini job start a1b2c3d4
+# Expected: "Job already running (pid ...)"
 ```
 
 ### 6. Test Results Commands
@@ -380,7 +380,7 @@ mini job show a1b2c3d4
 ### 8. Test Full Workflow
 
 ```bash
-# Complete workflow: create → show → start → monitor → stop → resume → results
+# Complete workflow: create → show → start → monitor → stop → start (resume) → results
 
 # 1. Create job
 JOB_ID=$(mini job new --plan examples/example-plan.yaml | grep "Job ID:" | awk '{print $NF}')
@@ -394,17 +394,14 @@ mini job show $JOB_ID --task-id task-1
 # 4. Start the job
 mini job start $JOB_ID
 
-# 5. Monitor progress (run several times)
-for i in {1..3}; do
-  mini job status $JOB_ID
-  sleep 5
-done
+# 5. Check progress
+mini job status $JOB_ID
 
 # 6. Stop the job (if still running)
 mini job stop $JOB_ID
 
-# 7. Resume from checkpoint
-mini job resume $JOB_ID
+# 7. Resume — start is idempotent, picks up from the first non-complete task
+mini job start $JOB_ID
 
 # 8. View results
 mini job results logs $JOB_ID
@@ -490,7 +487,6 @@ mini job list
 mini job status a1b2c3d4
 mini job start a1b2c3d4
 mini job stop a1b2c3d4
-mini job resume a1b2c3d4
 mini job show a1b2c3d4
 
 # Use even fewer characters if unambiguous
@@ -551,9 +547,6 @@ pytest tests/test_cli.py -k "test_start" -v
 # STOP command tests (7 tests)
 pytest tests/test_cli.py -k "test_stop" -v
 
-# RESUME command tests (6 tests)
-pytest tests/test_cli.py -k "test_resume" -v
-
 # RESULTS LOGS command tests (5 tests)
 pytest tests/test_cli.py -k "test_results_logs" -v
 
@@ -563,8 +556,8 @@ pytest tests/test_cli.py -k "test_results_diff" -v
 # SHOW command tests (4 tests)
 pytest tests/test_cli.py -k "test_show" -v
 
-# All deferred execution workflow tests (52 total)
-pytest tests/test_cli.py -k "start or stop or resume or results or show" -v
+# All deferred execution workflow tests
+pytest tests/test_cli.py -k "start or stop or results or show" -v
 ```
 
 ### Test with Verbose Output
@@ -750,8 +743,8 @@ mini job results diff $JOB_ID --task-id task-1
 # Stop job (RUNNING → STOPPED)
 mini job stop $JOB_ID
 
-# Resume job (STOPPED → RUNNING)
-mini job resume $JOB_ID
+# Resume job — start is idempotent (STOPPED/FAILED/crashed → RUNNING)
+mini job start $JOB_ID
 
 # Delete job
 mini job delete $JOB_ID
