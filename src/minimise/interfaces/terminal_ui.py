@@ -261,20 +261,41 @@ def project_steps(steps, job_start, now):
     return placements, total_secs
 
 
+def layout_projected_bars(placements, total_secs, width=28):
+    """Lay every step onto the shared timeline in ONE pass, so no column is
+    claimed by two steps. A per-row renderer can't do this: two time-adjacent
+    steps each narrower than a column both round into the boundary column and
+    overlap. Here a left-to-right cursor gives each column a single owner and
+    guarantees every step ≥1 column (else short steps vanish on a coarse scale).
+
+    Each placement is (start_off, actual_end_off, proj_end_off) in seconds:
+    solid █ for real elapsed [start, actual_end), light ░ for the projected
+    remainder [actual_end, proj_end). Returns one bar string per placement.
+    """
+    scale = width / max(total_secs, 1)
+    rows, next_free = [], 0
+    for start_off, actual_end_off, proj_end_off in placements:
+        # start no earlier than the last step's end — packs bars contiguously,
+        # so rounding can never make two steps share a column.
+        # ponytail: contiguous packing hides real idle gaps between steps;
+        # add gap-preservation only if the timeline must show waiting time.
+        s_col = min(max(next_free, int(start_off * scale)), width)
+        e_col = min(max(int(round(proj_end_off * scale)), s_col + 1), width)
+        # solid end: real elapsed only. Zero-width actual (pending / just
+        # started) => no █, so pending never reads as running.
+        a_col = min(max(int(round(actual_end_off * scale)), s_col + 1), e_col) \
+            if actual_end_off > start_off else s_col
+        rows.append(" " * s_col + "█" * (a_col - s_col)
+                    + "░" * (e_col - a_col) + " " * (width - e_col))
+        next_free = e_col
+    return rows
+
+
 def render_projected_bar(start_off, actual_end_off, proj_end_off,
                          total_secs, width=28):
-    """One row on the shared projected timeline: solid for actual elapsed,
-    light for the projected estimate remaining."""
-    cols = []
-    for i in range(width):
-        t = (i / width) * total_secs
-        if start_off <= t < actual_end_off:
-            cols.append("█")
-        elif actual_end_off <= t < proj_end_off:
-            cols.append("░")
-        else:
-            cols.append(" ")
-    return "".join(cols)
+    """Single-step convenience wrapper over layout_projected_bars."""
+    return layout_projected_bars(
+        [(start_off, actual_end_off, proj_end_off)], total_secs, width)[0]
 
 
 def render_execution_table_with_gantt(
@@ -348,14 +369,12 @@ def render_execution_table_with_gantt(
 
     if plan is not None:
         steps = build_steps(plan, tasks, executions or [])
-        placements = total_secs = None
+        bars = None
         if job.started_at:
             placements, total_secs = project_steps(steps, job.started_at, now)
+            bars = layout_projected_bars(placements, total_secs, width=bar_width)
         for i, step in enumerate(steps):
-            timeline = None
-            if placements is not None:
-                s, a, p = placements[i]
-                timeline = render_projected_bar(s, a, p, total_secs, width=bar_width)
+            timeline = bars[i] if bars is not None else None
             add_row(step.name, step.status, step.started_at, step.ended_at,
                     step.estimate, step.is_hook, timeline=timeline,
                     exit_reason=getattr(step, "exit_reason", "") or "",

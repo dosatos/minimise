@@ -877,6 +877,38 @@ def test_render_projected_bar_fills_width_when_complete():
     assert bar[-1] == "█"          # bars fill to the right edge, no trailing gap
 
 
+def test_render_projected_bar_pending_never_solid():
+    from minimise.interfaces.terminal_ui import render_projected_bar
+    # pending step: zero-width actual (start==actual_end), only projection.
+    # must be all-light — a solid █ would make it read as running.
+    bar = render_projected_bar(60, 60, 120, total_secs=240, width=28)
+    assert "█" not in bar
+    assert "░" in bar
+
+
+def test_render_projected_bar_short_step_survives_coarse_timeline():
+    from minimise.interfaces.terminal_ui import render_projected_bar
+    # a 5s completed step on a 224s timeline is narrower than one column;
+    # overlap fill (not point-sampling) must still paint it.
+    bar = render_projected_bar(35, 40, 40, total_secs=224, width=28)
+    assert "█" in bar
+
+
+def test_layout_projected_bars_no_column_shared_by_two_steps():
+    from minimise.interfaces.terminal_ui import layout_projected_bars
+    # time-adjacent sub-column-width steps must not both claim a boundary col.
+    placements = [
+        (0, 5, 5), (5, 10, 10), (10, 34, 34), (34, 39, 39), (39, 44, 44),
+        (44, 52, 104), (104, 104, 164), (164, 164, 224),
+    ]
+    rows = layout_projected_bars(placements, total_secs=224, width=28)
+    for c in range(28):
+        filled = sum(1 for r in rows if r[c] in "█░")
+        assert filled <= 1, f"column {c} claimed by {filled} steps"
+    # and every step still gets a visible bar
+    assert all(("█" in r or "░" in r) for r in rows)
+
+
 def test_project_steps_total_is_elapsed_plus_remaining():
     from minimise.interfaces.terminal_ui import project_steps, Step
     js = datetime(2026, 1, 1, 0, 0, 0)
