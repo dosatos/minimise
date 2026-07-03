@@ -230,7 +230,11 @@ def project_steps(steps, job_start, now):
     width regardless of when the job is viewed."""
     placements = []
     cursor = 0.0
-    for step in steps:
+    now_off = (now - job_start).total_seconds()
+    # per-step start offset (None if not started yet), index-aligned with steps
+    started_offs = [(s.started_at - job_start).total_seconds() if s.started_at
+                    else None for s in steps]
+    for i, step in enumerate(steps):
         est = (step.estimate or 0) * 60
         done = step.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.STOPPED)
         if done and step.started_at and step.ended_at:
@@ -238,7 +242,11 @@ def project_steps(steps, job_start, now):
             actual_end_off = proj_end_off = (step.ended_at - job_start).total_seconds()
         elif step.status == TaskStatus.RUNNING and step.started_at:
             start_off = (step.started_at - job_start).total_seconds()
-            actual_end_off = (now - job_start).total_seconds()
+            # a still-RUNNING step's solid bar must not paint past the start of
+            # a later step that has already begun (e.g. its post_task hook)
+            next_started = min((o for o in started_offs[i + 1:] if o is not None),
+                               default=float("inf"))
+            actual_end_off = min(now_off, next_started)
             proj_end_off = max(actual_end_off, start_off + est)
         else:  # PENDING (or no start time)
             start_off = cursor

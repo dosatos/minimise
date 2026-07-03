@@ -889,3 +889,34 @@ def test_project_steps_total_is_elapsed_plus_remaining():
     placements, total_secs = project_steps(steps, js, now)
     # elapsed 30s + remaining: running projects to 60, pending adds 60 -> 120
     assert total_secs == 120
+
+
+def test_project_steps_running_bar_capped_at_later_started_step():
+    from minimise.interfaces.terminal_ui import project_steps, Step
+    js = datetime(2026, 1, 1, 0, 0, 0)
+    now = js + timedelta(seconds=120)
+    # a RUNNING task started at 0; its post_task hook started at 60s and is
+    # still RUNNING. The task's solid bar must not paint past the hook's start.
+    steps = [
+        Step(name="task", estimate=5, status=TaskStatus.RUNNING, started_at=js),
+        Step(name="hook", estimate=1, status=TaskStatus.RUNNING,
+             started_at=js + timedelta(seconds=60)),
+    ]
+    placements, _ = project_steps(steps, js, now)
+    task_actual_end = placements[0][1]
+    hook_start = placements[1][0]
+    assert task_actual_end <= hook_start  # no visual overlap
+    assert task_actual_end == 60
+
+
+def test_project_steps_running_bar_no_later_step_extends_to_now():
+    from minimise.interfaces.terminal_ui import project_steps, Step
+    js = datetime(2026, 1, 1, 0, 0, 0)
+    now = js + timedelta(seconds=120)
+    # a lone RUNNING step with no later started step still extends to now.
+    steps = [
+        Step(name="task", estimate=5, status=TaskStatus.RUNNING, started_at=js),
+        Step(name="pending", estimate=1, status=TaskStatus.PENDING),
+    ]
+    placements, _ = project_steps(steps, js, now)
+    assert placements[0][1] == 120  # extends to now

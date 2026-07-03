@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Optional
 from minimise.models import Execution, Task, TaskStatus
 from minimise.storage.git_tracker import GitTracker
@@ -90,6 +91,7 @@ class TaskExecutor:
                     "step": task.name + (f"  · try {attempt + 1}" if attempt > 0 else ""),
                 },
             })
+            agent_end = datetime.utcnow()  # honest end of the attempt's work, before gating hook
             final_output = output
 
             if success:
@@ -99,16 +101,16 @@ class TaskExecutor:
                     if outcome == "fail":
                         msg = f"Post-task hook failed\n{combined}"
                         _log_failure(_step_label(attempt), msg)
-                        self.store.mark_task_failed(task, msg, exit_reason="hook_failed")
+                        self.store.mark_task_failed(task, msg, exit_reason="hook_failed", ended_at=agent_end)
                         return False, msg
                     if outcome == "retry":
                         if attempt >= self.MAX_RETRIES:
                             msg = f"Post-task hook failed (retries exhausted)\n{combined}"
                             _log_failure(_step_label(attempt), msg)
-                            self.store.mark_task_failed(task, msg, exit_reason="hook_failed")
+                            self.store.mark_task_failed(task, msg, exit_reason="hook_failed", ended_at=agent_end)
                             return False, msg
                         _log_failure(_step_label(attempt), combined)
-                        self.store.record_attempt(task, attempt, combined, exit_reason=exit_reason)
+                        self.store.record_attempt(task, attempt, combined, exit_reason=exit_reason, ended_at=agent_end)
                         # Agent succeeded and wrote its handoff, so build the next
                         # context unconditionally and PREPEND the review findings —
                         # can't rely on build_retry_prompt's empty-handoff fallback.
@@ -122,7 +124,7 @@ class TaskExecutor:
                 break
             if attempt < self.MAX_RETRIES:
                 _log_failure(_step_label(attempt), output)
-                self.store.record_attempt(task, attempt, output, exit_reason=exit_reason)
+                self.store.record_attempt(task, attempt, output, exit_reason=exit_reason, ended_at=agent_end)
                 # learn-from-failure: feed this attempt's handoff into the next.
                 context = self._read_handoff(
                     handoff_path,
@@ -151,12 +153,12 @@ class TaskExecutor:
                 win_path.write_text(
                     HandoverManager.build_handover_prompt(final_output, diff, next_task or task)
                 )
-            self.store.record_completed(task, "", diff, commit_sha=commit_sha, exit_reason="success")
+            self.store.record_completed(task, "", diff, commit_sha=commit_sha, exit_reason="success", ended_at=agent_end)
             if chain_handover is not None:
                 return True, chain_handover
         else:
             _log_failure(_step_label(task.retries), final_output)
-            self.store.mark_task_failed(task, final_output, exit_reason=exit_reason)
+            self.store.mark_task_failed(task, final_output, exit_reason=exit_reason, ended_at=agent_end)
 
         return final_success, final_output
 

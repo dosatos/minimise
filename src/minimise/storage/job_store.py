@@ -142,21 +142,22 @@ class JobStore:
                 status=TaskStatus.RUNNING, started_at=datetime.utcnow(),
             ), conn=conn)
 
-    def record_attempt(self, task: Task, attempt: int, output: str, exit_reason: str = "") -> None:
+    def record_attempt(self, task: Task, attempt: int, output: str, exit_reason: str = "", ended_at: Optional[datetime] = None) -> None:
         """Record a failed-but-retrying attempt (back to PENDING).
 
         ``output`` is no longer stored — job.log is the sole narration store; the
         executor writes the failure detail there. exit_reason carries the class.
         """
-        with self._close_attempt(task, attempt, TaskStatus.FAILED, exit_reason=exit_reason) as conn:
+        with self._close_attempt(task, attempt, TaskStatus.FAILED, ended_at=ended_at, exit_reason=exit_reason) as conn:
             self.db.update_task_status(task.id, TaskStatus.PENDING, conn=conn)
 
-    def record_completed(self, task: Task, output: str, diff: str, commit_sha: Optional[str] = None, exit_reason: str = "success") -> None:
+    def record_completed(self, task: Task, output: str, diff: str, commit_sha: Optional[str] = None, exit_reason: str = "success", ended_at: Optional[datetime] = None) -> None:
         """Persist a successful task: save its diff and mark it COMPLETED."""
         if task.base_commit:
             self._save_diff(task, diff)
         with self._close_attempt(
             task, task.retries, TaskStatus.COMPLETED,
+            ended_at=ended_at,
             diff_path=task.diff_path, commit_sha=commit_sha,
             exit_reason=exit_reason,
         ) as conn:
@@ -165,15 +166,15 @@ class JobStore:
                 completed_at=datetime.utcnow(), conn=conn,
             )
 
-    def mark_task_failed(self, task: Task, output: str, exit_reason: str = "") -> None:
-        with self._close_attempt(task, task.retries, TaskStatus.FAILED, exit_reason=exit_reason) as conn:
+    def mark_task_failed(self, task: Task, output: str, exit_reason: str = "", ended_at: Optional[datetime] = None) -> None:
+        with self._close_attempt(task, task.retries, TaskStatus.FAILED, ended_at=ended_at, exit_reason=exit_reason) as conn:
             self.db.update_task_status(
                 task.id, TaskStatus.FAILED, retries=task.retries,
                 completed_at=datetime.utcnow(), conn=conn,
             )
 
     @contextmanager
-    def _close_attempt(self, task: Task, attempt: int, status: TaskStatus, **exec_fields):
+    def _close_attempt(self, task: Task, attempt: int, status: TaskStatus, ended_at: Optional[datetime] = None, **exec_fields):
         """Run the caller's task-status write in a txn, then close the attempt's
         Execution row (preserving its started_at) in the SAME transaction.
 
@@ -191,7 +192,7 @@ class JobStore:
                 task_id=task.id, attempt=attempt, job_id=task.job_id, execution_type="task",
                 status=status,
                 started_at=existing.started_at if existing else None,
-                completed_at=datetime.utcnow(),
+                completed_at=ended_at or datetime.utcnow(),
                 **exec_fields,
             ), conn=conn)
 

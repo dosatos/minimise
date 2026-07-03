@@ -553,6 +553,31 @@ def test_no_hooks_records_only_attempts(temp_db_dir, db, git_repo):
     assert "post_task" not in types
 
 
+def test_execution_completed_at_is_agent_finish_not_lifecycle_end(temp_db_dir, db, git_repo):
+    """The Execution row's completed_at marks agent-finish (before the gating
+    post_task hook), strictly BEFORE the task-row's lifecycle-end completed_at."""
+    import time
+
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
+    job_id, task = _setup_job_and_task(db, git_tracker)
+
+    executor._invoke_claude_code = lambda context: (True, "ok", "success")
+
+    # A gating post_task hook that burns wall-clock time. The Execution window
+    # must NOT include it; the task-row's completed_at (stamped after) must.
+    def verify(attempt):
+        time.sleep(0.05)
+        return "pass", ""
+
+    success, _ = executor.execute_task(task, job_id, "", verify=verify)
+    assert success
+
+    exec_row = db.list_executions_for_task(task.id)[-1]
+    task_row = db.get_task(task.id)
+    assert exec_row.completed_at < task_row.completed_at
+
+
 def test_default_harness_is_claude_code(temp_db_dir, db, git_repo):
     """TaskExecutor defaults to ClaudeCodeHarness when no harness injected."""
     from minimise.agents.harness import ClaudeCodeHarness
