@@ -129,3 +129,44 @@ def test_execution_to_dict_carries_new_fields():
     assert d["execution_id"] == e.execution_id
     assert d["task_id"] == "t1"
     assert d["attempt"] == 1
+
+
+LOOP_YAML = """\
+version: "0.0.1"
+name: "sample loop"
+goal: "make it good"
+loop:
+  plan:
+    persona: planner
+  implement:
+    persona: coder
+  evaluate:
+    max_concurrent: 2
+    dimensions:
+      - name: coverage
+        persona: cov-eval
+        rubric: "cover the edge cases"
+      - name: correctness
+        prompt: "You are a correctness evaluator"
+        rubric: "no bugs"
+max_iterations: 10
+"""
+
+
+def test_loopspec_from_yaml(tmp_path):
+    from minimise.models import LoopSpec
+    p = tmp_path / "loop.yaml"
+    p.write_text(LOOP_YAML)
+    spec = LoopSpec.from_yaml(p)
+    assert spec.version == "0.0.1"
+    assert spec.max_iterations == 10
+    assert spec.loop.plan.persona == "planner"
+    assert spec.loop.evaluate.max_concurrent == 2
+    assert [d.name for d in spec.loop.evaluate.dimensions] == ["coverage", "correctness"]
+    assert spec.loop.evaluate.dimensions[1].prompt.startswith("You are")
+
+
+def test_dimension_rejects_two_workers():
+    from minimise.models import Dimension
+    with pytest.raises(ValueError):
+        Dimension(name="coverage", rubric="r", persona="p", prompt="q")

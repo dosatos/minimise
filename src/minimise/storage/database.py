@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List
-from minimise.models import Job, Task, Execution, JobStatus, TaskStatus
+from minimise.models import Job, Task, Execution, Loop, LoopStep, JobStatus, TaskStatus
 
 
 _UNSET = object()  # sentinel: "field not provided" vs an explicit None (clear it)
@@ -74,6 +74,36 @@ def _row_to_execution(row: sqlite3.Row) -> Execution:
     )
 
 
+def _row_to_loop(row: sqlite3.Row) -> Loop:
+    keys = row.keys()
+    return Loop(
+        loop_id=row['loop_id'],
+        name=row['name'],
+        status=JobStatus(row['status']),
+        plan_path=row['plan_path'],
+        max_iterations=row['max_iterations'],
+        created_at=datetime.fromisoformat(row['created_at']),
+        started_at=_dt(row['started_at']),
+        completed_at=_dt(row['completed_at']),
+        pid=row['pid'] if 'pid' in keys else None,
+    )
+
+
+def _row_to_loop_step(row: sqlite3.Row) -> LoopStep:
+    keys = row.keys()
+    return LoopStep(
+        step_id=row['step_id'],
+        loop_id=row['loop_id'],
+        iteration=row['iteration'],
+        step_type=row['step_type'],
+        dimension=row['dimension'] if 'dimension' in keys else None,
+        status=TaskStatus(row['status']),
+        retries=row['retries'],
+        started_at=_dt(row['started_at']),
+        completed_at=_dt(row['completed_at']),
+    )
+
+
 class Database:
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -133,7 +163,7 @@ class Database:
         finally:
             conn.close()
 
-    SCHEMA_VERSION = 5
+    SCHEMA_VERSION = 6
 
     def init_db(self):
         """Create/migrate the schema once per DB.
@@ -308,6 +338,35 @@ class Database:
                 assignee TEXT,
                 estimated_duration_min INTEGER NOT NULL DEFAULT 5,
                 FOREIGN KEY(job_id) REFERENCES jobs(id)
+            )
+        """)
+
+        # v6: additive loop tables — pure CREATE IF NOT EXISTS, no rebuilds/backfills.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS loops (
+                loop_id TEXT PRIMARY KEY,
+                name TEXT,
+                status TEXT,
+                plan_path TEXT,
+                max_iterations INTEGER,
+                created_at TEXT,
+                started_at TEXT,
+                completed_at TEXT,
+                pid INTEGER
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS loop_steps (
+                step_id TEXT PRIMARY KEY,
+                loop_id TEXT,
+                iteration INTEGER,
+                step_type TEXT,
+                dimension TEXT,
+                status TEXT,
+                retries INTEGER,
+                started_at TEXT,
+                completed_at TEXT,
+                FOREIGN KEY(loop_id) REFERENCES loops(loop_id)
             )
         """)
 
@@ -544,3 +603,103 @@ class Database:
             (job_id_or_prefix, f"{job_id_or_prefix}%"),
         )
         return rows[0][0] if len(rows) == 1 else None
+
+    def create_loop(self, loop: Loop, conn: Optional[sqlite3.Connection] = None) -> None:
+        """Insert a new loop."""
+        with self._write(conn) as cursor:
+            cursor.execute("""
+                INSERT INTO loops (loop_id, name, status, plan_path, max_iterations, created_at, started_at, completed_at, pid)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (loop.loop_id, loop.name, loop.status.value, loop.plan_path, loop.max_iterations,
+                  loop.created_at.isoformat(),
+                  loop.started_at.isoformat() if loop.started_at else None,
+                  loop.completed_at.isoformat() if loop.completed_at else None, loop.pid))
+
+    def get_loop(self, loop_id: str) -> Optional[Loop]:
+        """Fetch a loop by ID."""
+        rows = self._query("SELECT * FROM loops WHERE loop_id = ?", (loop_id,))
+        return _row_to_loop(rows[0]) if rows else None
+
+    def list_loops(self, limit: Optional[int] = None) -> List[Loop]:
+        """Fetch loops with optional limit."""
+        if limit is not None:
+            rows = self._query("SELECT * FROM loops ORDER BY created_at DESC LIMIT ?", (limit,))
+        else:
+            rows = self._query("SELECT * FROM loops ORDER BY created_at DESC")
+        return [_row_to_loop(row) for row in rows]
+
+    def update_loop_status(self, loop_id: str, status: Optional[JobStatus] = None, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, pid: Optional[int] = None, conn: Optional[sqlite3.Connection] = None) -> None:
+        """Update loop status. Only updates fields that are explicitly provided."""
+        update_fields = []
+        params = []
+
+        if status is not None:
+            update_fields.append("status = ?")
+            params.append(status.value)
+        if started_at is not None:
+            update_fields.append("started_at = ?")
+            params.append(started_at.isoformat())
+        if completed_at is not None:
+            update_fields.append("completed_at = ?")
+            params.append(completed_at.isoformat())
+        if pid is not None:
+            update_fields.append("pid = ?")
+            params.append(pid)
+
+        if not update_fields:
+            return
+
+        params.append(loop_id)
+        query = f"UPDATE loops SET {', '.join(update_fields)} WHERE loop_id = ?"
+        with self._write(conn) as cursor:
+            cursor.execute(query, params)
+
+    def create_loop_step(self, step: LoopStep, conn: Optional[sqlite3.Connection] = None) -> None:
+        """Insert a new loop step."""
+        with self._write(conn) as cursor:
+            cursor.execute("""
+                INSERT INTO loop_steps (step_id, loop_id, iteration, step_type, dimension, status, retries, started_at, completed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (step.step_id, step.loop_id, step.iteration, step.step_type, step.dimension,
+                  step.status.value, step.retries,
+                  step.started_at.isoformat() if step.started_at else None,
+                  step.completed_at.isoformat() if step.completed_at else None))
+
+    def update_loop_step(self, step_id: str, status: Optional[TaskStatus] = None, retries: Optional[int] = None, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, conn: Optional[sqlite3.Connection] = None) -> None:
+        """Update a loop step. Only updates fields that are explicitly provided."""
+        update_fields = []
+        params = []
+
+        if status is not None:
+            update_fields.append("status = ?")
+            params.append(status.value)
+        if retries is not None:
+            update_fields.append("retries = ?")
+            params.append(retries)
+        if started_at is not None:
+            update_fields.append("started_at = ?")
+            params.append(started_at.isoformat())
+        if completed_at is not None:
+            update_fields.append("completed_at = ?")
+            params.append(completed_at.isoformat())
+
+        if not update_fields:
+            return
+
+        params.append(step_id)
+        query = f"UPDATE loop_steps SET {', '.join(update_fields)} WHERE step_id = ?"
+        with self._write(conn) as cursor:
+            cursor.execute(query, params)
+
+    def list_loop_steps(self, loop_id: str) -> List[LoopStep]:
+        """Fetch all steps for a loop in execution order."""
+        rows = self._query(
+            "SELECT * FROM loop_steps WHERE loop_id = ? ORDER BY iteration, started_at",
+            (loop_id,),
+        )
+        return [_row_to_loop_step(row) for row in rows]
+
+    def current_iteration(self, loop_id: str) -> int:
+        """Derived iteration numerator: MAX(iteration) across a loop's steps (0 if none)."""
+        rows = self._query("SELECT MAX(iteration) FROM loop_steps WHERE loop_id = ?", (loop_id,))
+        return rows[0][0] or 0

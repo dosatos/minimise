@@ -197,3 +197,78 @@ class Plan(BaseModel):
         if isinstance(raw, dict):
             raw = raw.get("plan", raw)
         return cls.model_validate(raw)
+
+
+class Worker(BaseModel):
+    """A step's worker: exactly one of persona|prompt|prompt_file, or none
+    (= the built-in default). More than one set is an error."""
+    persona: Optional[str] = None
+    prompt: Optional[str] = None
+    prompt_file: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _exactly_one_or_none(self):
+        set_fields = [k for k in ("persona", "prompt", "prompt_file")
+                      if getattr(self, k) is not None]
+        if len(set_fields) > 1:
+            raise ValueError(
+                f"worker must set at most one of persona|prompt|prompt_file, got {set_fields}"
+            )
+        return self
+
+
+class Dimension(Worker):
+    name: str
+    rubric: str
+
+
+class EvaluateConfig(BaseModel):
+    max_concurrent: int = Field(gt=0, strict=True, default=4)
+    dimensions: list[Dimension] = Field(min_length=1)
+
+
+class LoopConfig(BaseModel):
+    plan: Worker
+    implement: Worker
+    evaluate: EvaluateConfig
+
+
+class LoopSpec(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    version: str
+    name: str
+    goal: str
+    loop: LoopConfig
+    max_iterations: int = Field(gt=0, strict=True)
+
+    @classmethod
+    def from_yaml(cls, path):
+        with open(path) as f:
+            raw = yaml.safe_load(f)
+        return cls.model_validate(raw)
+
+
+@dataclass
+class Loop:
+    loop_id: str
+    name: str
+    status: JobStatus = JobStatus.PENDING
+    plan_path: str = ""
+    max_iterations: int = 0
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    pid: Optional[int] = None
+
+
+@dataclass
+class LoopStep:
+    step_id: str
+    loop_id: str
+    iteration: int
+    step_type: str  # 'plan' | 'implement' | 'evaluate'
+    dimension: Optional[str] = None  # None except evaluate
+    status: TaskStatus = TaskStatus.PENDING
+    retries: int = 0
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None

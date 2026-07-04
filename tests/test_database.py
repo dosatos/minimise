@@ -1,7 +1,45 @@
-from minimise.models import Job, Task, Execution, JobStatus, TaskStatus
+from minimise.models import Job, Task, Execution, Loop, LoopStep, JobStatus, TaskStatus
+from minimise.storage.database import Database
 from minimise.utils import new_id
 from datetime import datetime
+import sqlite3
 import uuid
+
+
+def test_loop_roundtrip_and_schema_v6(db, temp_db_dir):
+    """Round-trip a Loop + LoopStep; a fresh DB opens at user_version 6 without disturbing jobs."""
+    loop = Loop(loop_id="l1", name="Refine", status=JobStatus.PENDING,
+                plan_path="/p.yaml", max_iterations=10)
+    db.create_loop(loop)
+    db.create_loop_step(LoopStep(step_id="s1", loop_id="l1", iteration=1, step_type="plan"))
+    db.create_loop_step(LoopStep(step_id="s2", loop_id="l1", iteration=3,
+                                 step_type="evaluate", dimension="clarity"))
+
+    got = db.get_loop("l1")
+    assert got.name == "Refine" and got.max_iterations == 10 and got.status == JobStatus.PENDING
+
+    db.update_loop_status("l1", status=JobStatus.RUNNING, pid=42)
+    assert db.get_loop("l1").status == JobStatus.RUNNING
+    assert db.get_loop("l1").pid == 42
+
+    steps = db.list_loop_steps("l1")
+    assert [s.step_id for s in steps] == ["s1", "s2"]
+    assert steps[1].dimension == "clarity"
+
+    db.update_loop_step("s1", status=TaskStatus.COMPLETED, retries=2)
+    assert db.list_loop_steps("l1")[0].status == TaskStatus.COMPLETED
+    assert db.current_iteration("l1") == 3
+    assert db.current_iteration("nope") == 0
+
+    # Fresh DB opens at user_version 6 and jobs still work.
+    fresh = Database(temp_db_dir / "fresh.db")
+    fresh.init_db()
+    conn = sqlite3.connect(fresh.db_path)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    conn.close()
+    fresh.create_job(Job(id="j1", name="n", status=JobStatus.PENDING))
+    assert fresh.get_job("j1").name == "n"
+    assert fresh.list_loops() == []
 
 def test_init_db(db):
     """Test database initialization."""
