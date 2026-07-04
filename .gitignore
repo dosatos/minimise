@@ -58,6 +58,7 @@ worklogs/
 __pycache__/
 .agent-native/
 examples/*.yaml
+!examples/example-loop.yaml
 
 # Local working plan docs (generated each run; not part of the package)
 docs/plans/*.md

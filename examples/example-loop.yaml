@@ -1,0 +1,20 @@
+version: "1"
+name: Example Refinement Loop
+goal: Improve the README until it clearly explains setup, usage, and testing.
+max_iterations: 3
+loop:
+  plan:
+    prompt: >
+      You are the PLANNER. Read the goal and journal history, then decide the
+      next concrete step for the implementer — or stop the loop if the goal is met.
+  implement:
+    prompt: >
+      You are the IMPLEMENTER. Carry out the current plan by editing the working
+      tree, then report what you changed.
+  evaluate:
+    max_concurrent: 2
+    dimensions:
+      - name: clarity
+        rubric: Is the README easy to follow for a first-time reader?
+      - name: completeness
+        rubric: Does it cover setup, usage, and testing without gaps?
