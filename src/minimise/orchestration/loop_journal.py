@@ -59,6 +59,20 @@ def extract_last_json(text: str) -> Optional[dict]:
     return None
 
 
+def strip_control_line(text: str) -> str:
+    """Drop the trailing control-JSON line from a chunk of agent output.
+
+    The OUTPUT_CONTRACT makes every step end its reply with a lone control
+    line; the journal owns that line authoritatively, so `loop logs` records
+    only the reasoning. Non-control text is returned untouched (rstrip'd)."""
+    lines = (text or "").splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines and extract_last_json(lines[-1]) is not None:
+        lines.pop()
+    return "\n".join(lines)
+
+
 def parse_control(last_line: dict) -> str:
     """Validate the reserved keys on a step's last line, return the control.
 
@@ -112,6 +126,12 @@ def demo():
             raise AssertionError(f"expected ValueError for {bad}")
         except ValueError:
             pass
+
+    # strip_control_line: drops lone trailing control line, keeps reasoning
+    assert strip_control_line('reasoning here\nmore\n{"control": "done"}') == "reasoning here\nmore"
+    assert strip_control_line('just prose, no control') == "just prose, no control"
+    assert strip_control_line('{"control": "continue"}') == ""
+    assert strip_control_line('') == ""
 
     # commit markers + resume boundary (partial trailing line tolerated)
     assert last_committed_iteration(p) == 0

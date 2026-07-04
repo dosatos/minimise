@@ -214,6 +214,7 @@ class LoopEngine:
                     "loop_id": loop_id, "iteration": iteration, "step_id": step_id,
                     "step_type": step_type, "dimension": dimension,
                 },
+                log_filter=journal.strip_control_line,  # journal owns the control line; keep logs reasoning-only
             )
             line = journal.extract_last_json(result.output)
             if line is not None:  # engine is the sole writer — stamp routing keys for resume

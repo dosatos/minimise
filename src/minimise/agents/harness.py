@@ -5,7 +5,7 @@ import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
 from minimise.logging.backend import JobLogBackend, JsonlLogBackend
 
@@ -54,6 +54,7 @@ class AgentHarness(ABC):
         allow_edits: bool = False,
         log_path: Optional[Union[str, Path]] = None,
         log_fields: Optional[dict] = None,
+        log_filter: Optional[Callable[[str], str]] = None,
     ) -> HarnessResult:
         """Send a prompt to the harness and return its text output.
 
@@ -65,6 +66,10 @@ class AgentHarness(ABC):
         chunk as a JSON line (log_fields merged with timestamp/level/message)
         via the injected backend so the run can be tailed/queried. If either is
         None, nothing is written and behavior is unchanged.
+
+        log_filter, when given, transforms each chunk's text before it is
+        recorded (result.output is unaffected). A chunk that filters to empty
+        is skipped.
         """
         raise NotImplementedError
 
@@ -120,6 +125,7 @@ class ClaudeCodeHarness(AgentHarness):
         allow_edits: bool = False,
         log_path: Optional[Union[str, Path]] = None,
         log_fields: Optional[dict] = None,
+        log_filter: Optional[Callable[[str], str]] = None,
     ) -> HarnessResult:
         # stream-json lets the orchestrator read assistant output live;
         # the CLI requires --verbose alongside it.
@@ -157,7 +163,7 @@ class ClaudeCodeHarness(AgentHarness):
             chunks: list[str] = []
             reader = threading.Thread(
                 target=self._read_stdout,
-                args=(proc, chunks, log_path, log_fields, self._backend),
+                args=(proc, chunks, log_path, log_fields, self._backend, log_filter),
             )
             reader.start()
             # Bound the live read with a real wall-clock deadline; the old
@@ -203,7 +209,7 @@ class ClaudeCodeHarness(AgentHarness):
             pass
 
     @staticmethod
-    def _read_stdout(proc: "subprocess.Popen", chunks: list, log_path, log_fields, backend) -> None:
+    def _read_stdout(proc: "subprocess.Popen", chunks: list, log_path, log_fields, backend, log_filter=None) -> None:
         """Read stdout line-by-line, accumulate assistant text, record each chunk.
 
         Each chunk is written as a structured JSON line via the backend when both
@@ -223,4 +229,6 @@ class ClaudeCodeHarness(AgentHarness):
                 continue
             chunks.append(text)
             if record:
-                backend.record(log_path, log_fields, text)
+                logged = log_filter(text) if log_filter else text
+                if logged:
+                    backend.record(log_path, log_fields, logged)
