@@ -39,13 +39,17 @@ DEFAULT_PROMPTS = {
         "history (prior plans, findings, and handovers). Decide the next approach "
         "for the implementer, or decide the loop is finished. Emit control 'stop' "
         "or 'done' when the goal is met or no useful progress remains; otherwise "
-        "'continue' with the plan for the implementer to execute."
+        "'continue' with the plan for the implementer to execute. In your control line "
+        'include a "summary": one concise sentence naming the decision or the next step '
+        "for the implementer."
     ),
     "implement": (
         "You are the IMPLEMENTER in a refinement loop. Execute the current plan by "
         "mutating the working tree. Emit control 'done' on success; on failure emit "
         "control 'failed' with a 'handover' explaining what blocked you so the next "
-        "planner can re-plan."
+        "planner can re-plan. In your control line include a \"summary\" (one sentence "
+        'on what you changed) and "changed" (a JSON array of the file paths you touched, '
+        "[] if none)."
     ),
     "evaluate": (
         "You are an EVALUATOR in a refinement loop, judging ONE dimension only and "
@@ -60,8 +64,12 @@ OUTPUT_CONTRACT = (
     "\n\n---\nOUTPUT CONTRACT: End your response with a SINGLE LINE that is one JSON "
     'object. Required key "control" — one of: continue, stop, done, failed. When '
     'control is "failed" you MUST also include a non-empty "handover" string for the '
-    "next planner. You may add any other keys as convention (e.g. plan, findings). Do "
-    "NOT write any file for this — just emit the line as the final line of your reply."
+    "next planner. Beyond control/handover, include the payload key(s) for your role "
+    'so the journal stays queryable: PLANNER -> "summary" (one concise sentence on the '
+    'decision/next step); IMPLEMENTER -> "summary" (what you changed, one sentence) and '
+    '"changed" (a JSON array of the file paths you touched, [] if none); EVALUATOR -> '
+    '"verdict" ("pass" or "fail") and "findings". Do NOT write any file for this — just '
+    "emit the line as the final line of your reply."
 )
 
 
@@ -218,7 +226,15 @@ class LoopEngine:
             )
             line = journal.extract_last_json(result.output)
             if line is not None:  # engine is the sole writer — stamp routing keys for resume
-                stamped = {**line, "iteration": iteration, "step_type": step_type, "dimension": dimension}
+                stamped = {
+                    **line,
+                    "timestamp": datetime.utcnow().isoformat(timespec="seconds"),
+                    "loop_id": loop_id,
+                    "step_id": step_id,
+                    "iteration": iteration,
+                    "step_type": step_type,
+                    "dimension": dimension,
+                }
                 with self._journal_lock:
                     journal.append(jpath, stamped)
             try:

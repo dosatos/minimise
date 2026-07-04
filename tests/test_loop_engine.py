@@ -192,6 +192,29 @@ def test_external_stop_halts_and_stays_stopped(tmp_path):
     assert journal.last_committed_iteration(store.journal_path(lid)) == 0
 
 
+# --- 7) engine stamps metadata onto every non-marker journal line ---------------
+
+def test_journal_lines_carry_engine_metadata(tmp_path):
+    h = StubHarness({
+        ("plan", 1, None): ['{"control":"continue","plan":"go"}'],
+        ("implement", 1, None): ['{"control":"done"}'],
+        ("evaluate", 1, "a"): ['{"control":"done","findings":"f"}'],
+        ("evaluate", 1, "b"): ['{"control":"done","findings":"f"}'],
+        ("plan", 2, None): ['{"control":"done"}'],
+    })
+    status, db, store, lid = _run(tmp_path, h)
+    assert status == JobStatus.COMPLETED
+    assert journal.last_committed_iteration(store.journal_path(lid)) == 1
+
+    recs = [r for r in journal.read(store.journal_path(lid)) if "marker" not in r]
+    assert recs  # at least one committed step landed
+    for r in recs:
+        for key in ("timestamp", "loop_id", "step_id", "iteration", "step_type"):
+            assert key in r, f"missing {key} in {r}"
+        assert r["loop_id"] == lid
+        assert r["step_type"] in {"plan", "implement", "evaluate"}
+
+
 # --- mini smoke (dogfood): `loop new`/`list` against examples/example-loop.yaml -
 
 def test_mini_loop_new_and_list_smoke(monkeypatch):
