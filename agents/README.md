@@ -10,6 +10,7 @@ anyone using this repo gets them too (the live copies live in the gitignored
 | `skills/mini-implementation-review/` | Non-blocking `post_task`/`post_plan` review of the produced diff vs. the plan. |
 | `commands/onboard.md` | `/onboard` — read the latest handoff + the delegate-to-`mini-job` execution rule. |
 | `commands/handoff.md` | `/handoff` — write a session handoff for next time. |
+| `commands/humanize.md` | `/humanize` — cut noise from a document while keeping all content. |
 
 ## Install
 
