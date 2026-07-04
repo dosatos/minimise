@@ -58,6 +58,30 @@ def resolve_job_id(job_id_or_prefix: str) -> str:
         raise SystemExit(1)
 
 
+def resolve_loop_id(loop_id_or_prefix: str) -> str:
+    """Resolve a loop ID from full ID or prefix (mirrors resolve_job_id)."""
+    db = get_db()
+
+    conn = sqlite3.connect(db.db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT loop_id FROM loops WHERE loop_id = ? OR loop_id LIKE ?",
+                   (loop_id_or_prefix, f"{loop_id_or_prefix}%"))
+    matches = cursor.fetchall()
+    conn.close()
+
+    if len(matches) == 1:
+        return matches[0][0]
+    elif len(matches) > 1:
+        console.print(f"[red]Error: Multiple loops match '{loop_id_or_prefix}':[/red]")
+        for match in matches:
+            console.print(f"  {match[0]}")
+        console.print("[yellow]Please provide more characters to disambiguate[/yellow]")
+        raise SystemExit(1)
+    else:
+        console.print(f"[red]Error: Loop '{loop_id_or_prefix}' not found[/red]")
+        raise SystemExit(1)
+
+
 def _error_job_not_found(job_id: str):
     """Print the standard 'job not found' error and exit non-zero."""
     console.print(f"[red]Error: Job {job_id} not found[/red]")

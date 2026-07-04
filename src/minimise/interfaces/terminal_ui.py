@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Optional
 from rich.table import Table
 from rich.text import Text
-from minimise.models import Job, Task, JobStatus, TaskStatus, Plan
+from minimise.models import Job, Task, JobStatus, TaskStatus, Plan, Loop, LoopStep
 
 
 @dataclass
@@ -433,4 +433,58 @@ def render_execution_table_with_gantt(
                 assignee=task.assignee or "",
             )
 
+    return table
+
+
+def _loop_step_label(step: LoopStep) -> str:
+    """Gantt row label: 'iter N  plan/implement', or 'iter N  eval · <dim>'.
+    evaluate fans out to one row per dimension (design's ASCII example)."""
+    prefix = f"iter {step.iteration}  "
+    if step.step_type == "evaluate":
+        return f"{prefix}eval · {step.dimension or '?'}"
+    return f"{prefix}{step.step_type}"
+
+
+def render_loop_status_table(
+    loop: Loop,
+    steps: list[LoopStep],
+    now: Optional[datetime] = None,
+) -> Table:
+    """Per-iteration Gantt for `mini loop status`. One row per plan/implement
+    step and one per evaluate dimension, grouped by iteration in the order
+    `list_loop_steps` returns (iteration, started_at). Reuses the shared
+    timeline machinery (project_steps/layout_projected_bars) — no new bar math.
+    The join/commit marker is journal-only, so it gets no row."""
+    now = _now_or_default(now)
+
+    from rich.console import Console
+    bar_width = max(8, min(28, Console().width - 40))
+
+    table = Table()
+    table.add_column("Step", style="cyan")
+    table.add_column("Status", style="cyan")
+    table.add_column("Duration", style="yellow")
+    table.add_column("Timeline", style="green", no_wrap=True)
+
+    # LoopSteps carry no estimate — map to Step with estimate=None so pending
+    # rows chain after the last known end (project_steps handles None as 0).
+    ui_steps = [
+        Step(name=_loop_step_label(s), estimate=None, status=s.status,
+             started_at=s.started_at, ended_at=s.completed_at)
+        for s in steps
+    ]
+
+    bars = None
+    if loop.started_at:
+        placements, total_secs = project_steps(ui_steps, loop.started_at, now)
+        bars = layout_projected_bars(placements, total_secs, width=bar_width)
+
+    for i, s in enumerate(ui_steps):
+        is_running = s.status == TaskStatus.RUNNING
+        table.add_row(
+            s.name,
+            Text(s.status.value, style=get_status_color(s.status)),
+            format_duration(s.started_at, s.ended_at, is_running=is_running, now=now),
+            bars[i] if bars is not None else "—",
+        )
     return table

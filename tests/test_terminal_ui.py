@@ -952,3 +952,48 @@ def test_project_steps_running_bar_no_later_step_extends_to_now():
     ]
     placements, _ = project_steps(steps, js, now)
     assert placements[0][1] == 120  # extends to now
+
+
+def test_render_loop_status_table_grouped_rows_and_bars():
+    """Per-iteration Gantt: one row per plan/implement step + one per evaluate
+    dimension, grouped by iteration, with real bar chars for timed steps."""
+    from minimise.interfaces.terminal_ui import render_loop_status_table
+    from minimise.models import Loop, LoopStep
+
+    js = datetime(2026, 1, 1, 0, 0, 0)
+    loop = Loop(loop_id="loop-1", name="L", status=JobStatus.RUNNING,
+                max_iterations=2, started_at=js)
+
+    def step(it, stype, dim, off_start, off_end, status):
+        return LoopStep(
+            step_id=f"{it}-{stype}-{dim}", loop_id="loop-1", iteration=it,
+            step_type=stype, dimension=dim, status=status,
+            started_at=js + timedelta(seconds=off_start),
+            completed_at=(js + timedelta(seconds=off_end)) if off_end else None,
+        )
+
+    # iter 1: plan, implement, evaluate fans out to two dimensions
+    steps = [
+        step(1, "plan", None, 0, 60, TaskStatus.COMPLETED),
+        step(1, "implement", None, 60, 180, TaskStatus.COMPLETED),
+        step(1, "evaluate", "coverage", 180, 210, TaskStatus.COMPLETED),
+        step(1, "evaluate", "style", 180, 220, TaskStatus.COMPLETED),
+        step(2, "plan", None, 220, 0, TaskStatus.RUNNING),
+    ]
+
+    now = js + timedelta(seconds=240)
+    table = render_loop_status_table(loop, steps, now=now)
+
+    assert table.columns[0].header == "Step"
+    assert table.columns[3].header == "Timeline"
+    assert table.columns[0]._cells == [
+        "iter 1  plan",
+        "iter 1  implement",
+        "iter 1  eval · coverage",
+        "iter 1  eval · style",
+        "iter 2  plan",
+    ]
+    # bars are real strings (not the "—" placeholder) since the loop started
+    bars = table.columns[3]._cells
+    assert all(b != "—" for b in bars)
+    assert all("█" in b for b in bars[:4])  # completed steps painted solid

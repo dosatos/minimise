@@ -24,12 +24,14 @@ from minimise.interfaces.cli._shared import (  # noqa: E402  (constants must pre
     get_db,
     get_job_controller,
     resolve_job_id,
+    resolve_loop_id,
     _error_job_not_found,
     _format_datetime,
     _filter_tasks_by_id,
     _get_and_validate_job,
 )
 from minimise.interfaces.cli.job import job  # noqa: E402
+from minimise.interfaces.cli.loop import loop  # noqa: E402
 from minimise.interfaces.cli.view import view  # noqa: E402
 
 
@@ -40,6 +42,7 @@ def mini():
 
 
 mini.add_command(job)
+mini.add_command(loop)
 mini.add_command(view)
 
 
