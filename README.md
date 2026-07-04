@@ -269,6 +269,20 @@ CloudWatch Insights-style string, clauses separated by `|` (any order, all optio
 mini job logs <ID> --query 'fields @timestamp, message | filter type = "task" | sort @timestamp desc | limit 20'
 ```
 
+### Refinement Loops
+
+```bash
+mini loop new --plan FILE                     # Register a loop from a spec (does not execute)
+mini loop start <ID>                          # Start/resume a loop in the foreground (idempotent)
+mini loop stop <ID>                           # Stop a running loop
+mini loop list                                # List all loops
+mini loop status <ID>                         # Iteration progress (per-iteration Gantt)
+mini loop status <ID> --format json           # JSON output for scripting
+mini loop journal <ID>                        # Control journal (plan/implement/evaluate + commit markers)
+mini loop journal <ID> --iteration N          # Only records from iteration N
+mini loop logs <ID> [-f] [--query '...']      # Agent narration (same query grammar as job logs)
+```
+
 ### UI & Server
 
 ```bash
@@ -392,6 +406,50 @@ tasks:
         on_failure: retry   # failing review re-runs the task with findings; capped by retries
         shell: "claude -p '/mini-implementation-review' --dangerously-skip-permissions | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
 ```
+
+## Refinement Loops
+
+A **job** runs a fixed task list once. A **loop** refines a single artifact over
+repeated iterations until it's good enough (or a max-iteration cap is hit). Each
+iteration runs three steps against a shared journal:
+
+1. **plan** — decides the next concrete step, or stops the loop if the goal is met.
+2. **implement** — carries out that step by editing the working tree.
+3. **evaluate** — scores the result across named dimensions (fanned out in parallel,
+   capped by `max_concurrent`); findings feed forward into the next iteration's plan.
+
+Termination is the planner's call — it reads the evaluator findings and chooses to
+continue or stop. The loop is defined by a spec file:
+
+```yaml
+version: "1"
+name: Example Refinement Loop
+goal: Improve the README until it clearly explains setup, usage, and testing.
+max_iterations: 3
+loop:
+  plan:
+    prompt: You are the PLANNER. Decide the next step — or stop if the goal is met.
+  implement:
+    prompt: You are the IMPLEMENTER. Carry out the current plan by editing the tree.
+  evaluate:
+    max_concurrent: 2
+    dimensions:
+      - name: clarity
+        rubric: Is the README easy to follow for a first-time reader?
+      - name: completeness
+        rubric: Does it cover setup, usage, and testing without gaps?
+```
+
+See [`examples/example-loop.yaml`](examples/example-loop.yaml). Register and run:
+
+```bash
+mini loop new --plan examples/example-loop.yaml   # → Loop ID
+mini loop start <ID>                              # runs to convergence or max_iterations
+mini loop status <ID>                             # per-iteration progress
+```
+
+Like `mini job start`, `mini loop start` is idempotent — re-running resumes from the
+journal anchor and backs off a live loop.
 
 ## Development
 
