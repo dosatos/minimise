@@ -6,8 +6,10 @@ orchestrators) so the whole loop is unit-testable with a STUB harness.
 Ownership: the ENGINE is the SOLE writer of journal.jsonl. Every step agent
 EMITS its control line as its final output; the engine parses
 ``HarnessResult.output``, appends the line, then validates it. This keeps plan
-and evaluate genuinely read-only (they can't write files) while still capturing
-their control line, and makes the engine the single deterministic writer.
+genuinely read-only (it can't write files) while still capturing its control
+line, and makes the engine the single deterministic writer. Evaluate runs with
+edits allowed so it can execute the written commands it needs to validate the
+work (e.g. run tests), so it is NOT read-only.
 
 State/status/timing live in the DB (loops + loop_steps); content lives in the
 journal. Terminal loops.status mapping: planner stop/done -> completed;
@@ -191,6 +193,7 @@ class LoopEngine:
                     pool.submit(
                         self._run_step, loop_id, spec, jpath, "evaluate", dim, iteration,
                         dimension=dim.name, rubric=dim.rubric, journal_context=context,
+                        allow_edits=True,  # evaluate runs commands to validate the work
                     )
                     for dim in pending
                 ]
