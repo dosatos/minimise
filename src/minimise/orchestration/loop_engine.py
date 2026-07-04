@@ -45,11 +45,16 @@ DEFAULT_PROMPTS = {
     ),
     "implement": (
         "You are the IMPLEMENTER in a refinement loop. Execute the current plan by "
-        "mutating the working tree. Emit control 'done' on success; on failure emit "
-        "control 'failed' with a 'handover' explaining what blocked you so the next "
-        "planner can re-plan. In your control line include a \"summary\" (one sentence "
-        'on what you changed) and "changed" (a JSON array of the file paths you touched, '
-        "[] if none)."
+        "mutating the working tree. For real code changes, STRONGLY PREFER delegating "
+        "the work to a `mini job`: write a plan YAML, gate it with the `/mini-plan-review` "
+        "skill, run `mini job new`/`mini job start`, and wire a `/mini-implementation-review` "
+        "post_task hook so the produced diff is reviewed. This keeps execution churn out "
+        "of the loop and adds the quality gates for free. Only edit files directly for "
+        "trivial one-liners or changes `mini` can't invoke. Emit control 'done' on "
+        "success; on failure emit control 'failed' with a 'handover' explaining what "
+        "blocked you so the next planner can re-plan. In your control line include a "
+        '"summary" (one sentence on what you changed) and "changed" (a JSON array of the '
+        "file paths you touched, [] if none)."
     ),
     "evaluate": (
         "You are an EVALUATOR in a refinement loop, judging ONE dimension only and "
