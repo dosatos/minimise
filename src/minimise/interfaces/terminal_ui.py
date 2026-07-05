@@ -455,11 +455,17 @@ def _pivot_evaluate(journal_records) -> tuple:
     return rows, sorted(iters)
 
 
-def _verdict_cell(verdict) -> Text:
-    """pass -> green ✓, fail -> red ✗, anything else (running/unknown/blank) -> dim ·."""
+def _verdict_cell(verdict, step_status=None) -> Text:
+    """pass -> green ✓, fail -> red ✗. With no verdict, fall back to the eval
+    step status: RUNNING -> yellow ▸, FAILED -> red ✗, anything else
+    (pending/completed-without-verdict/None) -> dim ·."""
     if verdict == "pass":
         return Text("✓", style="green")
     if verdict == "fail":
+        return Text("✗", style="red")
+    if step_status == TaskStatus.RUNNING:
+        return Text("▸", style="yellow")
+    if step_status == TaskStatus.FAILED:
         return Text("✗", style="red")
     return Text("·", style="dim")
 
@@ -511,9 +517,11 @@ def render_loop_progress_table(
     When None, falls back to first-seen-in-journal order. Journal dimensions not
     in `dimensions` are still appended.
 
-    `steps` is accepted for signature compatibility but no longer used here —
-    stage/elapsed now live in the CLI Loop Details block, not the table title."""
+    `steps` supplies eval step state: no-verdict cells show ▸ (running) or a dim
+    · (not dispatched / pending) based on the matching evaluate step's status."""
     rows, iters = _pivot_evaluate(journal_records)
+    step_status = {(s.iteration, s.dimension): s.status
+                   for s in (steps or []) if s.step_type == "evaluate"}
     # Genuine no-data case: no dimensions AND no evaluations -> placeholder.
     if not iters and not dimensions:
         table = Table()
@@ -543,7 +551,8 @@ def render_loop_progress_table(
 
     for dim in ordered:
         by_iter = rows.get(dim, {})
-        table.add_row(dim, *[_verdict_cell(by_iter.get(it)) for it in shown])
+        table.add_row(dim, *[_verdict_cell(by_iter.get(it), step_status.get((it, dim)))
+                             for it in shown])
 
     return table
 

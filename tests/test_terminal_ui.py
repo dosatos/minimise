@@ -1078,6 +1078,55 @@ def test_render_loop_progress_appends_journal_only_dims():
     assert _cell(table, 0, 1)[0] == "surprise"
 
 
+def _estep(iteration, dimension, status):
+    """An evaluate LoopStep for a given (iteration, dimension) with explicit status."""
+    from minimise.models import LoopStep
+    return LoopStep(step_id="s", loop_id="loop-1", iteration=iteration,
+                    step_type="evaluate", dimension=dimension, status=status)
+
+
+def test_render_loop_progress_running_eval_shows_arrow():
+    # iter1 established by tests(pass); lint's eval is RUNNING with no verdict -> ▸.
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    from minimise.models import TaskStatus
+    records = [_rec(1, "tests", "pass")]
+    steps = [_estep(1, "lint", TaskStatus.RUNNING)]
+    table = render_loop_progress_table(_loop(), records, ["tests", "lint"], steps)
+    assert _cell(table, 1, 1) == ("▸", "yellow")  # lint row, iter1 col
+
+
+def test_render_loop_progress_no_eval_step_shows_dot():
+    # lint has no eval step this iteration (and PENDING is treated the same) -> ·.
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    from minimise.models import TaskStatus
+    records = [_rec(1, "tests", "pass")]
+    for steps in ([], [_estep(1, "lint", TaskStatus.PENDING)]):
+        table = render_loop_progress_table(_loop(), records, ["tests", "lint"], steps)
+        assert _cell(table, 1, 1) == ("·", "dim")  # lint row, iter1 col
+
+
+def test_render_loop_progress_failed_eval_no_verdict_shows_cross():
+    # eval FAILED without a verdict -> ✗ (red).
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    from minimise.models import TaskStatus
+    records = [_rec(1, "tests", "pass")]
+    steps = [_estep(1, "lint", TaskStatus.FAILED)]
+    table = render_loop_progress_table(_loop(), records, ["tests", "lint"], steps)
+    assert _cell(table, 1, 1) == ("✗", "red")  # lint row, iter1 col
+
+
+def test_render_loop_progress_verdict_wins_over_step_status():
+    # A recorded verdict beats any step status: pass stays ✓, fail stays ✗.
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    from minimise.models import TaskStatus
+    records = [_rec(1, "tests", "pass"), _rec(1, "lint", "fail")]
+    steps = [_estep(1, "tests", TaskStatus.RUNNING),  # would be ▸ absent a verdict
+             _estep(1, "lint", TaskStatus.RUNNING)]
+    table = render_loop_progress_table(_loop(), records, ["tests", "lint"], steps)
+    assert _cell(table, 1, 0) == ("✓", "green")  # tests: verdict pass wins
+    assert _cell(table, 1, 1) == ("✗", "red")    # lint: verdict fail wins
+
+
 def _step(step_type, status, dimension=None):
     from minimise.models import LoopStep, TaskStatus
     return LoopStep(step_id="s", loop_id="loop-1", iteration=1,
