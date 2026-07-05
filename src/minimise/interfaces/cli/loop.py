@@ -18,6 +18,7 @@ from minimise.models import JobStatus, LoopSpec
 from minimise.interfaces.terminal_ui import (
     get_status_color,
     render_loop_progress_table,
+    render_loop_stage_timing,
     loop_progress_summary,
     loop_stage_breadcrumb,
     format_duration,
@@ -264,6 +265,10 @@ def loop_status(loop_id: str, format: str):
                 console.print("[bold]Stage:[/bold] ", end="")
                 console.print(loop_stage_breadcrumb(loop_obj, steps))
                 console.print()
+                console.print("[bold]Stage timing[/bold]")
+                console.print(render_loop_stage_timing(loop_obj, steps, dims))
+                console.print()
+                console.print("[bold]Verdicts[/bold]")
                 console.print(render_loop_progress_table(loop_obj, records, dims, steps))
                 summary = loop_progress_summary(records, dims)
                 if summary:

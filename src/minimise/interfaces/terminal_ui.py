@@ -548,6 +548,50 @@ def render_loop_progress_table(
     return table
 
 
+def render_loop_stage_timing(loop: Loop, steps: list, dimensions: list = None) -> Table:
+    """Companion to render_loop_progress_table: stage durations per iteration.
+    Rows are plan/implement/eval/iter total; columns are the SAME last-N
+    iterations the heatmap shows (derived from steps' `.iteration`). Each cell is
+    format_duration over the matching steps' min(started_at)..max(completed_at);
+    a still-running step (completed_at None) shows elapsed. No footer row."""
+    if not steps:
+        table = Table()
+        table.add_column("stage", style="cyan", no_wrap=True)
+        table.add_column("status", style="dim")
+        table.add_row("(no timing yet)", "—")
+        return table
+
+    iters = sorted({s.iteration for s in steps})
+
+    from rich.console import Console
+    n = max(8, min(28, Console().width - 40))
+    shown = iters[-n:]
+
+    def cell(iteration, step_type):
+        matched = [s for s in steps if s.iteration == iteration
+                   and (step_type is None or s.step_type == step_type)]
+        if not matched:
+            return format_duration(None, None)
+        starts = [s.started_at for s in matched if s.started_at]
+        running = any(s.completed_at is None for s in matched)
+        started = min(starts) if starts else None
+        completed = None if running else max(s.completed_at for s in matched)
+        return format_duration(started, completed, is_running=running)
+
+    table = Table()
+    table.add_column("stage", style="cyan", no_wrap=True)
+    for i, it in enumerate(shown):
+        header = "now" if i == len(shown) - 1 else str(it)
+        table.add_column(header, justify="center")
+
+    rows = [("plan", "plan"), ("implement", "implement"),
+            ("eval", "evaluate"), ("iter total", None)]
+    for label, step_type in rows:
+        table.add_row(label, *[cell(it, step_type) for it in shown])
+
+    return table
+
+
 def loop_progress_summary(journal_records: list, dimensions: list = None) -> Optional[str]:
     """One-line note printed full-width below the heatmap (like the legend) —
     NOT the table caption, which rich centers+wraps to the narrow table width.

@@ -1129,6 +1129,57 @@ def test_loop_stage_breadcrumb_no_steps_has_no_active_node():
     assert _active_node(bc) is None
 
 
+# --- render_loop_stage_timing (stage-duration companion table) ---
+
+def _tstep(step_type, iteration, started_at, completed_at, dimension=None):
+    from minimise.models import LoopStep, TaskStatus
+    return LoopStep(step_id="s", loop_id="loop-1", iteration=iteration,
+                    step_type=step_type, dimension=dimension,
+                    status=TaskStatus.COMPLETED,
+                    started_at=started_at, completed_at=completed_at)
+
+
+def test_stage_timing_eval_cell_is_span_not_single_dimension(base_time):
+    # Two evaluate steps in one iteration; the eval cell must reflect the whole
+    # span (earliest start .. latest end = 30s), not either step's own duration.
+    from minimise.interfaces.terminal_ui import render_loop_stage_timing
+    steps = [
+        _tstep("evaluate", 1, base_time, base_time + timedelta(seconds=10), "tests"),
+        _tstep("evaluate", 1, base_time + timedelta(seconds=5),
+               base_time + timedelta(seconds=30), "lint"),
+    ]
+    table = render_loop_stage_timing(None, steps)
+    # single iteration -> 1 iteration column at index 1; eval is row index 2
+    assert table.columns[1]._cells[2] == "30.0s"
+
+
+def test_stage_timing_plan_implement_single_step_durations(base_time):
+    from minimise.interfaces.terminal_ui import render_loop_stage_timing
+    steps = [
+        _tstep("plan", 1, base_time, base_time + timedelta(seconds=5)),
+        _tstep("implement", 1, base_time, base_time + timedelta(seconds=10)),
+    ]
+    table = render_loop_stage_timing(None, steps)
+    assert table.columns[1]._cells[0] == "5.0s"    # plan row
+    assert table.columns[1]._cells[1] == "10.0s"   # implement row
+
+
+def test_stage_timing_missing_stage_shows_dash(base_time):
+    from minimise.interfaces.terminal_ui import render_loop_stage_timing
+    # iteration has a plan step but no evaluate step -> eval cell "—"
+    steps = [_tstep("plan", 1, base_time, base_time + timedelta(seconds=5))]
+    table = render_loop_stage_timing(None, steps)
+    assert table.columns[1]._cells[2] == "—"       # eval row, no evaluate step
+
+
+def test_stage_timing_empty_steps_placeholder_no_raise():
+    from minimise.interfaces.terminal_ui import render_loop_stage_timing
+    table = render_loop_stage_timing(None, [])
+    assert table.columns[0].header == "stage"
+    assert table.columns[1].header == "status"
+    assert table.columns[0]._cells == ["(no timing yet)"]
+
+
 def test_render_loop_progress_shows_only_last_n_iterations(monkeypatch):
     import rich.console
     from minimise.interfaces.terminal_ui import render_loop_progress_table
