@@ -451,7 +451,8 @@ def _pivot_evaluate(journal_records) -> tuple:
         if it is None:
             continue
         iters.add(it)
-        rows.setdefault(dim, {})[it] = r.get("verdict")
+        v = r.get("verdict")
+        rows.setdefault(dim, {})[it] = v.strip().lower() if isinstance(v, str) else v
     return rows, sorted(iters)
 
 
@@ -465,6 +466,8 @@ def _verdict_cell(verdict, step=None) -> Text:
         cell = Text("✓", style="green")
     elif verdict == "fail":
         cell = Text("✗", style="red")
+    elif verdict == "blocked":
+        cell = Text("⛔", style="yellow")
     elif step_status == TaskStatus.RUNNING:
         cell = Text("▸", style="yellow")
     elif step_status == TaskStatus.FAILED:

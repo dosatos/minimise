@@ -1151,6 +1151,35 @@ def test_render_loop_progress_verdict_wins_over_step_status():
     assert _cell(table, 1, 1) == ("✗", "red")    # lint: verdict fail wins
 
 
+def test_verdict_cell_blocked_renders_stop_glyph():
+    # 'blocked' -> ⛔ (yellow), distinct from the ✓/✗ glyphs.
+    from minimise.interfaces.terminal_ui import _verdict_cell
+    cell = _verdict_cell("blocked")
+    assert cell.plain == "⛔"
+    assert cell.style == "yellow"
+    assert "✓" not in cell.plain and "✗" not in cell.plain
+
+
+def test_render_loop_progress_footer_excludes_blocked(base_time):
+    # Two dims in one iteration: one pass, one blocked -> footer "1/2".
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    records = [_rec(1, "tests", "pass"), _rec(1, "lint", "blocked")]
+    table = render_loop_progress_table(_loop(), records, ["tests", "lint"])
+    assert _cell(table, 1, 0) == ("✓", "green")   # tests: pass
+    assert _cell(table, 1, 1) == ("⛔", "yellow")  # lint: blocked
+    assert table.columns[1].footer == "1/2"        # blocked not counted
+
+
+def test_render_loop_progress_normalizes_verdict_casing_and_whitespace(base_time):
+    # "Blocked" and " PASS " normalize via _pivot_evaluate -> ⛔ / ✓, footer 1/2.
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    records = [_rec(1, "tests", " PASS "), _rec(1, "lint", "Blocked")]
+    table = render_loop_progress_table(_loop(), records, ["tests", "lint"])
+    assert _cell(table, 1, 0) == ("✓", "green")
+    assert _cell(table, 1, 1) == ("⛔", "yellow")
+    assert table.columns[1].footer == "1/2"
+
+
 def _estep_timed(iteration, dimension, status, started_at, completed_at=None):
     """An evaluate LoopStep with explicit started_at/completed_at timestamps."""
     from minimise.models import LoopStep

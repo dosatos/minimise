@@ -61,7 +61,12 @@ DEFAULT_PROMPTS = {
     "evaluate": (
         "You are an EVALUATOR in a refinement loop, judging ONE dimension only and "
         "blind to the other evaluators. Assess the current state of the work against "
-        "your rubric and emit findings (no scores). Emit control 'done'."
+        "your rubric and emit findings (no scores). Emit 'pass' only if you actually "
+        "ran the checks the rubric requires and they succeeded — intent is NOT "
+        "verification. If the environment blocked a check you needed (permission "
+        "denied, no network, missing tool, sandbox), do NOT emit 'pass': emit "
+        "'blocked' and state in findings exactly what was denied and what you could "
+        "not verify. Emit control 'done'."
     ),
 }
 
@@ -75,7 +80,7 @@ OUTPUT_CONTRACT = (
     'so the journal stays queryable: PLANNER -> "summary" (one concise sentence on the '
     'decision/next step); IMPLEMENTER -> "summary" (what you changed, one sentence) and '
     '"changed" (a JSON array of the file paths you touched, [] if none); EVALUATOR -> '
-    '"verdict" ("pass" or "fail") and "findings". Do NOT write any file for this — just '
+    '"verdict" ("pass", "fail", or "blocked") and "findings". Do NOT write any file for this — just '
     "emit the line as the final line of your reply."
 )
 
