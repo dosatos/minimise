@@ -577,19 +577,21 @@ def render_loop_progress_table(
 
     # Timeline (t0, span) for the current iteration only; blank if it has no
     # started eval steps (covers the None seed iteration -> no bars).
+    now = datetime.utcnow()
     cur_it = shown[-1]
-    current_eval = [eval_steps[(cur_it, d)] for d in ordered
-                    if (cur_it, d) in eval_steps and eval_steps[(cur_it, d)].started_at]
-    if current_eval:
-        t0 = min(s.started_at for s in current_eval)
-        span_secs = max(((s.completed_at or datetime.utcnow()) - t0).total_seconds()
-                        for s in current_eval)
+    cur_steps = [s for s in (steps or []) if s.iteration == cur_it and s.started_at]
+    cur_eval = [eval_steps[(cur_it, d)] for d in ordered
+                if (cur_it, d) in eval_steps and eval_steps[(cur_it, d)].started_at]
+    if cur_eval and cur_steps:
+        t0 = min(s.started_at for s in cur_steps)          # iteration start
+        t_end = max((s.completed_at or now) for s in cur_eval)  # last eval end
+        span_secs = (t_end - t0).total_seconds()
     else:
         t0, span_secs = None, 0
 
     for dim in ordered:
         by_iter = rows.get(dim, {})
-        bar = _eval_gantt_bar(eval_steps.get((cur_it, dim)), t0, span_secs)
+        bar = _eval_gantt_bar(eval_steps.get((cur_it, dim)), t0, span_secs, now=now)
         table.add_row(dim, *[_verdict_cell(by_iter.get(it), eval_steps.get((it, dim)))
                              for it in shown], bar)
 

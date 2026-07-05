@@ -1159,6 +1159,14 @@ def _estep_timed(iteration, dimension, status, started_at, completed_at=None):
                     started_at=started_at, completed_at=completed_at)
 
 
+def _pstep_timed(iteration, step_type, status, started_at, completed_at=None):
+    """A non-eval (plan/implement) LoopStep with explicit timestamps."""
+    from minimise.models import LoopStep
+    return LoopStep(step_id="s", loop_id="loop-1", iteration=iteration,
+                    step_type=step_type, dimension=None, status=status,
+                    started_at=started_at, completed_at=completed_at)
+
+
 def test_render_loop_progress_finished_eval_shows_glyph_and_duration(base_time):
     # A finished passing eval: ✓ glyph AND its final duration appended to the cell.
     from minimise.interfaces.terminal_ui import render_loop_progress_table
@@ -1256,6 +1264,47 @@ def test_render_loop_progress_timeline_only_current_iteration_has_bars(base_time
     assert "█" in table.columns[-1]._cells[0]      # timeline bar present
     assert "█" not in _cell(table, 1, 0)[0]        # iter1 cell: glyph+duration only
     assert "█" not in _cell(table, 2, 0)[0]        # iter2 cell: glyph+duration only
+
+
+def test_render_loop_progress_timeline_eval_after_plan_has_leading_lead(base_time):
+    # REGRESSION GUARD: t0 is the iteration start (plan step), not the eval start.
+    # A plan runs 0-60s, then an eval runs 60-90s -> that eval's bar must have a
+    # NON-ZERO leading "░" run before its first "█" (bar no longer hugs the left).
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    records = [_rec(1, "tests", "pass")]
+    steps = [
+        _pstep_timed(1, "plan", TaskStatus.COMPLETED,
+                     base_time, base_time + timedelta(seconds=60)),
+        _estep_timed(1, "tests", TaskStatus.COMPLETED,
+                     base_time + timedelta(seconds=60),
+                     base_time + timedelta(seconds=90)),
+    ]
+    table = render_loop_progress_table(_loop(), records, ["tests"], steps)
+    bar = table.columns[-1]._cells[0]
+    assert "█" in bar
+    assert bar.startswith("░")               # leading lead present
+    assert bar.index("░") < bar.index("█")   # lead precedes the filled run
+
+
+def test_render_loop_progress_timeline_later_eval_further_right(base_time):
+    # Iteration starts with an implement step at t0; two evals, one starting and
+    # finishing later than the other. The later eval's filled run sits further
+    # right (its first "█" is at a higher index) than the earlier eval's.
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    records = [_rec(1, "early", "pass"), _rec(1, "late", "pass")]
+    steps = [
+        _pstep_timed(1, "implement", TaskStatus.COMPLETED,
+                     base_time, base_time + timedelta(seconds=20)),
+        _estep_timed(1, "early", TaskStatus.COMPLETED,
+                     base_time + timedelta(seconds=20),
+                     base_time + timedelta(seconds=40)),
+        _estep_timed(1, "late", TaskStatus.COMPLETED,
+                     base_time + timedelta(seconds=60),
+                     base_time + timedelta(seconds=100)),
+    ]
+    table = render_loop_progress_table(_loop(), records, ["early", "late"], steps)
+    early_bar, late_bar = table.columns[-1]._cells  # row order: early, late
+    assert late_bar.index("█") > early_bar.index("█")  # later eval starts further right
 
 
 def test_eval_gantt_bar_equal_parallel_steps_left_aligned():
