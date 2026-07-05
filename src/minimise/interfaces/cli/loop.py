@@ -337,6 +337,9 @@ def loop_journal_cmd(loop_id: str, iteration: Optional[int], follow: bool,
                      query: Optional[str], as_json: bool):
     """View the loop's control journal (plan/implement/evaluate lines + commit markers).
 
+    This is the loop's memory across iterations: each iteration's planner reads
+    the journal so far before deciding the next step.
+
     ``--iteration N`` appends a ``filter iteration = "N"`` clause to whatever
     ``--query`` you pass (or forms the whole query on its own).
     """
