@@ -221,6 +221,16 @@ def loop_status(loop_id: str, format: str):
 
         iteration = _iteration(db, loop_obj)
 
+        # Load the spec once: seeds dimension rows and the eval concurrency.
+        dims = None
+        max_concurrent = None
+        try:
+            spec = LoopSpec.from_yaml(Path(loop_obj.plan_path))
+            dims = [d.name for d in spec.loop.evaluate.dimensions]
+            max_concurrent = spec.loop.evaluate.max_concurrent
+        except Exception:
+            pass
+
         if format == "json":
             output = {
                 "loop_id": loop_obj.loop_id,
@@ -228,6 +238,7 @@ def loop_status(loop_id: str, format: str):
                 "status": loop_obj.status.value,
                 "iteration": iteration,
                 "max_iterations": loop_obj.max_iterations,
+                "eval_max_concurrent": max_concurrent,
                 "plan_path": loop_obj.plan_path,
                 "created_at": loop_obj.created_at.isoformat() if loop_obj.created_at else None,
                 "started_at": loop_obj.started_at.isoformat() if loop_obj.started_at else None,
@@ -240,6 +251,8 @@ def loop_status(loop_id: str, format: str):
             console.print(f"[bold]Name:[/bold] {loop_obj.name}")
             console.print(f"[bold]Status:[/bold] {loop_obj.status.value}")
             console.print(f"[bold]Iteration:[/bold] {iteration}/{loop_obj.max_iterations}")
+            if max_concurrent is not None:
+                console.print(f"[bold]Eval concurrency:[/bold] {max_concurrent}")
             console.print(f"[bold]Spec Path:[/bold] {loop_obj.plan_path}")
             console.print(f"[bold]Created:[/bold] {_format_datetime(loop_obj.created_at)}")
             if loop_obj.started_at:
@@ -253,13 +266,6 @@ def loop_status(loop_id: str, format: str):
                 )
                 console.print(f"[bold]Elapsed:[/bold] {elapsed}")
             records = loop_journal.read(_get_store(db).journal_path(loop_id))
-            # Spec dimension order seeds all rows upfront; tolerate a missing/bad spec.
-            dims = None
-            try:
-                spec = LoopSpec.from_yaml(Path(loop_obj.plan_path))
-                dims = [d.name for d in spec.loop.evaluate.dimensions]
-            except Exception:
-                pass
             steps = db.list_loop_steps(loop_id)
             if loop_obj.started_at:
                 console.print("[bold]Stage:[/bold] ", end="")

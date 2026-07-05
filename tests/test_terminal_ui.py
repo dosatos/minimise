@@ -1180,6 +1180,23 @@ def test_render_loop_progress_normalizes_verdict_casing_and_whitespace(base_time
     assert table.columns[1].footer == "1/2"
 
 
+def test_render_loop_progress_now_column_advances_at_eval_dispatch():
+    # Regression: verdicts only through iter0, iter1's evals just RUNNING (no
+    # verdict). The "now" column must be iter1 and show ▸, not stay on iter0.
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    from minimise.models import TaskStatus
+    records = [_rec(0, "tests", "pass"), _rec(0, "lint", "pass")]  # previous iter
+    steps = [_estep(1, "tests", TaskStatus.RUNNING),
+             _estep(1, "lint", TaskStatus.RUNNING)]  # iter1, no verdicts yet
+    table = render_loop_progress_table(_loop(), records, ["tests", "lint"], steps)
+    # cols: dimension, iter0 ("0"), iter1 ("now"), timeline
+    assert table.columns[1].header == "0"
+    assert table.columns[2].header == "now"  # now == iter1, not iter0
+    # iter1's running dimension shows the running glyph, not a dim ·
+    assert _cell(table, 2, 0) == ("▸", "yellow")
+    assert _cell(table, 2, 1) == ("▸", "yellow")
+
+
 def _estep_timed(iteration, dimension, status, started_at, completed_at=None):
     """An evaluate LoopStep with explicit started_at/completed_at timestamps."""
     from minimise.models import LoopStep

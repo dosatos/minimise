@@ -550,6 +550,9 @@ def render_loop_progress_table(
     rows, iters = _pivot_evaluate(journal_records)
     eval_steps = {(s.iteration, s.dimension): s
                   for s in (steps or []) if s.step_type == "evaluate"}
+    # Iterations with eval steps but no journaled verdict yet still get a column,
+    # so "now" advances the moment a fresh iteration's eval fan-out starts.
+    iters = sorted(set(iters) | {it for (it, _dim) in eval_steps})
     # Genuine no-data case: no dimensions AND no evaluations -> placeholder.
     if not iters and not dimensions:
         table = Table()
