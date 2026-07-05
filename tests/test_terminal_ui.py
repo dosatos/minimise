@@ -1266,10 +1266,10 @@ def test_render_loop_progress_timeline_only_current_iteration_has_bars(base_time
     assert "█" not in _cell(table, 2, 0)[0]        # iter2 cell: glyph+duration only
 
 
-def test_render_loop_progress_timeline_eval_after_plan_has_leading_lead(base_time):
-    # REGRESSION GUARD: t0 is the iteration start (plan step), not the eval start.
-    # A plan runs 0-60s, then an eval runs 60-90s -> that eval's bar must have a
-    # NON-ZERO leading "░" run before its first "█" (bar no longer hugs the left).
+def test_render_loop_progress_timeline_first_eval_hugs_left(base_time):
+    # REGRESSION GUARD: t0 is the EARLIEST EVAL start, not the iteration/plan
+    # start. A plan runs 0-60s, then a single eval runs 60-90s -> since it is the
+    # only (and first) eval, its bar must start at the LEFT edge (no leading "░").
     from minimise.interfaces.terminal_ui import render_loop_progress_table
     records = [_rec(1, "tests", "pass")]
     steps = [
@@ -1281,9 +1281,8 @@ def test_render_loop_progress_timeline_eval_after_plan_has_leading_lead(base_tim
     ]
     table = render_loop_progress_table(_loop(), records, ["tests"], steps)
     bar = table.columns[-1]._cells[0]
-    assert "█" in bar
-    assert bar.startswith("░")               # leading lead present
-    assert bar.index("░") < bar.index("█")   # lead precedes the filled run
+    assert bar.startswith("█")               # first eval anchors to the left edge
+    assert "░" not in bar
 
 
 def test_render_loop_progress_timeline_later_eval_further_right(base_time):

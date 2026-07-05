@@ -579,11 +579,10 @@ def render_loop_progress_table(
     # started eval steps (covers the None seed iteration -> no bars).
     now = datetime.utcnow()
     cur_it = shown[-1]
-    cur_steps = [s for s in (steps or []) if s.iteration == cur_it and s.started_at]
     cur_eval = [eval_steps[(cur_it, d)] for d in ordered
                 if (cur_it, d) in eval_steps and eval_steps[(cur_it, d)].started_at]
-    if cur_eval and cur_steps:
-        t0 = min(s.started_at for s in cur_steps)          # iteration start
+    if cur_eval:
+        t0 = min(s.started_at for s in cur_eval)           # first eval start (leftmost)
         t_end = max((s.completed_at or now) for s in cur_eval)  # last eval end
         span_secs = (t_end - t0).total_seconds()
     else:
