@@ -15,7 +15,14 @@ from rich.text import Text
 
 import minimise.interfaces.cli as _cli  # patchable constants; read at call time
 from minimise.models import JobStatus, LoopSpec
-from minimise.interfaces.terminal_ui import get_status_color, render_loop_status_table
+from minimise.interfaces.terminal_ui import (
+    get_status_color,
+    render_loop_progress_table,
+    loop_progress_summary,
+    loop_stage_breadcrumb,
+    format_duration,
+)
+from minimise.orchestration import loop_journal
 from minimise.interfaces.cli._shared import (
     console,
     get_db,
@@ -238,10 +245,29 @@ def loop_status(loop_id: str, format: str):
                 console.print(f"[bold]Started:[/bold] {_format_datetime(loop_obj.started_at)}")
             if loop_obj.completed_at:
                 console.print(f"[bold]Completed:[/bold] {_format_datetime(loop_obj.completed_at)}")
+            if loop_obj.started_at:
+                elapsed = format_duration(
+                    loop_obj.started_at, loop_obj.completed_at,
+                    is_running=(loop_obj.status == JobStatus.RUNNING), now=None,
+                )
+                console.print(f"[bold]Elapsed:[/bold] {elapsed}")
+            records = loop_journal.read(_get_store(db).journal_path(loop_id))
+            # Spec dimension order seeds all rows upfront; tolerate a missing/bad spec.
+            dims = None
+            try:
+                spec = LoopSpec.from_yaml(Path(loop_obj.plan_path))
+                dims = [d.name for d in spec.loop.evaluate.dimensions]
+            except Exception:
+                pass
             steps = db.list_loop_steps(loop_id)
-            if steps:
+            if loop_obj.started_at:
+                console.print("[bold]Stage:[/bold] ", end="")
+                console.print(loop_stage_breadcrumb(loop_obj, steps))
                 console.print()
-                console.print(render_loop_status_table(loop_obj, steps))
+                console.print(render_loop_progress_table(loop_obj, records, dims, steps))
+                summary = loop_progress_summary(records, dims)
+                if summary:
+                    console.print(f"[dim]{summary}[/dim]")
             console.print(f"[dim]View journal with: mini loop journal {loop_id[:8]}[/dim]")
 
     except SystemExit:

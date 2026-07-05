@@ -954,46 +954,196 @@ def test_project_steps_running_bar_no_later_step_extends_to_now():
     assert placements[0][1] == 120  # extends to now
 
 
-def test_render_loop_status_table_grouped_rows_and_bars():
-    """Per-iteration Gantt: one row per plan/implement step + one per evaluate
-    dimension, grouped by iteration, with real bar chars for timed steps."""
-    from minimise.interfaces.terminal_ui import render_loop_status_table
-    from minimise.models import Loop, LoopStep
+# --- render_loop_progress_table (journal heatmap) ---
 
-    js = datetime(2026, 1, 1, 0, 0, 0)
-    loop = Loop(loop_id="loop-1", name="L", status=JobStatus.RUNNING,
-                max_iterations=2, started_at=js)
+def _loop():
+    from minimise.models import Loop
+    return Loop(loop_id="loop-1", name="test")
 
-    def step(it, stype, dim, off_start, off_end, status):
-        return LoopStep(
-            step_id=f"{it}-{stype}-{dim}", loop_id="loop-1", iteration=it,
-            step_type=stype, dimension=dim, status=status,
-            started_at=js + timedelta(seconds=off_start),
-            completed_at=(js + timedelta(seconds=off_end)) if off_end else None,
-        )
 
-    # iter 1: plan, implement, evaluate fans out to two dimensions
-    steps = [
-        step(1, "plan", None, 0, 60, TaskStatus.COMPLETED),
-        step(1, "implement", None, 60, 180, TaskStatus.COMPLETED),
-        step(1, "evaluate", "coverage", 180, 210, TaskStatus.COMPLETED),
-        step(1, "evaluate", "style", 180, 220, TaskStatus.COMPLETED),
-        step(2, "plan", None, 220, 0, TaskStatus.RUNNING),
+def _rec(iteration, dimension, verdict):
+    return {"step_type": "evaluate", "iteration": iteration,
+            "dimension": dimension, "verdict": verdict}
+
+
+def _cell(table, col_idx, row_idx):
+    """Return (plain_text, style) for the cell at (col, row). Cells are either
+    plain str (dimension/status columns) or rich Text (verdict columns)."""
+    cell = table.columns[col_idx]._cells[row_idx]
+    if isinstance(cell, str):
+        return cell, None
+    return cell.plain, cell.style
+
+
+def test_render_loop_progress_pivots_dimensions_x_iterations():
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    records = [
+        _rec(1, "tests", "fail"), _rec(1, "lint", "pass"),
+        _rec(2, "tests", "pass"), _rec(2, "lint", "pass"),
     ]
+    table = render_loop_progress_table(_loop(), records)
+    # 1 dimension col + 2 iteration cols
+    assert len(table.columns) == 3
+    # rows in first-seen dimension order: tests, lint
+    assert _cell(table, 0, 0)[0] == "tests"
+    assert _cell(table, 0, 1)[0] == "lint"
+    # tests: iter1 fail (red), iter2 pass (green)
+    assert _cell(table, 1, 0) == ("✗", "red")
+    assert _cell(table, 2, 0) == ("✓", "green")
+    # lint: both pass
+    assert _cell(table, 1, 1) == ("✓", "green")
+    assert _cell(table, 2, 1) == ("✓", "green")
 
-    now = js + timedelta(seconds=240)
-    table = render_loop_status_table(loop, steps, now=now)
 
-    assert table.columns[0].header == "Step"
-    assert table.columns[3].header == "Timeline"
-    assert table.columns[0]._cells == [
-        "iter 1  plan",
-        "iter 1  implement",
-        "iter 1  eval · coverage",
-        "iter 1  eval · style",
-        "iter 2  plan",
+def test_render_loop_progress_unknown_verdict_coerces_to_running():
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    records = [
+        _rec(1, "tests", None), _rec(1, "lint", "bogus"),
+        {"step_type": "evaluate", "iteration": 1, "dimension": "docs"},  # no verdict key
     ]
-    # bars are real strings (not the "—" placeholder) since the loop started
-    bars = table.columns[3]._cells
-    assert all(b != "—" for b in bars)
-    assert all("█" in b for b in bars[:4])  # completed steps painted solid
+    table = render_loop_progress_table(_loop(), records)
+    for row in range(3):
+        assert _cell(table, 1, row) == ("·", "dim")
+
+
+def test_render_loop_progress_zero_evaluate_records_no_raise():
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    # no evaluate records AND no dimensions -> placeholder (genuine no-data)
+    for records in ([], [{"step_type": "implement", "iteration": 1}]):
+        table = render_loop_progress_table(_loop(), records)
+        assert _cell(table, 0, 0)[0] == "(no evaluations yet)"
+
+
+def test_render_loop_progress_seeds_dims_with_zero_evals():
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    # dimensions given but no evaluations -> real per-dim table of dim `·` cells
+    table = render_loop_progress_table(_loop(), [], ["tests", "lint"])
+    assert len(table.columns) == 2  # dimension col + one "now" col
+    assert table.columns[-1].header == "now"
+    assert _cell(table, 0, 0)[0] == "tests"
+    assert _cell(table, 0, 1)[0] == "lint"
+    assert _cell(table, 1, 0) == ("·", "dim")
+    assert _cell(table, 1, 1) == ("·", "dim")
+    # a column with no verdicts (pre-eval seed) shows "—" in its footer
+    assert table.columns[-1].footer == "—"
+    # pre-eval summary: no misleading 'passing 0/N', printed full-width not as caption
+    from minimise.interfaces.terminal_ui import loop_progress_summary
+    assert loop_progress_summary([], ["tests", "lint"]) == "no evaluations yet"
+
+
+def test_render_loop_progress_footer_counts_latest_iteration_passes():
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    records = [
+        # tests: latest (iter2) fails
+        _rec(1, "tests", "pass"), _rec(2, "tests", "fail"),
+        # lint: latest (iter2) passes
+        _rec(1, "lint", "fail"), _rec(2, "lint", "pass"),
+        # docs: only iter1, passes
+        _rec(1, "docs", "pass"),
+    ]
+    table = render_loop_progress_table(_loop(), records)
+    # per-column footers: iter1 tests+docs pass (2/3), iter2 only lint (1/3)
+    assert table.columns[0].footer == "passing"
+    assert table.columns[1].footer == "2/3"  # iter1: tests, docs pass; lint fails
+    assert table.columns[2].footer == "1/3"  # iter2: only lint passes
+    # summary carries no aggregate count and isn't truncated -> None
+    from minimise.interfaces.terminal_ui import loop_progress_summary
+    assert loop_progress_summary(records) is None
+
+
+def test_render_loop_progress_seeds_all_spec_dims_in_order():
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    # journal only has 'tests'; spec declares docs, tests, lint (in that order)
+    records = [_rec(1, "tests", "pass")]
+    table = render_loop_progress_table(_loop(), records, ["docs", "tests", "lint"])
+    # rows follow spec order; docs/lint have no verdict -> dim ·
+    assert _cell(table, 0, 0)[0] == "docs"
+    assert _cell(table, 0, 1)[0] == "tests"
+    assert _cell(table, 0, 2)[0] == "lint"
+    assert _cell(table, 1, 0) == ("·", "dim")   # docs not yet evaluated
+    assert _cell(table, 1, 1) == ("✓", "green")  # tests passed
+    assert _cell(table, 1, 2) == ("·", "dim")   # lint not yet evaluated
+    from minimise.interfaces.terminal_ui import loop_progress_summary
+    # only iter1 (tests) exists; not truncated -> note is None
+    assert loop_progress_summary(records, ["docs", "tests", "lint"]) is None
+    assert table.columns[1].footer == "1/3"  # iter1: only tests passed
+
+
+def test_render_loop_progress_appends_journal_only_dims():
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    records = [_rec(1, "tests", "pass"), _rec(1, "surprise", "fail")]
+    table = render_loop_progress_table(_loop(), records, ["tests"])
+    # spec dim first, then the journal-only 'surprise' appended
+    assert _cell(table, 0, 0)[0] == "tests"
+    assert _cell(table, 0, 1)[0] == "surprise"
+
+
+def _step(step_type, status, dimension=None):
+    from minimise.models import LoopStep, TaskStatus
+    return LoopStep(step_id="s", loop_id="loop-1", iteration=1,
+                    step_type=step_type, dimension=dimension, status=status)
+
+
+def _active_node(breadcrumb):
+    """The bold+cyan node in the breadcrumb Text, or None if all dim."""
+    for span in breadcrumb.spans:
+        if span.style == "bold cyan":
+            return breadcrumb.plain[span.start:span.end]
+    return None
+
+
+def test_loop_stage_breadcrumb_highlights_active_node():
+    from minimise.models import Loop, JobStatus, TaskStatus
+    from minimise.interfaces.terminal_ui import loop_stage_breadcrumb
+    loop = Loop(loop_id="loop-1", name="t", status=JobStatus.RUNNING)
+    steps = [_step("plan", TaskStatus.COMPLETED),
+             _step("implement", TaskStatus.RUNNING)]
+    bc = loop_stage_breadcrumb(loop, steps)
+    assert bc.plain == "plan → implement → eval"
+    assert _active_node(bc) == "implement"
+
+
+def test_loop_stage_breadcrumb_eval_dimension_maps_to_eval():
+    from minimise.models import Loop, JobStatus, TaskStatus
+    from minimise.interfaces.terminal_ui import loop_stage_breadcrumb
+    loop = Loop(loop_id="loop-1", name="t", status=JobStatus.RUNNING)
+    bc = loop_stage_breadcrumb(loop, [_step("evaluate", TaskStatus.RUNNING, "tests")])
+    assert _active_node(bc) == "eval"
+
+
+def test_loop_stage_breadcrumb_terminal_status_has_no_active_node():
+    from minimise.models import Loop, JobStatus, TaskStatus
+    from minimise.interfaces.terminal_ui import loop_stage_breadcrumb
+    loop = Loop(loop_id="loop-1", name="t", status=JobStatus.COMPLETED)
+    bc = loop_stage_breadcrumb(loop, [_step("plan", TaskStatus.COMPLETED)])
+    assert bc.plain == "plan → implement → eval"
+    assert _active_node(bc) is None
+
+
+def test_loop_stage_breadcrumb_no_steps_has_no_active_node():
+    from minimise.models import Loop, JobStatus
+    from minimise.interfaces.terminal_ui import loop_stage_breadcrumb
+    loop = Loop(loop_id="loop-1", name="t", status=JobStatus.RUNNING)
+    bc = loop_stage_breadcrumb(loop, [])
+    assert bc.plain == "plan → implement → eval"
+    assert _active_node(bc) is None
+
+
+def test_render_loop_progress_shows_only_last_n_iterations(monkeypatch):
+    import rich.console
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+
+    # Renderer does `from rich.console import Console` locally, so patch it at
+    # the source. Force a narrow width => n == max(8, min(28, width-40)) == 8.
+    real_console = rich.console.Console
+    monkeypatch.setattr(rich.console, "Console",
+                        lambda: real_console(width=48))
+    records = [_rec(i, "tests", "pass") for i in range(1, 13)]  # 12 iterations
+    table = render_loop_progress_table(_loop(), records)
+    # 1 dimension col + 8 iteration cols (last 8)
+    assert len(table.columns) == 9
+    # last column header is "now"; earlier headers are the iteration numbers 5..11
+    assert table.columns[-1].header == "now"
+    assert table.columns[1].header == "5"  # iters 5..12 shown, last -> "now"
+    from minimise.interfaces.terminal_ui import loop_progress_summary
+    assert loop_progress_summary(records) == "showing last 8 of 12 iterations"

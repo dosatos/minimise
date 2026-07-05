@@ -436,55 +436,134 @@ def render_execution_table_with_gantt(
     return table
 
 
-def _loop_step_label(step: LoopStep) -> str:
-    """Gantt row label: 'iter N  plan/implement', or 'iter N  eval · <dim>'.
-    evaluate fans out to one row per dimension (design's ASCII example)."""
-    prefix = f"iter {step.iteration}  "
+def _pivot_evaluate(journal_records) -> tuple:
+    """Pivot evaluate journal records to (rows, iters): rows is an ordered
+    {dimension: {iteration: verdict}} (dimension order = first-seen), iters is
+    the sorted list of distinct iterations. verdict is agent convention, not
+    schema-enforced, so we take it verbatim and let the renderer coerce it."""
+    rows: dict = {}
+    iters: set = set()
+    for r in journal_records:
+        if r.get("step_type") != "evaluate":
+            continue
+        dim = r.get("dimension") or "?"
+        it = r.get("iteration")
+        if it is None:
+            continue
+        iters.add(it)
+        rows.setdefault(dim, {})[it] = r.get("verdict")
+    return rows, sorted(iters)
+
+
+def _verdict_cell(verdict) -> Text:
+    """pass -> green ✓, fail -> red ✗, anything else (running/unknown/blank) -> dim ·."""
+    if verdict == "pass":
+        return Text("✓", style="green")
+    if verdict == "fail":
+        return Text("✗", style="red")
+    return Text("·", style="dim")
+
+
+def _current_stage(steps: list) -> Optional[str]:
+    """Stage label from loop steps: the latest RUNNING step, else the latest
+    step overall (steps arrive in execution order). 'plan'/'implement' verbatim;
+    evaluate becomes 'eval · <dimension>'. None when there are no steps."""
+    if not steps:
+        return None
+    step = next((s for s in reversed(steps) if s.status == TaskStatus.RUNNING),
+                steps[-1])
     if step.step_type == "evaluate":
-        return f"{prefix}eval · {step.dimension or '?'}"
-    return f"{prefix}{step.step_type}"
+        return f"eval · {step.dimension or '?'}"
+    return step.step_type
 
 
-def render_loop_status_table(
-    loop: Loop,
-    steps: list[LoopStep],
-    now: Optional[datetime] = None,
+_CYCLE_NODES = ["plan", "implement", "eval"]
+
+
+def loop_stage_breadcrumb(loop: Loop, steps: list = None) -> Text:
+    """'plan → implement → eval' with the active cycle node bold+cyan, rest dim.
+    Active node comes from _current_stage: 'plan'/'implement' map to themselves,
+    any 'eval · <dim>' maps to 'eval'. No node is active when the loop isn't
+    running or there's no current stage (terminal/pending loops show all dim)."""
+    active = None
+    if loop.status == JobStatus.RUNNING:
+        stage = _current_stage(steps or [])
+        if stage:
+            active = "eval" if stage.startswith("eval") else stage
+    line = Text()
+    for i, node in enumerate(_CYCLE_NODES):
+        if i:
+            line.append(" → ", style="dim")
+        line.append(node, style="bold cyan" if node == active else "dim")
+    return line
+
+
+def render_loop_progress_table(
+    loop: Loop, journal_records: list, dimensions: list = None, steps: list = None
 ) -> Table:
-    """Per-iteration Gantt for `mini loop status`. One row per plan/implement
-    step and one per evaluate dimension, grouped by iteration in the order
-    `list_loop_steps` returns (iteration, started_at). Reuses the shared
-    timeline machinery (project_steps/layout_projected_bars) — no new bar math.
-    The join/commit marker is journal-only, so it gets no row."""
-    now = _now_or_default(now)
+    """Heatmap for `mini loop status`: dimensions down the rows, the last N
+    iterations across as columns, one glyph cell per verdict. Built from
+    journal records (loop_journal.read), NOT DB rows. Tolerates zero evaluate
+    records — returns a placeholder table rather than raising.
+
+    `dimensions` (ordered spec dimension names) seeds the row set so every
+    dimension shows from iteration 0, with dim `·` cells until it has a verdict.
+    When None, falls back to first-seen-in-journal order. Journal dimensions not
+    in `dimensions` are still appended.
+
+    `steps` is accepted for signature compatibility but no longer used here —
+    stage/elapsed now live in the CLI Loop Details block, not the table title."""
+    rows, iters = _pivot_evaluate(journal_records)
+    # Genuine no-data case: no dimensions AND no evaluations -> placeholder.
+    if not iters and not dimensions:
+        table = Table()
+        table.add_column("dimension", style="cyan")
+        table.add_column("status", style="dim")
+        table.add_row("(no evaluations yet)", "—")
+        return table
+
+    # Row order: spec dimensions first (if given), then any journal-only dims.
+    ordered = list(dimensions) if dimensions else []
+    ordered += [d for d in rows if d not in ordered]
 
     from rich.console import Console
-    bar_width = max(8, min(28, Console().width - 40))
+    # Same width->N math the Gantt uses; here it caps how many iteration columns fit.
+    n = max(8, min(28, Console().width - 40))
+    # Zero-iteration seed: one "now" column of dim cells until verdicts arrive.
+    shown = iters[-n:] if iters else [None]
 
-    table = Table()
-    table.add_column("Step", style="cyan")
-    table.add_column("Status", style="cyan")
-    table.add_column("Duration", style="yellow")
-    table.add_column("Timeline", style="green", no_wrap=True)
+    table = Table(show_footer=True)
+    table.add_column("dimension", style="cyan", no_wrap=True, footer="passing")
+    for i, it in enumerate(shown):
+        header = "now" if i == len(shown) - 1 else str(it)
+        # Per-column footer: X/Y passes at this iteration, "—" when no verdicts.
+        verdicts = [rows[d][it] for d in ordered if it in rows.get(d, {})]
+        foot = f"{verdicts.count('pass')}/{len(ordered)}" if verdicts else "—"
+        table.add_column(header, justify="center", footer=foot)
 
-    # LoopSteps carry no estimate — map to Step with estimate=None so pending
-    # rows chain after the last known end (project_steps handles None as 0).
-    ui_steps = [
-        Step(name=_loop_step_label(s), estimate=None, status=s.status,
-             started_at=s.started_at, ended_at=s.completed_at)
-        for s in steps
-    ]
+    for dim in ordered:
+        by_iter = rows.get(dim, {})
+        table.add_row(dim, *[_verdict_cell(by_iter.get(it)) for it in shown])
 
-    bars = None
-    if loop.started_at:
-        placements, total_secs = project_steps(ui_steps, loop.started_at, now)
-        bars = layout_projected_bars(placements, total_secs, width=bar_width)
-
-    for i, s in enumerate(ui_steps):
-        is_running = s.status == TaskStatus.RUNNING
-        table.add_row(
-            s.name,
-            Text(s.status.value, style=get_status_color(s.status)),
-            format_duration(s.started_at, s.ended_at, is_running=is_running, now=now),
-            bars[i] if bars is not None else "—",
-        )
     return table
+
+
+def loop_progress_summary(journal_records: list, dimensions: list = None) -> Optional[str]:
+    """One-line note printed full-width below the heatmap (like the legend) —
+    NOT the table caption, which rich centers+wraps to the narrow table width.
+    Returns ONLY a note or None; the passing count now lives in the table footer.
+    None when there's nothing to say; "no evaluations yet" pre-eval; a truncation
+    note only when the table shows fewer columns than there are iterations."""
+    rows, iters = _pivot_evaluate(journal_records)
+    ordered = list(dimensions) if dimensions else []
+    ordered += [d for d in rows if d not in ordered]
+    if not ordered:
+        return None
+    if not iters:
+        return "no evaluations yet"  # pre-eval: 'passing 0/N' misreads as failure
+    from rich.console import Console
+    n = max(8, min(28, Console().width - 40))
+    shown = iters[-n:]
+    if len(shown) == len(iters):
+        return None  # not truncated — 'Iteration n/max' already shows the count
+    return f"showing last {len(shown)} of {len(iters)} iterations"

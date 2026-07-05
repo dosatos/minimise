@@ -39,17 +39,32 @@ If you just need a quick one-off edit, use your agent directly — Minimise is f
 
 ## Install
 
-Already installed in editable mode:
+### Prerequisites
+
+- **Python 3.9+**
+- **An agent harness on your `PATH`** — tasks are executed by shelling out to the
+  [`claude`](https://docs.anthropic.com/en/docs/claude-code) CLI, so it must be
+  installed and authenticated. Verify with `claude --version`.
+- **Git** — jobs run inside a git repo and use commits/diffs to track task output.
+
+### Setup
 
 ```bash
-pip install -e .
+git clone https://github.com/dosatos/minimise.git
+cd minimise
+pip install -e .          # installs the `mini` command
+mini --help               # verify the install
 ```
+
+Config and state live in `~/.minimise/` (created automatically on first run).
 
 ## Quick Start
 
+A **plan** is a YAML file describing the tasks to implement; a **job** is a single run of a plan. You author a plan once, then create and run jobs from it.
+
 ### 1. Define your implementation plan
 
-Create a plan file (`my-plan.yaml`) that describes what needs to be implemented. Each task starts fresh with only the previous task's output as context:
+Create a plan file that describes what needs to be implemented (the example below ships as [`examples/example-plan.yaml`](examples/example-plan.yaml)). Each task starts fresh with only the previous task's output as context:
 
 ```yaml
 plan:
@@ -75,21 +90,14 @@ plan:
 
 Each task includes a **goal** field that clearly states the task's objective. The agent receives this goal prepended to the description, ensuring alignment on intent. Each task receives **only** the output of the previous task (git diff, completion report) — fresh context prevents degradation.
 
-### 2. Run tests
+### 2. Create, run, and monitor a job
 
-```bash
-pytest tests/ -v
-# Expected: 146 passed
-```
-
-### 3. Deferred Execution Workflow
-
-The **deferred execution workflow** lets you create jobs, start them when ready, and monitor progress:
+Create a job (which stages the plan), start it when ready, and monitor progress:
 
 #### Create a job (PENDING state)
 
 ```bash
-mini job new --plan my-plan.yaml
+mini job new --plan examples/example-plan.yaml
 # Output: Job ID: a1b2c3d4-e5f6-7890-abcd-ef1234567890
 ```
 
@@ -453,7 +461,11 @@ journal anchor and backs off a live loop.
 
 ## Development
 
+Install the test dependencies (`pytest`, `pytest-cov`) via the `dev` extra:
+
 ```bash
+pip install -e '.[dev]'
+
 # Run all tests
 pytest tests/ -v
 
