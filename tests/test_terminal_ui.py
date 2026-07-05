@@ -1127,6 +1127,52 @@ def test_render_loop_progress_verdict_wins_over_step_status():
     assert _cell(table, 1, 1) == ("✗", "red")    # lint: verdict fail wins
 
 
+def _estep_timed(iteration, dimension, status, started_at, completed_at=None):
+    """An evaluate LoopStep with explicit started_at/completed_at timestamps."""
+    from minimise.models import LoopStep
+    return LoopStep(step_id="s", loop_id="loop-1", iteration=iteration,
+                    step_type="evaluate", dimension=dimension, status=status,
+                    started_at=started_at, completed_at=completed_at)
+
+
+def test_render_loop_progress_finished_eval_shows_glyph_and_duration(base_time):
+    # A finished passing eval: ✓ glyph AND its final duration appended to the cell.
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    from minimise.models import TaskStatus
+    records = [_rec(1, "tests", "pass"), _rec(1, "lint", "pass")]
+    steps = [_estep_timed(1, "lint", TaskStatus.COMPLETED,
+                          base_time, base_time + timedelta(seconds=5))]
+    table = render_loop_progress_table(_loop(), records, ["tests", "lint"], steps)
+    plain, _ = _cell(table, 1, 1)  # lint row, iter1 col
+    assert "✓" in plain          # verdict glyph
+    assert "5.0s" in plain       # final duration appended
+
+
+def test_render_loop_progress_running_eval_shows_glyph_and_elapsed(base_time):
+    # RUNNING eval with started_at but no completed_at: ▸ glyph AND elapsed text.
+    # Don't assert an exact wall-clock value (elapsed grows against the real clock);
+    # just require the arrow and a plausible duration token.
+    import re
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    from minimise.models import TaskStatus
+    records = [_rec(1, "tests", "pass")]
+    steps = [_estep_timed(1, "lint", TaskStatus.RUNNING, base_time)]
+    table = render_loop_progress_table(_loop(), records, ["tests", "lint"], steps)
+    plain, _ = _cell(table, 1, 1)  # lint row, iter1 col
+    assert "▸" in plain
+    # some duration token (e.g. "3.2s", "2m 5s", "1h 4m", "500ms") follows the glyph
+    assert re.search(r"\d+(\.\d+)?(ms|s|m|h|d)", plain)
+
+
+def test_render_loop_progress_no_eval_step_has_no_duration():
+    # A dimension with no eval step this iteration: dim · glyph, NO trailing duration.
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    records = [_rec(1, "tests", "pass")]
+    table = render_loop_progress_table(_loop(), records, ["tests", "lint"], [])
+    plain, style = _cell(table, 1, 1)  # lint row, iter1 col: no step
+    assert (plain, style) == ("·", "dim")  # glyph only, nothing appended
+
+
 def _step(step_type, status, dimension=None):
     from minimise.models import LoopStep, TaskStatus
     return LoopStep(step_id="s", loop_id="loop-1", iteration=1,

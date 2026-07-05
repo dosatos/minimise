@@ -455,19 +455,28 @@ def _pivot_evaluate(journal_records) -> tuple:
     return rows, sorted(iters)
 
 
-def _verdict_cell(verdict, step_status=None) -> Text:
+def _verdict_cell(verdict, step=None) -> Text:
     """pass -> green ✓, fail -> red ✗. With no verdict, fall back to the eval
     step status: RUNNING -> yellow ▸, FAILED -> red ✗, anything else
-    (pending/completed-without-verdict/None) -> dim ·."""
+    (pending/completed-without-verdict/None) -> dim ·. When the eval step has
+    started, append a dim duration (elapsed while running, final once done)."""
+    step_status = step.status if step else None
     if verdict == "pass":
-        return Text("✓", style="green")
-    if verdict == "fail":
-        return Text("✗", style="red")
-    if step_status == TaskStatus.RUNNING:
-        return Text("▸", style="yellow")
-    if step_status == TaskStatus.FAILED:
-        return Text("✗", style="red")
-    return Text("·", style="dim")
+        cell = Text("✓", style="green")
+    elif verdict == "fail":
+        cell = Text("✗", style="red")
+    elif step_status == TaskStatus.RUNNING:
+        cell = Text("▸", style="yellow")
+    elif step_status == TaskStatus.FAILED:
+        cell = Text("✗", style="red")
+    else:
+        cell = Text("·", style="dim")
+    if step and step.started_at is not None:
+        dur = format_duration(step.started_at, step.completed_at,
+                              is_running=step.status == TaskStatus.RUNNING, now=None)
+        cell.append(" ")
+        cell.append(dur, style="dim")
+    return cell
 
 
 def _current_stage(steps: list) -> Optional[str]:
@@ -520,8 +529,8 @@ def render_loop_progress_table(
     `steps` supplies eval step state: no-verdict cells show ▸ (running) or a dim
     · (not dispatched / pending) based on the matching evaluate step's status."""
     rows, iters = _pivot_evaluate(journal_records)
-    step_status = {(s.iteration, s.dimension): s.status
-                   for s in (steps or []) if s.step_type == "evaluate"}
+    eval_steps = {(s.iteration, s.dimension): s
+                  for s in (steps or []) if s.step_type == "evaluate"}
     # Genuine no-data case: no dimensions AND no evaluations -> placeholder.
     if not iters and not dimensions:
         table = Table()
@@ -551,7 +560,7 @@ def render_loop_progress_table(
 
     for dim in ordered:
         by_iter = rows.get(dim, {})
-        table.add_row(dim, *[_verdict_cell(by_iter.get(it), step_status.get((it, dim)))
+        table.add_row(dim, *[_verdict_cell(by_iter.get(it), eval_steps.get((it, dim)))
                              for it in shown])
 
     return table
