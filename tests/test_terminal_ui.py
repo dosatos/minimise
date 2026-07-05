@@ -982,8 +982,8 @@ def test_render_loop_progress_pivots_dimensions_x_iterations():
         _rec(2, "tests", "pass"), _rec(2, "lint", "pass"),
     ]
     table = render_loop_progress_table(_loop(), records)
-    # 1 dimension col + 2 iteration cols
-    assert len(table.columns) == 3
+    # 1 dimension col + 2 iteration cols + timeline
+    assert len(table.columns) == 4
     # rows in first-seen dimension order: tests, lint
     assert _cell(table, 0, 0)[0] == "tests"
     assert _cell(table, 0, 1)[0] == "lint"
@@ -1006,6 +1006,26 @@ def test_render_loop_progress_unknown_verdict_coerces_to_running():
         assert _cell(table, 1, row) == ("·", "dim")
 
 
+def test_eval_gantt_bar_offsets_and_clamps():
+    from minimise.interfaces.terminal_ui import _eval_gantt_bar
+
+    class _S:
+        def __init__(self, started_at, completed_at):
+            self.started_at, self.completed_at = started_at, completed_at
+
+    t0 = datetime(2026, 1, 1, 0, 0, 0)
+    # full-span step at t0 -> full 12-wide bar, no lead
+    full = _S(t0, datetime(2026, 1, 1, 0, 0, 10))
+    assert _eval_gantt_bar(full, t0, 10.0) == "█" * 12
+    # step starting halfway, lasting half the span -> 6 lead + 6 bar
+    half = _S(datetime(2026, 1, 1, 0, 0, 5), datetime(2026, 1, 1, 0, 0, 10))
+    assert _eval_gantt_bar(half, t0, 10.0) == "░" * 6 + "█" * 6
+    # blanks: no step, no start, degenerate span
+    assert _eval_gantt_bar(None, t0, 10.0) == ""
+    assert _eval_gantt_bar(_S(None, None), t0, 10.0) == ""
+    assert _eval_gantt_bar(full, t0, 0) == ""
+
+
 def test_render_loop_progress_zero_evaluate_records_no_raise():
     from minimise.interfaces.terminal_ui import render_loop_progress_table
     # no evaluate records AND no dimensions -> placeholder (genuine no-data)
@@ -1018,14 +1038,18 @@ def test_render_loop_progress_seeds_dims_with_zero_evals():
     from minimise.interfaces.terminal_ui import render_loop_progress_table
     # dimensions given but no evaluations -> real per-dim table of dim `·` cells
     table = render_loop_progress_table(_loop(), [], ["tests", "lint"])
-    assert len(table.columns) == 2  # dimension col + one "now" col
-    assert table.columns[-1].header == "now"
+    assert len(table.columns) == 3  # dimension col + one "now" col + timeline
+    assert table.columns[-1].header == "timeline"
+    assert table.columns[-2].header == "now"
     assert _cell(table, 0, 0)[0] == "tests"
     assert _cell(table, 0, 1)[0] == "lint"
     assert _cell(table, 1, 0) == ("·", "dim")
     assert _cell(table, 1, 1) == ("·", "dim")
-    # a column with no verdicts (pre-eval seed) shows "—" in its footer
-    assert table.columns[-1].footer == "—"
+    # the "now" column with no verdicts (pre-eval seed) shows "—" in its footer
+    assert table.columns[-2].footer == "—"
+    # timeline column: blank footer, blank bars (no started eval steps)
+    assert table.columns[-1].footer == ""
+    assert table.columns[-1]._cells == ["", ""]
     # pre-eval summary: no misleading 'passing 0/N', printed full-width not as caption
     from minimise.interfaces.terminal_ui import loop_progress_summary
     assert loop_progress_summary([], ["tests", "lint"]) == "no evaluations yet"
@@ -1173,6 +1197,86 @@ def test_render_loop_progress_no_eval_step_has_no_duration():
     assert (plain, style) == ("·", "dim")  # glyph only, nothing appended
 
 
+def _render_text(table, width=120):
+    """Render a rich Table to plain text via a fixed-width Console -> StringIO."""
+    import io
+    from rich.console import Console
+    buf = io.StringIO()
+    Console(file=buf, width=width, legacy_windows=False).print(table)
+    return buf.getvalue()
+
+
+def test_render_loop_progress_timeline_bar_longer_for_longer_eval(base_time):
+    # Two dims in the current iteration, both started together but one runs 50s
+    # and the other 25s -> the longer one has strictly MORE █ than the shorter.
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    records = [_rec(1, "slow", "pass"), _rec(1, "fast", "pass")]
+    steps = [
+        _estep_timed(1, "slow", TaskStatus.COMPLETED,
+                     base_time, base_time + timedelta(seconds=50)),
+        _estep_timed(1, "fast", TaskStatus.COMPLETED,
+                     base_time, base_time + timedelta(seconds=25)),
+    ]
+    table = render_loop_progress_table(_loop(), records, ["slow", "fast"], steps)
+    # rightmost column is the timeline; its cells are raw bar strings
+    assert table.columns[-1].header == "timeline"
+    slow_bar, fast_bar = table.columns[-1]._cells  # row order: slow, fast
+    assert slow_bar.count("█") > fast_bar.count("█")
+    # the bars actually reach the rendered output
+    assert "█" in _render_text(table)
+
+
+def test_render_loop_progress_timeline_blank_for_missing_step(base_time):
+    # 'docs' has no eval step in the current iteration -> blank timeline cell.
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    records = [_rec(1, "tests", "pass")]
+    steps = [_estep_timed(1, "tests", TaskStatus.COMPLETED,
+                          base_time, base_time + timedelta(seconds=30))]
+    table = render_loop_progress_table(_loop(), records, ["tests", "docs"], steps)
+    tests_bar, docs_bar = table.columns[-1]._cells  # row order: tests, docs
+    assert "█" in tests_bar
+    assert docs_bar == ""  # no step -> no bar
+
+
+def test_render_loop_progress_timeline_only_current_iteration_has_bars(base_time):
+    # Two iterations; the bar only appears in the single timeline column, never
+    # in earlier iteration cells (those stay glyph+duration, no █).
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    records = [_rec(1, "tests", "pass"), _rec(2, "tests", "pass")]
+    steps = [
+        _estep_timed(1, "tests", TaskStatus.COMPLETED,
+                     base_time, base_time + timedelta(seconds=40)),
+        _estep_timed(2, "tests", TaskStatus.COMPLETED,
+                     base_time + timedelta(seconds=60),
+                     base_time + timedelta(seconds=90)),
+    ]
+    table = render_loop_progress_table(_loop(), records, ["tests"], steps)
+    # cols: dimension, iter1, iter2(now), timeline
+    assert table.columns[-1].header == "timeline"
+    assert "█" in table.columns[-1]._cells[0]      # timeline bar present
+    assert "█" not in _cell(table, 1, 0)[0]        # iter1 cell: glyph+duration only
+    assert "█" not in _cell(table, 2, 0)[0]        # iter2 cell: glyph+duration only
+
+
+def test_eval_gantt_bar_equal_parallel_steps_left_aligned():
+    # Two equal-duration steps sharing the same start -> both left-aligned (lead 0).
+    from minimise.interfaces.terminal_ui import _eval_gantt_bar
+
+    class _S:
+        def __init__(self, started_at, completed_at):
+            self.started_at, self.completed_at = started_at, completed_at
+
+    t0 = datetime(2026, 1, 1, 0, 0, 0)
+    end = datetime(2026, 1, 1, 0, 0, 30)
+    a = _eval_gantt_bar(_S(t0, end), t0, 30.0)
+    b = _eval_gantt_bar(_S(t0, end), t0, 30.0)
+    assert a == b
+    assert not a.startswith("░")  # lead 0
+    # span <= 0 or a None step -> ""
+    assert _eval_gantt_bar(_S(t0, end), t0, 0) == ""
+    assert _eval_gantt_bar(None, t0, 30.0) == ""
+
+
 def _step(step_type, status, dimension=None):
     from minimise.models import LoopStep, TaskStatus
     return LoopStep(step_id="s", loop_id="loop-1", iteration=1,
@@ -1286,10 +1390,11 @@ def test_render_loop_progress_shows_only_last_n_iterations(monkeypatch):
                         lambda: real_console(width=48))
     records = [_rec(i, "tests", "pass") for i in range(1, 13)]  # 12 iterations
     table = render_loop_progress_table(_loop(), records)
-    # 1 dimension col + 8 iteration cols (last 8)
-    assert len(table.columns) == 9
-    # last column header is "now"; earlier headers are the iteration numbers 5..11
-    assert table.columns[-1].header == "now"
+    # 1 dimension col + 8 iteration cols (last 8) + timeline
+    assert len(table.columns) == 10
+    # last iteration column header is "now"; earlier headers are numbers 5..11
+    assert table.columns[-1].header == "timeline"
+    assert table.columns[-2].header == "now"
     assert table.columns[1].header == "5"  # iters 5..12 shown, last -> "now"
     from minimise.interfaces.terminal_ui import loop_progress_summary
     assert loop_progress_summary(records) == "showing last 8 of 12 iterations"

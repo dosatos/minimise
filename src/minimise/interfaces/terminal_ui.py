@@ -479,6 +479,22 @@ def _verdict_cell(verdict, step=None) -> Text:
     return cell
 
 
+def _eval_gantt_bar(step, t0, span_secs, width=12, now=None) -> str:
+    """Gantt bar for one eval step within the iteration's (t0, span). "" when
+    the step never started or the span is degenerate. lead ░ + bar █, clamped
+    to `width`."""
+    if step is None or step.started_at is None or span_secs <= 0:
+        return ""
+    end = step.completed_at or (now or datetime.utcnow())
+    start_off = (step.started_at - t0).total_seconds() / span_secs
+    dur_frac = (end - step.started_at).total_seconds() / span_secs
+    bar = max(1, round(dur_frac * width))
+    lead = round(start_off * width)
+    lead = min(lead, width - bar) if lead + bar > width else lead
+    lead = max(0, lead)
+    return "░" * lead + "█" * bar
+
+
 def _current_stage(steps: list) -> Optional[str]:
     """Stage label from loop steps: the latest RUNNING step, else the latest
     step overall (steps arrive in execution order). 'plan'/'implement' verbatim;
@@ -557,11 +573,25 @@ def render_loop_progress_table(
         verdicts = [rows[d][it] for d in ordered if it in rows.get(d, {})]
         foot = f"{verdicts.count('pass')}/{len(ordered)}" if verdicts else "—"
         table.add_column(header, justify="center", footer=foot)
+    table.add_column("timeline", justify="left", footer="")
+
+    # Timeline (t0, span) for the current iteration only; blank if it has no
+    # started eval steps (covers the None seed iteration -> no bars).
+    cur_it = shown[-1]
+    current_eval = [eval_steps[(cur_it, d)] for d in ordered
+                    if (cur_it, d) in eval_steps and eval_steps[(cur_it, d)].started_at]
+    if current_eval:
+        t0 = min(s.started_at for s in current_eval)
+        span_secs = max(((s.completed_at or datetime.utcnow()) - t0).total_seconds()
+                        for s in current_eval)
+    else:
+        t0, span_secs = None, 0
 
     for dim in ordered:
         by_iter = rows.get(dim, {})
+        bar = _eval_gantt_bar(eval_steps.get((cur_it, dim)), t0, span_secs)
         table.add_row(dim, *[_verdict_cell(by_iter.get(it), eval_steps.get((it, dim)))
-                             for it in shown])
+                             for it in shown], bar)
 
     return table
 
