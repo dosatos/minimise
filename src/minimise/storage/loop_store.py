@@ -4,6 +4,7 @@ Mirrors JobStore: inject the Database, own the jobs_dir layout, and speak loop
 vocabulary. Prefix-matching id resolution lives in the CLI, not here.
 """
 
+import os
 import yaml
 from pathlib import Path
 from typing import Optional
@@ -52,6 +53,25 @@ class LoopStore:
         """Re-read the mirrored spec for a loop."""
         return LoopSpec.from_yaml(self.jobs_dir / loop_id / "plan.yaml")
 
+    def patch(self, loop_id: str, spec: LoopSpec) -> tuple:
+        """Version-checked atomic mirror rewrite. Returns (old, new)
+        plan_version. Raises ValueError if spec.plan_version is not
+        exactly current+1."""
+        current = self.load_spec(loop_id)
+        expected = current.plan_version + 1
+        if spec.plan_version != expected:
+            raise ValueError(
+                f"plan_version must be {expected} (loop is at "
+                f"{current.plan_version}); got {spec.plan_version}")
+
+        loop_dir = self.jobs_dir / loop_id
+        tmp = loop_dir / "plan.yaml.tmp"
+        with open(tmp, "w") as f:
+            yaml.dump(spec.model_dump(), f)
+        os.replace(tmp, loop_dir / "plan.yaml")
+
+        return current.plan_version, spec.plan_version
+
     def journal_path(self, loop_id: str) -> Path:
         """The append-only loop journal (state events — distinct from job.log narration)."""
         return ensure_directory(self.jobs_dir / loop_id) / "journal.jsonl"
@@ -95,6 +115,21 @@ def demo():
         assert store.load_spec(loop.loop_id) == spec
         assert store.journal_path(loop.loop_id).name == "journal.jsonl"
         assert store.loop_log_path(loop.loop_id).name == "job.log"
+
+        assert spec.plan_version == 1
+        bumped = spec.model_copy(update={"plan_version": 2})
+        old, new = store.patch(loop.loop_id, bumped)
+        assert (old, new) == (1, 2)
+        assert store.load_spec(loop.loop_id).plan_version == 2
+
+        stale = spec.model_copy(update={"plan_version": 2})
+        try:
+            store.patch(loop.loop_id, stale)
+            raise AssertionError("expected ValueError for stale plan_version")
+        except ValueError:
+            pass
+        assert store.load_spec(loop.loop_id).plan_version == 2
+
         print("OK")
 
 

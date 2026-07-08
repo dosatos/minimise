@@ -113,6 +113,15 @@ class LoopEngine:
 
     # ---- entry point --------------------------------------------------------
 
+    def _reload_spec(self, loop_id, fallback):
+        # ponytail: defensive — patch writes are atomic + validated, so
+        # a bad reload should be impossible; keep last-good rather than
+        # crash a long run if the mirror is somehow unreadable.
+        try:
+            return self.store.load_spec(loop_id)
+        except Exception:
+            return fallback
+
     def run(self, loop_id: str) -> JobStatus:
         """Run or resume a loop to a terminal status; returns that status."""
         spec = self.store.load_spec(loop_id)
@@ -130,6 +139,7 @@ class LoopEngine:
                     status = JobStatus.STOPPED
                     break
                 iteration += 1
+                spec = self._reload_spec(loop_id, spec)  # a patched max_iterations takes effect here
                 # Only the first iteration past the anchor can be partially done.
                 resume = self._resume_state(jpath, iteration) if iteration == anchor + 1 else {}
                 result = self._run_iteration(loop_id, spec, iteration, jpath, resume)
@@ -157,11 +167,12 @@ class LoopEngine:
         (inner implement/re-plan cycle exhausted), or None (iteration
         committed — keep looping).
         """
-        cfg = spec.loop
         if self._stopped(loop_id):
             return JobStatus.STOPPED
 
         # PLAN (reuse a finished plan line on resume, else run whole).
+        spec = self._reload_spec(loop_id, spec)
+        cfg = spec.loop
         control = resume.pop("plan", None) or self._run_step(
             loop_id, spec, jpath, "plan", cfg.plan, iteration
         )
@@ -175,6 +186,8 @@ class LoopEngine:
         for _ in range(self.MAX_REPLANS + 1):
             if self._stopped(loop_id):
                 return JobStatus.STOPPED
+            spec = self._reload_spec(loop_id, spec)
+            cfg = spec.loop
             control = resume.pop("implement", None) or self._run_step(
                 loop_id, spec, jpath, "implement", cfg.implement, iteration, allow_edits=True
             )
@@ -187,8 +200,11 @@ class LoopEngine:
             return JobStatus.FAILED  # re-plan cycle exhausted, still failing
 
         # EVALUATE fan-out: one agent per dimension, blind, capped by max_concurrent.
+        # Reload ONCE here so all parallel evaluators share one dimension set.
         if self._stopped(loop_id):
             return JobStatus.STOPPED
+        spec = self._reload_spec(loop_id, spec)
+        cfg = spec.loop
         done_dims = resume.pop("eval_done", set())
         pending = [d for d in cfg.evaluate.dimensions if d.name not in done_dims]
         if pending:
@@ -234,6 +250,7 @@ class LoopEngine:
                 log_fields={
                     "loop_id": loop_id, "iteration": iteration, "step_id": step_id,
                     "step_type": step_type, "dimension": dimension,
+                    "plan_version": spec.plan_version,
                 },
                 log_filter=journal.strip_control_line,  # journal owns the control line; keep logs reasoning-only
             )
@@ -247,6 +264,7 @@ class LoopEngine:
                     "iteration": iteration,
                     "step_type": step_type,
                     "dimension": dimension,
+                    "plan_version": spec.plan_version,
                 }
                 with self._journal_lock:
                     journal.append(jpath, stamped)
@@ -369,6 +387,8 @@ def demo():
         ]), store=store, db=db)
         assert eng.run(lid) == JobStatus.COMPLETED
         assert journal.last_committed_iteration(store.journal_path(lid)) == 1
+        recs = [r for r in journal.read(store.journal_path(lid)) if "marker" not in r]
+        assert recs and all(r.get("plan_version") == 1 for r in recs)
 
     # 2) planner never stops -> hits max_iterations ceiling => FAILED
     with tempfile.TemporaryDirectory() as tmp:

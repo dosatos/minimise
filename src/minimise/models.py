@@ -226,6 +226,13 @@ class EvaluateConfig(BaseModel):
     max_concurrent: int = Field(gt=0, strict=True, default=4)
     dimensions: list[Dimension] = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def _unique_dimension_names(self):
+        names = [d.name for d in self.dimensions]
+        if len(names) != len(set(names)):
+            raise ValueError("evaluate dimension names must be unique")
+        return self
+
 
 class LoopConfig(BaseModel):
     plan: Worker
@@ -240,6 +247,7 @@ class LoopSpec(BaseModel):
     goal: str
     loop: LoopConfig
     max_iterations: int = Field(gt=0, strict=True)
+    plan_version: int = Field(default=1, ge=1, strict=True)
 
     @classmethod
     def from_yaml(cls, path):

@@ -170,3 +170,41 @@ def test_dimension_rejects_two_workers():
     from minimise.models import Dimension
     with pytest.raises(ValueError):
         Dimension(name="coverage", rubric="r", persona="p", prompt="q")
+
+
+def test_loopspec_plan_version_defaults_to_one(tmp_path):
+    from minimise.models import LoopSpec
+    p = tmp_path / "loop.yaml"
+    p.write_text(LOOP_YAML)
+    spec = LoopSpec.from_yaml(p)
+    assert spec.plan_version == 1
+
+
+def test_loopspec_plan_version_round_trips(tmp_path):
+    from minimise.models import LoopSpec
+    p = tmp_path / "loop.yaml"
+    p.write_text(LOOP_YAML + "plan_version: 3\n")
+    spec = LoopSpec.from_yaml(p)
+    assert spec.plan_version == 3
+
+
+def test_evaluate_config_rejects_duplicate_dimension_names():
+    from minimise.models import EvaluateConfig
+    with pytest.raises(ValueError):
+        EvaluateConfig(
+            dimensions=[
+                {"name": "coverage", "rubric": "r1"},
+                {"name": "coverage", "rubric": "r2"},
+            ]
+        )
+
+
+def test_evaluate_config_accepts_distinct_dimension_names():
+    from minimise.models import EvaluateConfig
+    cfg = EvaluateConfig(
+        dimensions=[
+            {"name": "coverage", "rubric": "r1"},
+            {"name": "correctness", "rubric": "r2"},
+        ]
+    )
+    assert [d.name for d in cfg.dimensions] == ["coverage", "correctness"]

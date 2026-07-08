@@ -215,6 +215,49 @@ def test_journal_lines_carry_engine_metadata(tmp_path):
         assert r["step_type"] in {"plan", "implement", "evaluate"}
 
 
+# --- 8) mid-run patch adds a dimension + bumps plan_version -> next iteration ---
+
+def test_mid_run_patch_adds_dimension_and_stamps_plan_version(tmp_path):
+    db, store, lid = _build(tmp_path)
+    patched = {"done": False}
+
+    def add_dimension_and_bump(key):
+        # Fires once, mid iteration-1 evaluate fan-out: patches in dimension "c"
+        # and bumps plan_version, as if a concurrent `mini loop patch` landed.
+        if key == ("evaluate", 1, "a") and not patched["done"]:
+            patched["done"] = True
+            current = store.load_spec(lid)
+            data = current.model_dump()
+            data["loop"]["evaluate"]["dimensions"].append({"name": "c", "rubric": "rc"})
+            data["plan_version"] = current.plan_version + 1
+            store.patch(lid, LoopSpec.model_validate(data))
+
+    h = StubHarness({
+        ("plan", 1, None): ['{"control":"continue","plan":"go"}'],
+        ("implement", 1, None): ['{"control":"done"}'],
+        ("evaluate", 1, "a"): ['{"control":"done","findings":"f"}'],
+        ("evaluate", 1, "b"): ['{"control":"done","findings":"f"}'],
+        ("plan", 2, None): ['{"control":"continue"}'],
+        ("implement", 2, None): ['{"control":"done"}'],
+        ("evaluate", 2, "a"): ['{"control":"done","findings":"f"}'],
+        ("evaluate", 2, "b"): ['{"control":"done","findings":"f"}'],
+        ("evaluate", 2, "c"): ['{"control":"done","findings":"f"}'],
+        ("plan", 3, None): ['{"control":"done"}'],
+    }, on_call=add_dimension_and_bump)
+
+    status = LoopEngine(harness=h, store=store, db=db).run(lid)
+    assert status == JobStatus.COMPLETED
+
+    # The added dimension ran on the very next iteration.
+    assert ("evaluate", 2, "c") in h.calls
+
+    recs = [r for r in journal.read(store.journal_path(lid)) if "marker" not in r]
+    iter1 = [r for r in recs if r.get("iteration") == 1]
+    iter2 = [r for r in recs if r.get("iteration") == 2]
+    assert iter1 and all(r.get("plan_version") == 1 for r in iter1)
+    assert iter2 and all(r.get("plan_version") == 2 for r in iter2)
+
+
 # --- mini smoke (dogfood): `loop new`/`list` against examples/example-loop.yaml -
 
 def test_mini_loop_new_and_list_smoke(monkeypatch):

@@ -36,6 +36,42 @@ def test_create_registers_loop_and_mirrors_spec(db, temp_db_dir):
     assert store.load_spec(loop.loop_id) == spec
 
 
+def test_patch_bumps_plan_version_and_rewrites_mirror(db, temp_db_dir):
+    """patch(loop_id, spec) with current+1 succeeds, updates the mirror, returns (old, new)."""
+    jobs_dir = temp_db_dir / "jobs"
+    store = LoopStore(db, jobs_dir)
+
+    spec = LoopSpec.model_validate(SPEC)
+    loop = store.create(spec, plan_path="loop.yaml")
+    assert store.load_spec(loop.loop_id).plan_version == 1
+
+    bumped = spec.model_copy(update={"plan_version": 2})
+    old, new = store.patch(loop.loop_id, bumped)
+
+    assert (old, new) == (1, 2)
+    assert store.load_spec(loop.loop_id).plan_version == 2
+
+
+def test_patch_rejects_wrong_plan_version_and_leaves_mirror_unchanged(db, temp_db_dir):
+    """A stale or skipped-ahead plan_version raises ValueError without touching the mirror."""
+    jobs_dir = temp_db_dir / "jobs"
+    store = LoopStore(db, jobs_dir)
+
+    spec = LoopSpec.model_validate(SPEC)
+    loop = store.create(spec, plan_path="loop.yaml")
+
+    stale = spec.model_copy(update={"plan_version": 1})
+    too_far = spec.model_copy(update={"plan_version": 3})
+
+    for bad in (stale, too_far):
+        try:
+            store.patch(loop.loop_id, bad)
+            assert False, "expected ValueError"
+        except ValueError:
+            pass
+        assert store.load_spec(loop.loop_id).plan_version == 1
+
+
 def test_journal_and_log_paths(db, temp_db_dir):
     """journal_path and loop_log_path are distinct files under the loop dir, parent ensured."""
     jobs_dir = temp_db_dir / "jobs"

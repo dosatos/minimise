@@ -5,6 +5,7 @@ lives in journal.jsonl and narration in job.log — hence the extra `journal` ve
 """
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -95,6 +96,72 @@ def loop_new(plan: str):
         console.print(f"[bold]Status:[/bold] {loop_obj.status.value}")
         console.print(f"[bold]Max Iterations:[/bold] {loop_obj.max_iterations}\n")
         console.print(f"[dim]Start with: mini loop start {loop_obj.loop_id[:8]}[/dim]")
+
+    except SystemExit:
+        raise
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
+        raise SystemExit(1)
+
+
+@loop.command(name="patch")
+@click.argument("loop_id")
+@click.argument("plan", required=False)
+def loop_patch(loop_id: str, plan: Optional[str]):
+    """Patch a loop's spec with a new plan_version (validated, mirror-only).
+
+    Defaults to re-reading the loop's own plan_path if PLAN is omitted.
+    """
+    try:
+        loop_id = resolve_loop_id(loop_id)
+        db = get_db()
+        loop_obj = _get_store(db).load(loop_id)
+
+        if loop_obj is None:
+            console.print(f"[red]Error: Loop {loop_id} not found[/red]")
+            raise SystemExit(1)
+
+        candidate_path = Path(plan).resolve() if plan else Path(loop_obj.plan_path)
+        if not candidate_path.exists():
+            console.print(f"[red]Error: Spec file not found at {candidate_path}[/red]")
+            raise SystemExit(1)
+
+        # 1. Load and validate spec syntax
+        try:
+            spec = LoopSpec.from_yaml(candidate_path)
+        except pydantic.ValidationError as e:
+            console.print("[red]Syntax validation failed:[/red]")
+            for i, err in enumerate(e.errors(), 1):
+                loc = ".".join(str(p) for p in err["loc"])
+                console.print(f"  {i}. {loc}: {err['msg']}")
+            raise SystemExit(1)
+
+        # 2. Resolve every worker persona against the registry
+        try:
+            personas = load_personas(_cli.CONFIG_DIR)
+        except ValueError as e:
+            console.print(f"[red]Persona config error: {e}[/red]")
+            raise SystemExit(1)
+        unknown = sorted({w.persona for w in _spec_workers(spec)
+                          if w.persona and w.persona not in personas})
+        if unknown:
+            console.print(f"[red]Unknown persona(s): {', '.join(unknown)}[/red]")
+            raise SystemExit(1)
+
+        # 3. Version-checked atomic mirror rewrite (untouched on rejection)
+        try:
+            old, new = _get_store(db).patch(loop_obj.loop_id, spec)
+        except ValueError as e:
+            console.print(f"[red]Patch rejected: {e}[/red]")
+            raise SystemExit(1)
+
+        loop_journal.append(_get_store(db).journal_path(loop_obj.loop_id), {
+            "event": "patched",
+            "plan_version": new,
+            "timestamp": datetime.utcnow().isoformat(timespec="seconds"),
+        })
+
+        console.print(f"[green]✓ Patched[/green] plan_version {old} -> {new}; effective at next step")
 
     except SystemExit:
         raise
@@ -231,6 +298,14 @@ def loop_status(loop_id: str, format: str):
         except Exception:
             pass
 
+        # Current plan_version comes from the mirror (which `loop patch` writes to),
+        # not plan_path (the original source file, never rewritten by a patch).
+        plan_version = None
+        try:
+            plan_version = _get_store(db).load_spec(loop_id).plan_version
+        except Exception:
+            pass
+
         if format == "json":
             output = {
                 "loop_id": loop_obj.loop_id,
@@ -239,6 +314,7 @@ def loop_status(loop_id: str, format: str):
                 "iteration": iteration,
                 "max_iterations": loop_obj.max_iterations,
                 "eval_max_concurrent": max_concurrent,
+                "plan_version": plan_version,
                 "plan_path": loop_obj.plan_path,
                 "created_at": loop_obj.created_at.isoformat() if loop_obj.created_at else None,
                 "started_at": loop_obj.started_at.isoformat() if loop_obj.started_at else None,
@@ -251,6 +327,8 @@ def loop_status(loop_id: str, format: str):
             console.print(f"[bold]Name:[/bold] {loop_obj.name}")
             console.print(f"[bold]Status:[/bold] {loop_obj.status.value}")
             console.print(f"[bold]Iteration:[/bold] {iteration}/{loop_obj.max_iterations}")
+            if plan_version is not None:
+                console.print(f"[bold]Plan version:[/bold] {plan_version}")
             if max_concurrent is not None:
                 console.print(f"[bold]Eval concurrency:[/bold] {max_concurrent}")
             console.print(f"[bold]Spec Path:[/bold] {loop_obj.plan_path}")
