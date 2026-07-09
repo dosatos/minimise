@@ -32,6 +32,7 @@ from minimise.interfaces.cli._shared import (  # noqa: E402  (constants must pre
 )
 from minimise.interfaces.cli.job import job  # noqa: E402
 from minimise.interfaces.cli.loop import loop  # noqa: E402
+from minimise.interfaces.cli.persona import persona  # noqa: E402
 from minimise.interfaces.cli.view import view  # noqa: E402
 
 
@@ -43,6 +44,7 @@ def mini():
 
 mini.add_command(job)
 mini.add_command(loop)
+mini.add_command(persona)
 mini.add_command(view)
 
 
