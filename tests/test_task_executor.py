@@ -639,9 +639,9 @@ def test_invoke_delegates_to_harness_and_propagates_success(temp_db_dir, db, git
     args, kwargs = fake.run.call_args
     assert kwargs["allow_edits"] is True
     assert kwargs["cwd"] == str(git_repo)
-    # A context without an estimate gets the 900s floor, and model/system_prompt
+    # A context without timeout_min runs unbounded, and model/system_prompt
     # are None (no persona) so the harness omits --model/--system-prompt.
-    assert kwargs["timeout"] == 900.0
+    assert kwargs["timeout"] is None
     assert kwargs["model"] is None
     assert kwargs["system_prompt"] is None
 
@@ -713,32 +713,31 @@ def test_execute_task_passes_job_log_path_to_harness(temp_db_dir, db, git_repo):
     assert fake.run.call_args.kwargs["log_path"] == str(log_path)
 
 
-def test_execute_task_timeout_scales_with_estimate(temp_db_dir, db, git_repo):
-    """The harness timeout is 1.5x the plan's estimate — a 40-min task gets 3600s,
-    not the 900s default that killed long tasks mid-verification."""
+def test_execute_task_timeout_from_explicit_timeout_min(temp_db_dir, db, git_repo):
+    """An explicit timeout_min drives the harness timeout: 40 min -> 2400s."""
     git_tracker = GitTracker(git_repo)
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(success=True, output="ok")
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
     job_id, task = _setup_job_and_task(db, git_tracker)
-    task.estimated_duration_min = 40
+    task.timeout_min = 40
 
     executor.execute_task(task, job_id, "")
 
-    assert fake.run.call_args.kwargs["timeout"] == 3600.0
+    assert fake.run.call_args.kwargs["timeout"] == 2400.0
 
 
-def test_execute_task_timeout_floor_is_900(temp_db_dir, db, git_repo):
-    """A short estimate never shrinks the timeout below the 900s harness default."""
+def test_execute_task_without_timeout_min_is_unbounded(temp_db_dir, db, git_repo):
+    """No timeout_min => no timeout at all (the estimate never implies one)."""
     git_tracker = GitTracker(git_repo)
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(success=True, output="ok")
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
-    job_id, task = _setup_job_and_task(db, git_tracker)  # estimate 5 min
+    job_id, task = _setup_job_and_task(db, git_tracker)
 
     executor.execute_task(task, job_id, "")
 
-    assert fake.run.call_args.kwargs["timeout"] == 900.0
+    assert fake.run.call_args.kwargs["timeout"] is None
 
 
 def test_execute_task_passes_execution_log_fields_to_harness(temp_db_dir, db, git_repo):

@@ -72,6 +72,9 @@ class JobExecutor:
 
             plan_task = plan.tasks[idx] if idx < len(plan.tasks) else None
             next_task = job.tasks[idx + 1] if idx < len(job.tasks) - 1 else None
+            # timeout_min lives in the plan, not the tasks table — carry it over
+            # each run so a resumed job honours the current plan's timeout.
+            task.timeout_min = getattr(plan_task, "timeout_min", None)
             pre = getattr(plan_task, "pre_hooks", []) if plan_task else []
             post = getattr(plan_task, "post_hooks", []) if plan_task else []
 

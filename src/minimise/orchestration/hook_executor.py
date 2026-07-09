@@ -39,7 +39,9 @@ class HookExecutor:
             self.store.save_execution(ex)
 
         env = project_env(self.repo_root) if self.repo_root else None
-        success, output = run_shell_command(hook.shell, cwd=self.repo_root, env=env, stdin=stdin)
+        timeout = hook.timeout_min * 60 if hook.timeout_min else None
+        success, output = run_shell_command(hook.shell, cwd=self.repo_root, env=env, stdin=stdin,
+                                            timeout=timeout)
 
         ex.status = TaskStatus.COMPLETED if success else TaskStatus.FAILED
         ex.completed_at = datetime.utcnow()

@@ -36,6 +36,7 @@ class Task:
     base_commit: Optional[str] = None
     goal: Optional[str] = None
     assignee: Optional[str] = None
+    timeout_min: Optional[int] = None  # validated at the plan boundary; None = unbounded
 
     def to_dict(self) -> dict:
         """Convert Task object to dictionary for JSON serialization."""
@@ -128,13 +129,28 @@ class Job:
             "tasks": [t.to_dict() for t in self.tasks] if self.tasks else [],
         }
 
+def _validate_timeout(model):
+    """timeout_min is the hard kill deadline; below the estimate it's a typo."""
+    if model.timeout_min is not None and model.timeout_min < model.estimated_duration_min:
+        raise ValueError(
+            f"timeout_min ({model.timeout_min}) must be >= "
+            f"estimated_duration_min ({model.estimated_duration_min})"
+        )
+    return model
+
+
 class Hook(BaseModel):
     """A named, timed lifecycle step. Has a shell command -> a shell script;
     no shell -> a bare name resolved from config (deferred). No type, no when."""
     name: str
     estimated_duration_min: int = Field(gt=0, strict=True)
+    timeout_min: Optional[int] = Field(default=None, gt=0, strict=True)
     shell: Optional[str] = None
     on_failure: Literal["fail", "retry", "skip"] = "fail"
+
+    @model_validator(mode="after")
+    def _check_timeout(self):
+        return _validate_timeout(self)
 
 
 def _validate_hook_list(hooks: list["Hook"], where: str) -> None:
@@ -164,6 +180,7 @@ class PlanTask(BaseModel):
     goal: str
     # strict rejects bool (an int subclass) and float; gt=0 keeps it positive
     estimated_duration_min: int = Field(gt=0, strict=True)
+    timeout_min: Optional[int] = Field(default=None, gt=0, strict=True)
     assignee: Optional[str] = None
     pre_hooks: list[Hook] = Field(default_factory=list)
     post_hooks: list[Hook] = Field(default_factory=list)
@@ -172,7 +189,7 @@ class PlanTask(BaseModel):
     def _validate_hooks(self):
         _validate_hook_list(self.pre_hooks, f"task '{self.id}' pre_hooks")
         _validate_hook_list(self.post_hooks, f"task '{self.id}' post_hooks")
-        return self
+        return _validate_timeout(self)
 
 class Plan(BaseModel):
     model_config = ConfigDict(extra="allow")

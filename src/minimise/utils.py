@@ -10,7 +10,7 @@ def new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:6]}"
 
 
-def run_shell_command(command: str, cwd: Optional[Path] = None, timeout: int = 3600,
+def run_shell_command(command: str, cwd: Optional[Path] = None, timeout: Optional[int] = None,
                       env: Optional[dict] = None, stdin: Optional[str] = None) -> tuple[bool, str]:
     """Execute a shell command; return (success, combined stdout+stderr).
 

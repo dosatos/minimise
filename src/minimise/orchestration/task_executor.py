@@ -81,7 +81,7 @@ class TaskExecutor:
                 "task_name": task.name,
                 "task_description": task.description,
                 "task_goal": task.goal,
-                "estimated_duration_min": task.estimated_duration_min,
+                "timeout_min": task.timeout_min,
                 "handoff_path": str(handoff_path),
                 "system_prompt": persona.system_prompt if persona else None,
                 "model": persona.model if persona else None,
@@ -189,7 +189,6 @@ class TaskExecutor:
         task_name = context.get("task_name", "Task")
         task_description = context.get("task_description", "")
         task_goal = context.get("task_goal", "")
-        estimated_min = context.get("estimated_duration_min") or 0
         handover = context.get("handover", "")
         handoff_path = context.get("handoff_path", "")
         system_prompt = context.get("system_prompt")
@@ -225,10 +224,9 @@ Context from previous tasks:
 Execute this task by modifying the codebase as needed. When done, write a summary of what you implemented.{handoff_section}"""
 
         # Delegate to the injected harness. The harness owns env construction,
-        # the subprocess invocation, and error handling. The timeout scales with
-        # the plan's estimate (1.5x headroom) so a long task isn't killed at the
-        # 900s harness default; 900s stays the floor for short/unestimated tasks.
-        timeout = max(900.0, estimated_min * 90.0)
+        # the subprocess invocation, and error handling. No timeout unless the
+        # plan opts in with timeout_min — an agent is killed only on request.
+        timeout = context["timeout_min"] * 60 if context.get("timeout_min") else None
         repo_root = str(self.git_tracker.repo_path)
         result = self.harness.run(
             prompt, cwd=repo_root, allow_edits=True,

@@ -97,3 +97,23 @@ def test_empty_output_hook_still_emits_status_line(tmp_path):
         "pre_plan", task_id=None)
     recs = [json.loads(l) for l in log.read_text().splitlines()]
     assert [r for r in recs if r["level"] == "info" and r["step"] == "noop"]
+
+
+def test_timeout_min_scales_to_seconds(monkeypatch):
+    from unittest.mock import Mock
+    import minimise.orchestration.hook_executor as he
+    run = Mock(return_value=(True, ""))
+    monkeypatch.setattr(he, "run_shell_command", run)
+    HookExecutor().run(Hook(name="ok", shell="exit 0", estimated_duration_min=1, timeout_min=3),
+                       "post_task", task_id="t1")
+    assert run.call_args.kwargs["timeout"] == 180
+
+
+def test_no_timeout_min_is_unbounded(monkeypatch):
+    from unittest.mock import Mock
+    import minimise.orchestration.hook_executor as he
+    run = Mock(return_value=(True, ""))
+    monkeypatch.setattr(he, "run_shell_command", run)
+    HookExecutor().run(Hook(name="ok", shell="exit 0", estimated_duration_min=1),
+                       "post_task", task_id="t1")
+    assert run.call_args.kwargs["timeout"] is None

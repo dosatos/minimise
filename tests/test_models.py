@@ -208,3 +208,26 @@ def test_evaluate_config_accepts_distinct_dimension_names():
         ]
     )
     assert [d.name for d in cfg.dimensions] == ["coverage", "correctness"]
+
+
+def test_timeout_min_below_estimate_rejected():
+    from minimise.models import Hook, PlanTask
+    with pytest.raises(ValueError, match=r"timeout_min \(3\) must be >= estimated_duration_min \(5\)"):
+        Hook(name="h", shell="true", estimated_duration_min=5, timeout_min=3)
+    with pytest.raises(ValueError, match="timeout_min"):
+        PlanTask(id="t1", name="N", description="d", goal="g",
+                 estimated_duration_min=5, timeout_min=3)
+
+
+def test_timeout_min_equal_or_above_estimate_accepted():
+    from minimise.models import Hook, PlanTask
+    assert Hook(name="h", shell="true", estimated_duration_min=5, timeout_min=5).timeout_min == 5
+    assert PlanTask(id="t1", name="N", description="d", goal="g",
+                    estimated_duration_min=5, timeout_min=9).timeout_min == 9
+
+
+def test_timeout_min_omitted_accepted():
+    from minimise.models import Hook, PlanTask
+    assert Hook(name="h", shell="true", estimated_duration_min=5).timeout_min is None
+    assert PlanTask(id="t1", name="N", description="d", goal="g",
+                    estimated_duration_min=5).timeout_min is None
