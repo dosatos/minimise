@@ -578,6 +578,24 @@ def test_execution_completed_at_is_agent_finish_not_lifecycle_end(temp_db_dir, d
     assert exec_row.completed_at < task_row.completed_at
 
 
+def test_hook_retry_attempt_is_not_recorded_as_success(temp_db_dir, db, git_repo):
+    """A retry demanded by a gating post_task hook books the hook as the reason,
+    not the agent's "success"."""
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
+    job_id, task = _setup_job_and_task(db, git_tracker)
+
+    executor._invoke_claude_code = lambda context: (True, "ok", "success")
+    verify = lambda attempt: ("retry", "findings") if attempt == 0 else ("fail", "nope")
+
+    success, _ = executor.execute_task(task, job_id, "", verify=verify)
+    assert not success
+
+    rows = db.list_executions_for_task(task.id)
+    assert rows[0].exit_reason == "hook_retry"
+    assert rows[-1].exit_reason == "hook_failed"
+
+
 def test_default_harness_is_claude_code(temp_db_dir, db, git_repo):
     """TaskExecutor defaults to ClaudeCodeHarness when no harness injected."""
     from minimise.agents.harness import ClaudeCodeHarness

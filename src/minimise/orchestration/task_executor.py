@@ -111,7 +111,9 @@ class TaskExecutor:
                             self.store.mark_task_failed(task, msg, exit_reason="hook_failed", ended_at=agent_end)
                             return False, msg
                         _log_failure(_step_label(attempt), combined)
-                        self.store.record_attempt(task, attempt, combined, exit_reason=exit_reason, ended_at=agent_end)
+                        # The agent exited success; this FAILED attempt is the gating
+                        # hook demanding a retry — book the hook, not the agent.
+                        self.store.record_attempt(task, attempt, combined, exit_reason="hook_retry", ended_at=agent_end)
                         # Agent succeeded and wrote its handoff, so build the next
                         # context unconditionally and PREPEND the review findings —
                         # can't rely on build_retry_prompt's empty-handoff fallback.
