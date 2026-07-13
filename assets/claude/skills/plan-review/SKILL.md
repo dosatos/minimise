@@ -1,6 +1,6 @@
 ---
-name: mini-plan-review
-description: Reviews a minimise implementation plan as a pragmatic BLOCKING quality gate, reading the plan (YAML) from stdin and printing a machine-readable REVIEW: PASS / REVIEW: FAIL verdict. Use when invoked as `/mini-plan-review`, or when a minimise `pre_plan` hook runs `claude -p '/mini-plan-review'` to gate a job before implementation. Reports ONLY severe issues (correctness bugs, data-loss/destructive risk, missing steps that make a task unimplementable, internal contradictions, factually wrong claims about the codebase) and ignores style, wording, and nice-to-haves.
+name: plan-review
+description: Reviews a minimise implementation plan as a pragmatic BLOCKING quality gate, reading the plan (YAML) from stdin and printing a machine-readable REVIEW: PASS / REVIEW: FAIL verdict. Use when invoked as `/minimise:plan-review`, or when a minimise `pre_plan` hook runs `claude -p '/minimise:plan-review'` to gate a job before implementation. Reports ONLY severe issues (correctness bugs, data-loss/destructive risk, missing steps that make a task unimplementable, internal contradictions, factually wrong claims about the codebase) and ignores style, wording, and nice-to-haves.
 ---
 
 # Reviewing a minimise plan
@@ -17,7 +17,7 @@ The plan (YAML) arrives on **stdin**. Read it first.
 cat            # the piped plan YAML is your input; no file path is given
 ```
 
-When invoked via the hook `claude -p '/mini-plan-review'`, the calling `HookExecutor`
+When invoked via the hook `claude -p '/minimise:plan-review'`, the calling `HookExecutor`
 pipes the serialized plan to stdin. If stdin is empty, emit `REVIEW: FAIL` with a note
 that no plan was received — never pass a plan you could not read.
 
@@ -58,8 +58,8 @@ Match the gate to what the task actually produces — don't default everything t
 review:
 
 - **Plan review hook:** if the plan has real tasks but no `pre_plan` hook running
-  `/mini-plan-review`, recommend adding one (the blocking plan gate).
-- **Code / behavior changes** → a `post_task` `/mini-implementation-review <task-id>`
+  `/minimise:plan-review`, recommend adding one (the blocking plan gate).
+- **Code / behavior changes** → a `post_task` `/minimise:implementation-review <task-id>`
   hook, task id baked in so the review is pre-scoped to that task.
 - **Other task types** → whatever cheaply verifies *that* task's output, as a
   non-blocking (`on_failure: skip`) `post_task` hook. Examples: a task that writes docs
@@ -94,7 +94,7 @@ findings JSON, then a final verdict line as the **last line**:
       "task_id": "task-2 (or \"plan\" for a pre_plan hook)",
       "gate": "post_task",
       "suggestion": "Why this task benefits from a verification gate and what it checks",
-      "shell": "claude -p --dangerously-skip-permissions '/mini-implementation-review task-2' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+      "shell": "claude -p --dangerously-skip-permissions '/minimise:implementation-review task-2' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
     }
   ],
   "summary": "Brief overall assessment"
@@ -124,7 +124,7 @@ pre_hooks:
   - name: review-plan
     estimated_duration_min: 5
     # tee: show the full review, THEN gate on the sentinel (grep reads the copy).
-    shell: "claude -p '/mini-plan-review' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+    shell: "claude -p '/minimise:plan-review' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
 ```
 
 `tee /dev/stderr` echoes the whole review (findings JSON + verdict) so minimise records

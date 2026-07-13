@@ -1,0 +1,12 @@
+{
+  "name": "minimise",
+  "version": "0.1.0",
+  "description": "Plan-review and implementation-review skills for minimise (`mini`), the multi-agent plan runner.",
+  "author": {
+    "name": "dosatos"
+  },
+  "repository": "https://github.com/dosatos/minimise",
+  "license": "MIT",
+  "keywords": ["minimise", "mini", "plan-review", "code-review", "agents", "orchestration"],
+  "skills": "./assets/claude/skills/"
+}
