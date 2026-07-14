@@ -67,6 +67,14 @@ class TaskExecutor:
         def _step_label(attempt):
             return task.name + (f"  · try {attempt + 1}" if attempt > 0 else "")
 
+        def _stash_work(msg):
+            """Terminal failure: park the attempt's uncommitted work in a stash so
+            it's recoverable, and tell the user how. Never on a retry path — the
+            next attempt needs that work."""
+            if self.git_tracker.stash(f"minimise: failed {task.id} ({task.name})"):
+                return f"{msg}\n\nUncommitted work from this attempt was stashed: git stash pop"
+            return msg
+
         for attempt in range(self.MAX_RETRIES + 1):
             self.store.mark_running(task, attempt)
 
@@ -100,13 +108,13 @@ class TaskExecutor:
                 if verify is not None:
                     outcome, combined = verify(attempt)
                     if outcome == "fail":
-                        msg = f"Post-task hook failed\n{combined}"
+                        msg = _stash_work(f"Post-task hook failed\n{combined}")
                         _log_failure(_step_label(attempt), msg)
                         self.store.mark_task_failed(task, msg, exit_reason="hook_failed", ended_at=agent_end)
                         return False, msg
                     if outcome == "retry":
                         if attempt >= self.MAX_RETRIES:
-                            msg = f"Post-task hook failed (retries exhausted)\n{combined}"
+                            msg = _stash_work(f"Post-task hook failed (retries exhausted)\n{combined}")
                             _log_failure(_step_label(attempt), msg)
                             self.store.mark_task_failed(task, msg, exit_reason="hook_failed", ended_at=agent_end)
                             return False, msg
@@ -160,6 +168,7 @@ class TaskExecutor:
             if chain_handover is not None:
                 return True, chain_handover
         else:
+            final_output = _stash_work(final_output)
             _log_failure(_step_label(task.retries), final_output)
             self.store.mark_task_failed(task, final_output, exit_reason=exit_reason, ended_at=agent_end)
 

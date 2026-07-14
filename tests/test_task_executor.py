@@ -853,3 +853,34 @@ def test_unassigned_task_passes_none_system_prompt_and_model(temp_db_dir, db, gi
     assert fake.run.call_args.kwargs["model"] is None
 
 
+
+
+def test_failed_task_stashes_uncommitted_work(temp_db_dir, db, git_repo):
+    """A terminal failure leaves a clean tree; the work (tracked + untracked) is in a stash."""
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
+    job_id, task = _setup_job_and_task(db, git_tracker)
+
+    def mock_invoke(context):
+        (git_repo / "test.txt").write_text("edited by agent")   # tracked
+        (git_repo / "new_pkg").mkdir(exist_ok=True)
+        (git_repo / "new_pkg" / "mod.py").write_text("untracked work")
+        return False, "boom", "agent_error"
+
+    original = executor._invoke_claude_code
+    executor._invoke_claude_code = mock_invoke
+    try:
+        success, output = executor.execute_task(task, job_id, "")
+    finally:
+        executor._invoke_claude_code = original
+
+    assert not success
+    assert "git stash pop" in output
+
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=git_repo,
+                            capture_output=True, text=True, check=True)
+    assert status.stdout.strip() == ""
+
+    subprocess.run(["git", "stash", "pop"], cwd=git_repo, capture_output=True, check=True)
+    assert (git_repo / "test.txt").read_text() == "edited by agent"
+    assert (git_repo / "new_pkg" / "mod.py").read_text() == "untracked work"

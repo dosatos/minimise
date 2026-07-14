@@ -134,3 +134,26 @@ class GitTracker:
         except subprocess.CalledProcessError as e:
             # Commit may have failed due to no changes or other issues
             return None
+
+    def stash(self, message: str) -> bool:
+        """
+        Stash uncommitted work, including untracked files.
+
+        Args:
+            message: The stash message
+
+        Returns:
+            True if a stash was created, False if nothing to stash or error
+        """
+        try:
+            result = subprocess.run(
+                ["git", "stash", "push", "-u", "-m", message],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            # "No local changes to save" => no-op, not an error.
+            return "No local changes to save" not in result.stdout
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            return False
