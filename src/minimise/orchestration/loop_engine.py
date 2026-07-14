@@ -48,8 +48,8 @@ DEFAULT_PROMPTS = {
     "implement": (
         "You are the IMPLEMENTER in a refinement loop. Execute the current plan by "
         "mutating the working tree. For real code changes, STRONGLY PREFER delegating "
-        "the work to a `mini job`: write a plan YAML, gate it with the `/mini-plan-review` "
-        "skill, run `mini job new`/`mini job start`, and wire a `/mini-implementation-review` "
+        "the work to a `mini job`: write a plan YAML, gate it with the `/minimise:plan-review` "
+        "skill, run `mini job new`/`mini job start`, and wire a `/minimise:implementation-review` "
         "post_task hook so the produced diff is reviewed. This keeps execution churn out "
         "of the loop and adds the quality gates for free. Only edit files directly for "
         "trivial one-liners or changes `mini` can't invoke. Emit control 'done' on "

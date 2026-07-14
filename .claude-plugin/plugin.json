@@ -1,7 +1,7 @@
 {
   "name": "minimise",
   "version": "0.1.0",
-  "description": "Plan-review and implementation-review skills for minimise (`mini`), the multi-agent plan runner.",
+  "description": "Skills for minimise (`mini`), the multi-agent plan runner: the plan-review and implementation-review hook gates, plus setup, delegate, and refine.",
   "author": {
     "name": "dosatos"
   },

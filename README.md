@@ -58,6 +58,18 @@ mini --help               # verify the install
 
 Config and state live in `~/.minimise/` (created automatically on first run).
 
+### Install the Claude Code plugin (optional)
+
+```
+/plugin marketplace add dosatos/minimise
+/plugin install minimise@minimise
+```
+
+Ships the two reviewer skills used by the hooks below (`/minimise:plan-review`,
+`/minimise:implementation-review`) plus `/minimise:setup`, and `/minimise:delegate` /
+`/minimise:refine`, which offer the `mini` path on work that suits it. Everything in this
+README works without the plugin.
+
 ## Quick Start
 
 A **plan** is a YAML file describing the tasks to implement; a **job** is a single run of a plan. You author a plan once, then create and run jobs from it.
@@ -76,17 +88,23 @@ plan:
       name: "Write tests"
       goal: "Define comprehensive test cases for the new endpoint"
       description: "Create test file with fixtures and test cases"
-    
+      estimated_duration_min: 15
+
     - id: task-2
       name: "Implement endpoint"
       goal: "Implement the endpoint to pass all tests from task 1"
       description: "Add endpoint handler, validation, and response formatting"
-    
+      estimated_duration_min: 25
+
     - id: task-3
       name: "Add verification"
       goal: "Verify implementation quality and ensure tests pass"
       description: "Run full test suite, check coverage, and validate behavior"
+      estimated_duration_min: 10
 ```
+
+`estimated_duration_min` is required on every task (it drives the Gantt); optional `timeout_min`
+adds a hard kill deadline and must be >= the estimate.
 
 Each task includes a **goal** field that clearly states the task's objective. The agent receives this goal prepended to the description, ensuring alignment on intent. Each task receives **only** the output of the previous task (git diff, completion report) — fresh context prevents degradation.
 
@@ -374,7 +392,7 @@ pre_hooks:
   - name: review-plan
     estimated_duration_min: 5
     # tee: print the review (so it lands in the logs), THEN gate on the verdict.
-    shell: "claude -p '/mini-plan-review' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+    shell: "claude -p '/minimise:plan-review' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
 ```
 
 **Writing your own reviewer.** A reviewer is any command that:
@@ -395,9 +413,10 @@ script — anything that honors that contract. Two gotchas:
   greps to set the exit code. For structured parsing use
   `claude -p '...' --output-format json | jq -e ...`.
 
-The example above uses `/mini-plan-review`, a Claude Code skill that reads the plan on
-stdin and prints a `REVIEW: PASS` / `REVIEW: FAIL` verdict plus a findings JSON. Point
-the hook at whatever reviewer fits your project.
+The example above uses `/minimise:plan-review`, a Claude Code skill (shipped by the
+[plugin](#install-the-claude-code-plugin-optional)) that reads the plan on stdin and prints a
+`REVIEW: PASS` / `REVIEW: FAIL` verdict plus a findings JSON. Point the hook at whatever
+reviewer fits your project.
 
 **Reviewing the produced code, not just the plan.** The same contract works as a
 `post_task` hook, where the reviewer runs *after* a task's commit and sees the real
@@ -412,7 +431,7 @@ tasks:
       - name: review-implementation
         estimated_duration_min: 8
         on_failure: retry   # failing review re-runs the task with findings; capped by retries
-        shell: "claude -p '/mini-implementation-review' --dangerously-skip-permissions | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+        shell: "claude -p '/minimise:implementation-review' --dangerously-skip-permissions | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
 ```
 
 ## Refinement Loops

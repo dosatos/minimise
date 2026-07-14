@@ -2,7 +2,7 @@
 
 > **For agentic workers:** This plan executes via the repo's `mini job`
 > dogfood workflow — each task below becomes a task in a `mini` plan YAML,
-> run through the `/mini-plan-review` (pre) and `/mini-implementation-review`
+> run through the `/minimise:plan-review` (pre) and `/minimise:implementation-review`
 > (post) gates. Each task is independently committable and leaves the suite
 > green. Steps use checkbox (`- [ ]`) syntax for tracking.
 

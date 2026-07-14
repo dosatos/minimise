@@ -1,0 +1,174 @@
+# minimise (`mini`)
+
+A CLI that runs a multi-task implementation plan through an agent harness, one task per fresh
+agent session. The plan is a YAML file you commit. Each task's result is a git commit; the next
+task sees only the previous task's diff and completion report, so context does not rot. Hooks
+gate the run.
+
+Harness-neutral: any agent (Claude Code, Codex, Cursor, …) can drive `mini` from the shell. The
+Claude Code plugin is optional sugar; nothing below needs it.
+
+**GitHub:** https://github.com/dosatos/minimise
+
+## Install
+
+```bash
+git clone https://github.com/dosatos/minimise.git
+cd minimise
+pip install -e .          # installs the `mini` command
+mini --help               # verify (there is no `--version`)
+```
+
+Requires Python 3.9+, git, and the `claude` CLI on `PATH` (tasks are executed by shelling out to
+it). State lives in `~/.minimise/` (auto-created). `mini` must be run from inside a git repo —
+that repo is what the tasks edit and commit to.
+
+## Job flow
+
+```bash
+mini job new --plan plan.yaml        # → Job ID; validates the plan. Does not run it.
+mini job start <id>                  # runs in the foreground; idempotent
+mini job status <id>                 # task progress (--format json for scripting)
+mini job list                        # all jobs
+mini job stop <id>                   # SIGTERM the orchestrator
+mini job logs <id> [-f] [--query …]  # live agent narration (JSONL)
+mini job results diff <id>           # per-task git diffs
+mini job results logs <id>           # per-task outputs
+mini job show <id> --task-id <t>     # the full prompt a task will get, with handover context
+mini job delete <id>
+```
+
+`mini job start` is idempotent: on a STOPPED/FAILED/crashed job it resumes from the first
+non-complete task (already-committed tasks are not re-run); on a live RUNNING job it backs off.
+A task retries 3x before the job fails.
+
+`--query` takes a CloudWatch-Insights-style string, clauses separated by `|`:
+`fields @timestamp, message | filter type = "task" and level != "debug" | sort @timestamp desc | limit 20`.
+
+## Plan schema
+
+Fields not listed here do not exist.
+
+```yaml
+plan:                              # top-level `plan:` key is optional; a bare mapping works
+  name: "Implement Feature X"      # required
+  briefing: "Free-form context"    # optional
+  pre_hooks: []                    # optional, run once before the whole job (the plan gate)
+  post_hooks: []                   # optional, run once after the whole job
+  tasks:                           # required, >= 1; ids unique
+    - id: task-1                   # required
+      name: "Write tests"          # required
+      goal: "One-line objective"   # required — what. Prepended to the agent's prompt.
+      description: "The steps"     # required — how. May be a multi-line block.
+      estimated_duration_min: 15   # REQUIRED, positive int. Missing → validation error.
+      timeout_min: 30              # optional hard kill deadline; must be >= the estimate
+      assignee: reviewer           # optional persona name (see below)
+      pre_hooks: []                # optional, before this task
+      post_hooks: []               # optional, after this task's commit
+```
+
+A task runs in a fresh session and gets only the previous task's diff + report, so it must be
+self-contained given that. See [`examples/example-plan.yaml`](examples/example-plan.yaml).
+
+**Personas** (optional) live in `~/.minimise/personas.yaml`. Each name maps to `model:`
+(optional) plus exactly one of `prompt:` / `prompt_file:`. A task's `assignee:` pins that
+prompt/model for that task only. Unknown name → `mini job new` fails up front.
+
+## Hook contract
+
+A hook is a named, timed shell command run in your project. Minimise pipes the **plan YAML to the
+hook's stdin**, captures stdout/stderr into the job log, and **gates on the exit code: nonzero
+blocks**. Review is not built in — it is just a hook you opt into.
+
+```yaml
+- name: review-plan                # required, unique within its list
+  estimated_duration_min: 5        # REQUIRED, positive int
+  timeout_min: 10                  # optional; must be >= the estimate
+  shell: "…"                       # required
+  on_failure: fail                 # fail (default) | retry | skip
+```
+
+`on_failure` may be non-`fail` only on a **task's `post_hooks`**; anywhere else it is a validation
+error. `retry` re-runs the task with the hook's output fed back in (a fix-loop bounded by the
+task's retry budget). `skip` records the failure and continues.
+
+The plan gate — blocking, before any task runs:
+
+```yaml
+pre_hooks:
+  - name: review-plan
+    estimated_duration_min: 5
+    shell: "claude -p '/minimise:plan-review' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+```
+
+The implementation gate — after a task's commit, sees the real diff:
+
+```yaml
+post_hooks:
+  - name: review-implementation
+    estimated_duration_min: 8
+    on_failure: retry
+    shell: "claude -p '/minimise:implementation-review' --dangerously-skip-permissions | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+```
+
+Two gotchas when the reviewer is an agent:
+
+- `claude -p` exits 0 regardless of its verdict, so it must print a sentinel (`REVIEW: FAIL`) that
+  the `shell:` string greps to set the exit code.
+- Don't pipe straight into `grep -q` — it swallows stdout, so a block arrives with no explanation.
+  `tee /dev/stderr` first, then grep the copy.
+
+Any command honoring the contract works: a linter, `pytest -q`, a `jq` policy check. It does not
+have to be an agent, and the reviewer skills above are just one option.
+
+## Loop flow
+
+A job runs a fixed task list once. A **loop** refines *one* artifact over repeated iterations
+until the planner says the goal is met (or `max_iterations` is hit). Each iteration: **plan**
+(decide the next step or stop) → **implement** (edit the tree) → **evaluate** (score against named
+dimensions, fanned out in parallel); findings feed into the next iteration's plan.
+
+```yaml
+version: "1"
+name: Refine the README
+goal: Improve the README until a first-time reader can set up, use, and test it unaided.
+max_iterations: 3
+loop:
+  plan:
+    prompt: You are the PLANNER. Decide the next step — or stop if the goal is met.
+  implement:
+    prompt: You are the IMPLEMENTER. Carry out the current plan by editing the tree.
+  evaluate:
+    max_concurrent: 2              # parallel dimensions, default 4
+    dimensions:
+      - name: clarity              # names unique
+        rubric: Is the README easy to follow for a first-time reader?
+      - name: completeness
+        rubric: Does it cover setup, usage, and testing without gaps?
+```
+
+`plan`, `implement`, and each dimension are *workers*: each may set **at most one** of `prompt:`,
+`prompt_file:`, or `persona:`. None → built-in default. Two → validation error.
+
+```bash
+mini loop new --plan examples/example-loop.yaml   # → Loop ID
+mini loop start <id>                              # foreground, idempotent, resumes from journal
+mini loop status <id>                             # per-iteration progress
+mini loop journal <id>                            # the loop's memory: plan/implement/evaluate + commits
+mini loop logs <id> [-f] [--query …]
+```
+
+A loop that stopped because the goal was met and one that ran out of iterations are very
+different outcomes — `mini loop status` tells you which.
+
+## Claude Code plugin (optional)
+
+```
+/plugin marketplace add dosatos/minimise
+/plugin install minimise@minimise
+```
+
+Ships `/minimise:plan-review` and `/minimise:implementation-review` (the two reviewers above),
+plus `/minimise:setup`, `/minimise:delegate`, and `/minimise:refine`, which offer the `mini` path
+on work that suits it. Everything works without the plugin — the hooks above just need *some*
+command that reads the plan on stdin and exits nonzero to block.

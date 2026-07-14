@@ -4,7 +4,7 @@ This repo doubles as a single-plugin Claude Code marketplace.
 
 | File | What it is |
 |---|---|
-| `plugin.json` | The plugin manifest. Points at `assets/claude/skills/`, which ships `plan-review` and `implementation-review`. |
+| `plugin.json` | The plugin manifest. Points at `assets/claude/skills/`, which ships `plan-review`, `implementation-review`, `setup`, `delegate`, and `refine`. |
 | `marketplace.json` | The marketplace manifest. One entry — this plugin, sourced from the repo root. |
 
 ## Install
@@ -14,7 +14,8 @@ This repo doubles as a single-plugin Claude Code marketplace.
 /plugin install minimise@minimise
 ```
 
-Then `/minimise:plan-review` and `/minimise:implementation-review` are available.
+Then `/minimise:plan-review`, `/minimise:implementation-review`, `/minimise:setup`,
+`/minimise:delegate`, and `/minimise:refine` are available.
 See the README's hooks section for wiring the reviewers into a plan.
 
 ## Not shipped by the plugin
