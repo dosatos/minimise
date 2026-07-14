@@ -469,58 +469,6 @@ class TestRenderTaskTableWithGantt:
         # Should still have data for running task
         assert table.rows[0] is not None
 
-    def test_render_one_row_per_execution(self, sample_job, base_time):
-        """A task with 2 executions renders 2 rows with per-execution timing/status."""
-        task = Task(
-            estimated_duration_min=5,
-            id="task-multi",
-            job_id="job-001",
-            name="Retried Task",
-            description="desc",
-            status=TaskStatus.COMPLETED,
-        )
-        # Attempt 0 failed early; attempt 1 completed later. Distinct spans.
-        ex0 = Execution(
-            task_id="task-multi",
-            attempt=0,
-            status=TaskStatus.FAILED,
-            started_at=base_time + timedelta(seconds=1),
-            completed_at=base_time + timedelta(seconds=2),
-        )
-        ex1 = Execution(
-            task_id="task-multi",
-            attempt=1,
-            status=TaskStatus.COMPLETED,
-            started_at=base_time + timedelta(seconds=4),
-            completed_at=base_time + timedelta(seconds=9),
-        )
-        table = render_execution_table_with_gantt(
-            sample_job,
-            [task],
-            now=base_time + timedelta(seconds=10),
-            executions_by_task={"task-multi": [ex0, ex1]},
-        )
-
-        assert len(table.rows) == 2
-
-        # Row labels distinguish attempts
-        assert table.columns[0]._cells == ["Retried Task  · try 1", "Retried Task  · try 2"]
-        # Status cells read failed then completed (per-execution, not task)
-        assert table.columns[2]._cells[0].plain == "failed"
-        assert table.columns[2]._cells[1].plain == "completed"
-        # Timeline bars differ (computed from each execution's own span)
-        assert table.columns[5]._cells[0] != table.columns[5]._cells[1]
-
-    def test_render_no_executions_falls_back_to_single_row(self, sample_job, sample_tasks, base_time):
-        """A task with no executions renders exactly one row (today's behavior)."""
-        table = render_execution_table_with_gantt(
-            sample_job,
-            sample_tasks[:1],
-            now=base_time + timedelta(seconds=10),
-            executions_by_task={},
-        )
-        assert len(table.rows) == 1
-        assert table.columns[0]._cells == ["Quick Task"]
 
     def test_attempts_only_unchanged(self, sample_job, base_time):
         """Flat executions list of task attempts renders identical per-attempt rows."""
@@ -666,27 +614,6 @@ class TestRenderTaskTableWithGantt:
             executions=[hook],
         )
         assert table.columns[4]._cells == ["—"]
-
-    def test_executions_none_uses_legacy_path(self, sample_job, sample_tasks, base_time):
-        """executions=None with executions_by_task reproduces today's per-attempt rows."""
-        task = sample_tasks[0]
-        ex0 = Execution(
-            task_id=task.id,
-            attempt=0,
-            execution_type="task",
-            status=TaskStatus.COMPLETED,
-            started_at=base_time + timedelta(seconds=1),
-            completed_at=base_time + timedelta(seconds=2),
-        )
-        table = render_execution_table_with_gantt(
-            sample_job,
-            [task],
-            now=base_time + timedelta(seconds=10),
-            executions=None,
-            executions_by_task={task.id: [ex0]},
-        )
-        assert len(table.rows) == 1
-        assert table.columns[0]._cells == ["Quick Task  · try 1"]
 
     def test_pending_task_rendered_as_placeholder_row(self, sample_job, base_time):
         """A task with no task-type execution shows a PENDING placeholder row in plan order."""
@@ -857,41 +784,6 @@ def test_project_steps_chains_pending_after_completed():
     assert placements[1][0] == 60          # pending starts at cursor
     assert placements[1][2] == 60 + 120    # + 2min estimate
     assert total_secs == 180
-
-
-def test_render_projected_bar_solid_then_light():
-    from minimise.interfaces.terminal_ui import render_projected_bar
-    # actual [0..90], projected to 180, total 180 -> first half solid, rest light
-    bar = render_projected_bar(0, 90, 180, total_secs=180, width=28)
-    assert len(bar) == 28
-    assert "█" in bar and "░" in bar
-    assert "╎" not in bar          # now-line removed
-    assert bar[0] == "█"
-    assert bar[-1] == "░"
-
-
-def test_render_projected_bar_fills_width_when_complete():
-    from minimise.interfaces.terminal_ui import render_projected_bar
-    # a fully-actual span across the whole timeline reaches the last column
-    bar = render_projected_bar(0, 180, 180, total_secs=180, width=28)
-    assert bar[-1] == "█"          # bars fill to the right edge, no trailing gap
-
-
-def test_render_projected_bar_pending_never_solid():
-    from minimise.interfaces.terminal_ui import render_projected_bar
-    # pending step: zero-width actual (start==actual_end), only projection.
-    # must be all-light — a solid █ would make it read as running.
-    bar = render_projected_bar(60, 60, 120, total_secs=240, width=28)
-    assert "█" not in bar
-    assert "░" in bar
-
-
-def test_render_projected_bar_short_step_survives_coarse_timeline():
-    from minimise.interfaces.terminal_ui import render_projected_bar
-    # a 5s completed step on a 224s timeline is narrower than one column;
-    # overlap fill (not point-sampling) must still paint it.
-    bar = render_projected_bar(35, 40, 40, total_secs=224, width=28)
-    assert "█" in bar
 
 
 def test_layout_projected_bars_no_column_shared_by_two_steps():

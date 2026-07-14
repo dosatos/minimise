@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Optional
 from rich.table import Table
 from rich.text import Text
-from minimise.models import Job, Task, JobStatus, TaskStatus, Plan, Loop, LoopStep
+from minimise.models import Job, Task, JobStatus, TaskStatus, Plan, Loop
 
 
 @dataclass
@@ -291,11 +291,15 @@ def layout_projected_bars(placements, total_secs, width=28):
     return rows
 
 
-def render_projected_bar(start_off, actual_end_off, proj_end_off,
-                         total_secs, width=28):
-    """Single-step convenience wrapper over layout_projected_bars."""
-    return layout_projected_bars(
-        [(start_off, actual_end_off, proj_end_off)], total_secs, width)[0]
+def fit_width(chrome: int) -> int:
+    """Size a bar to the terminal: give it whatever the other columns and chrome
+    leave over (clamped), so it isn't cropped with "…" on narrow terminals.
+
+    The Console import stays local: tests monkeypatch rich.console.Console at its
+    source module, which only works if we look it up at call time.
+    """
+    from rich.console import Console
+    return max(8, min(28, Console().width - chrome))
 
 
 def render_execution_table_with_gantt(
@@ -303,7 +307,6 @@ def render_execution_table_with_gantt(
     tasks: list[Task],
     now: Optional[datetime] = None,
     executions: Optional[list] = None,
-    executions_by_task: Optional[dict] = None,
     plan: Optional[Plan] = None,
 ) -> Table:
     """
@@ -313,27 +316,18 @@ def render_execution_table_with_gantt(
         job: Job object with timing info
         tasks: List of tasks to display
         now: Current time for elapsed calculation
-        executions: Optional flat list[Execution] in job timeline order (from
-            list_executions_for_job). When provided, it is THE source of rows —
-            one row per execution, in the given order (NOT re-sorted) — and
-            TAKES PRECEDENCE over executions_by_task. Covers task attempts AND
-            plan/per-task hooks.
-        executions_by_task: LEGACY map of task_id -> list[Execution]. Used only
-            when ``executions`` is None. When a task has executions, one row is
-            emitted per attempt; tasks without executions fall back to a single
-            task-level row.
+        executions: Flat list[Execution] in job timeline order (from
+            list_executions_for_job). It is THE source of rows — one row per
+            execution, in the given order (NOT re-sorted). Covers task attempts
+            AND plan/per-task hooks. Tasks with no execution yet get a PENDING
+            placeholder row.
 
     Returns:
         Rich Table with Task Name, Status, Duration, Expected, and Timeline columns
     """
     now = _now_or_default(now)
-    executions_by_task = executions_by_task or {}
-
-    # Size the Gantt bar to the terminal: the other 7 columns + chrome need
-    # ~66 cols, so give the rest to the bar (clamped) — otherwise a fixed-width
-    # bar gets cropped with "…" on narrow terminals.
-    from rich.console import Console
-    bar_width = max(8, min(28, Console().width - 66))
+    executions = executions or []
+    bar_width = fit_width(66)
 
     table = Table()
     table.add_column("Task Name", style="cyan")
@@ -381,58 +375,31 @@ def render_execution_table_with_gantt(
                     assignee=step.assignee)
         return table
 
-    if executions is not None:
-        names = {t.id: t.name for t in tasks}
-        task_est = {t.id: t.estimated_duration_min for t in tasks}
-        task_assignee = {t.id: (t.assignee or "") for t in tasks}
-        started_task_ids = set()
-        for ex in executions:
-            tname = names.get(ex.task_id, "")
-            if ex.execution_type == "task":
-                started_task_ids.add(ex.task_id)
-                label, expected = f"{tname}  · try {ex.attempt + 1}", task_est.get(ex.task_id)
-            elif ex.execution_type == "pre_plan":
-                label, expected = "Pre-plan hook", None
-            elif ex.execution_type == "post_plan":
-                label, expected = "Post-plan hook", None
-            elif ex.execution_type == "pre_task":
-                label, expected = f"Pre-task hook  · {tname}", None
-            else:  # post_task
-                label, expected = f"Post-task hook  · {tname}", None
-            add_row(label, ex.status, ex.started_at, ex.completed_at, expected,
-                    ex.execution_type != "task", exit_reason=ex.exit_reason or "",
-                    assignee=task_assignee.get(ex.task_id, "") if ex.execution_type == "task" else "")
-        # PENDING tasks (no task-type execution yet) shown as placeholder rows in plan order.
-        for task in tasks:
-            if task.id not in started_task_ids:
-                add_row(task.name, TaskStatus.PENDING, None, None, task.estimated_duration_min, False,
-                        assignee=task.assignee or "")
-        return table
-
+    names = {t.id: t.name for t in tasks}
+    task_est = {t.id: t.estimated_duration_min for t in tasks}
+    task_assignee = {t.id: (t.assignee or "") for t in tasks}
+    started_task_ids = set()
+    for ex in executions:
+        tname = names.get(ex.task_id, "")
+        if ex.execution_type == "task":
+            started_task_ids.add(ex.task_id)
+            label, expected = f"{tname}  · try {ex.attempt + 1}", task_est.get(ex.task_id)
+        elif ex.execution_type == "pre_plan":
+            label, expected = "Pre-plan hook", None
+        elif ex.execution_type == "post_plan":
+            label, expected = "Post-plan hook", None
+        elif ex.execution_type == "pre_task":
+            label, expected = f"Pre-task hook  · {tname}", None
+        else:  # post_task
+            label, expected = f"Post-task hook  · {tname}", None
+        add_row(label, ex.status, ex.started_at, ex.completed_at, expected,
+                ex.execution_type != "task", exit_reason=ex.exit_reason or "",
+                assignee=task_assignee.get(ex.task_id, "") if ex.execution_type == "task" else "")
+    # PENDING tasks (no task-type execution yet) shown as placeholder rows in plan order.
     for task in tasks:
-        task_executions = executions_by_task.get(task.id)
-        if task_executions:
-            for i, ex in enumerate(task_executions, start=1):
-                add_row(
-                    f"{task.name}  · try {i}",
-                    ex.status,
-                    ex.started_at,
-                    ex.completed_at,
-                    task.estimated_duration_min,
-                    False,
-                    assignee=task.assignee or "",
-                )
-        else:
-            add_row(
-                task.name,
-                task.status,
-                task.started_at,
-                task.completed_at,
-                task.estimated_duration_min,
-                False,
-                assignee=task.assignee or "",
-            )
-
+        if task.id not in started_task_ids:
+            add_row(task.name, TaskStatus.PENDING, None, None, task.estimated_duration_min, False,
+                    assignee=task.assignee or "")
     return table
 
 
@@ -565,9 +532,8 @@ def render_loop_progress_table(
     ordered = list(dimensions) if dimensions else []
     ordered += [d for d in rows if d not in ordered]
 
-    from rich.console import Console
     # Same width->N math the Gantt uses; here it caps how many iteration columns fit.
-    n = max(8, min(28, Console().width - 40))
+    n = fit_width(40)
     # Zero-iteration seed: one "now" column of dim cells until verdicts arrive.
     shown = iters[-n:] if iters else [None]
 
@@ -618,8 +584,7 @@ def render_loop_stage_timing(loop: Loop, steps: list, dimensions: list = None) -
 
     iters = sorted({s.iteration for s in steps})
 
-    from rich.console import Console
-    n = max(8, min(28, Console().width - 40))
+    n = fit_width(40)
     shown = iters[-n:]
 
     def cell(iteration, step_type):
@@ -660,8 +625,7 @@ def loop_progress_summary(journal_records: list, dimensions: list = None) -> Opt
         return None
     if not iters:
         return "no evaluations yet"  # pre-eval: 'passing 0/N' misreads as failure
-    from rich.console import Console
-    n = max(8, min(28, Console().width - 40))
+    n = fit_width(40)
     shown = iters[-n:]
     if len(shown) == len(iters):
         return None  # not truncated — 'Iteration n/max' already shows the count
