@@ -170,23 +170,20 @@ def test_cancel_job_basic(job_controller, plan_file):
 
 def test_run_job_basic(job_controller, plan_file):
     """Test running a job with mocked task execution."""
-    from minimise.orchestration.task_executor import TaskExecutor
-
     # Create job
     created_job = job_controller.create_job(plan_file)
     job_id = created_job.id
 
-    # Mock the task executor to avoid actual Claude Code invocation
-    original_executor_class = TaskExecutor
+    # Mock the live executor instance to avoid actual Claude Code invocation
+    original = job_controller.task_executor.execute_task
 
-    class MockTaskExecutor(TaskExecutor):
-        def execute_task(self, task, job_id, handover_context, next_task=None, verify=None):
-            # Mock successful execution
-            return True, f"Executed {task.name}"
+    def mock_execute_task(task, job_id, handover_context, next_task=None, verify=None):
+        # Real execute_task records completion; a fake standing in for it must too.
+        job_controller.db.update_task_status(task.id, TaskStatus.COMPLETED,
+                                             completed_at=datetime.utcnow())
+        return True, f"Executed {task.name}"
 
-    # Monkey patch for this test
-    import minimise.orchestration.job_controller
-    minimise.orchestration.job_controller.TaskExecutor = MockTaskExecutor
+    job_controller.task_executor.execute_task = mock_execute_task
 
     try:
         # Run the job
@@ -201,8 +198,7 @@ def test_run_job_basic(job_controller, plan_file):
         for task in job.tasks:
             assert task.status == TaskStatus.COMPLETED
     finally:
-        # Restore original class
-        minimise.orchestration.job_controller.TaskExecutor = original_executor_class
+        job_controller.task_executor.execute_task = original
 
 
 def test_job_runs_task_hooks_in_plan_order(job_controller, temp_db_dir):
@@ -246,8 +242,6 @@ def test_job_runs_task_hooks_in_plan_order(job_controller, temp_db_dir):
 
 def test_task_commits_against_base_commit(job_controller, plan_file, git_repo):
     """Test that each task commits its changes against its base commit, not HEAD."""
-    from minimise.orchestration.task_executor import TaskExecutor
-
     # Create job
     created_job = job_controller.create_job(plan_file)
     job_id = created_job.id
@@ -260,41 +254,43 @@ def test_task_commits_against_base_commit(job_controller, plan_file, git_repo):
     # Verify base_commit is captured in job
     assert base_commit is not None
 
-    # Mock task executor to simulate making changes between tasks
-    original_executor_class = TaskExecutor
+    # Mock the live executor instance to simulate making changes between tasks
+    executor = job_controller.task_executor
+    original = executor.execute_task
     execution_count = [0]
 
-    class MockTaskExecutor(TaskExecutor):
-        def execute_task(self, task, job_id, handover_context, next_task=None, verify=None):
-            execution_count[0] += 1
+    def mock_execute_task(task, job_id, handover_context, next_task=None, verify=None):
+        execution_count[0] += 1
 
-            # Simulate task making changes
-            test_file = Path(git_repo) / f"task_{execution_count[0]}.txt"
-            test_file.write_text(f"Content from task {execution_count[0]}")
+        # Simulate task making changes
+        test_file = Path(git_repo) / f"task_{execution_count[0]}.txt"
+        test_file.write_text(f"Content from task {execution_count[0]}")
 
-            # Commit the changes
-            subprocess.run(
-                ["git", "add", f"task_{execution_count[0]}.txt"],
-                cwd=git_repo,
-                capture_output=True,
-                check=True
-            )
-            subprocess.run(
-                ["git", "commit", "-m", f"Task {task.id}: {task.name}"],
-                cwd=git_repo,
-                capture_output=True,
-                check=True
-            )
+        # Commit the changes
+        subprocess.run(
+            ["git", "add", f"task_{execution_count[0]}.txt"],
+            cwd=git_repo,
+            capture_output=True,
+            check=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", f"Task {task.id}: {task.name}"],
+            cwd=git_repo,
+            capture_output=True,
+            check=True
+        )
 
-            # Store the base_commit for this task before changes
-            job = self.store.db.get_job(job_id)
-            task.base_commit = job.base_commit  # Should be the job's base_commit
-            self.store.db.update_task(task)
+        # Store the base_commit for this task before changes
+        job = executor.store.db.get_job(job_id)
+        task.base_commit = job.base_commit  # Should be the job's base_commit
+        # Real execute_task records completion; a fake standing in for it must too.
+        task.status = TaskStatus.COMPLETED
+        task.completed_at = datetime.utcnow()
+        executor.store.db.update_task(task)
 
-            return True, f"Executed {task.name}"
+        return True, f"Executed {task.name}"
 
-    import minimise.orchestration.job_controller
-    minimise.orchestration.job_controller.TaskExecutor = MockTaskExecutor
+    executor.execute_task = mock_execute_task
 
     try:
         # Run the job
@@ -311,7 +307,7 @@ def test_task_commits_against_base_commit(job_controller, plan_file, git_repo):
             assert task.base_commit == base_commit
 
     finally:
-        minimise.orchestration.job_controller.TaskExecutor = original_executor_class
+        executor.execute_task = original
 
 
 def test_task_commit_message_format(temp_db_dir, git_repo, plan_file):
