@@ -1,9 +1,10 @@
 ---
-name: delegate
-description: Proposes running multi-step work as a background minimise job instead of inline. Use when the work is a feature or refactor spanning several steps or files, when the user wants it run unattended / overnight / in the background / "while I'm away", when several independent changes could run at once, or when the work needs a review gate before or after the code lands. Do NOT use for a single-file edit, a quick fix, a question, an explanation, exploration, or anything the current session can finish in one pass — and do NOT use for open-ended iteration on one artifact (that is `/minimise:refine`). Always proposes and asks first; never creates or starts a job unprompted.
+name: job
+description: Run multi-step work as a background minimise job — authors a plan YAML, wires the review gates, runs it, and reports what landed.
+disable-model-invocation: true
 ---
 
-# Delegating work to a minimise job
+# Running work as a minimise job
 
 ## Why a job beats this session
 
@@ -20,15 +21,15 @@ fed back in.
 If `mini --help` fails, `mini` is not installed. Tell the user to run `/minimise:setup` and
 **stop**. Do not install it from here.
 
-## PROPOSE — this is the whole job until the user says yes
+## PROPOSE — nothing runs until the user says yes
 
-Never author a plan, never run `mini job new`, never start anything before the user agrees.
-Sketch the delegation and ask:
+The user asked for a job; they have not yet seen the shape of it. Never author a plan, never
+run `mini job new`, before they agree to the breakdown. Put in front of them:
 
 1. **The task breakdown** — 2–6 tasks, each with a one-line goal, in the order they must run.
    Say what each task hands the next one. If you cannot break the work into tasks that stand
    alone with only the previous diff as context, say so — that work belongs inline, not in a job.
-2. **The gates you would wire** — at minimum a `pre_plan` `/minimise:plan-review` hook.
+2. **The gates you would wire** — at minimum a `pre_plan` `/minimise:review-plan` hook.
 3. **The ask** — "Want me to set this up as a mini job, or just do it here?"
 
 Then wait. If the user says no, do the work inline without further mention of minimise.
@@ -41,7 +42,7 @@ Then wait. If the user says no, do the work inline without further mention of mi
    Write it to `worklogs/scratch/` if that exists, otherwise a plans dir the project already
    uses (`docs/plans/`), otherwise ask where it should live. Do not drop YAML in the repo root.
 2. **Wire the plan-review gate** — a plan-level `pre_hooks` entry running
-   `/minimise:plan-review` (exact shell string in the reference). It is a blocking gate: a
+   `/minimise:review-plan` (exact shell string in the reference). It is a blocking gate: a
    failing review aborts the job before any task runs.
 3. **Show the user the plan file** before running it. It is theirs to edit.
 4. **Run it:**

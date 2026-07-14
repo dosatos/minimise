@@ -1,6 +1,7 @@
 ---
-name: refine
-description: Proposes running open-ended iteration on ONE artifact as a background minimise refinement loop instead of grinding at it inline. Use when the work is "keep improving X until it's good enough" with no fixed task list — an investigation or research loop, tuning or benchmarking until a target is hit, or a doc/design/prompt that needs several passes with critique between them. Do NOT use when the tasks are already known and finite (that is `/minimise:delegate`), nor for a one-shot answer, a single edit, or a question. Always proposes and asks first; never creates or starts a loop unprompted.
+name: loop
+description: Run open-ended iteration on one artifact as a minimise refinement loop — plan → implement → evaluate, repeating until the goal is met or max_iterations is hit.
+disable-model-invocation: true
 ---
 
 # Refining an artifact with a minimise loop
@@ -10,6 +11,7 @@ description: Proposes running open-ended iteration on ONE artifact as a backgrou
 A **job** runs a fixed task list once — you already know the steps. A **loop** repeats
 plan → implement → evaluate against one artifact until the planner decides the goal is met (or
 `max_iterations` is hit), with each iteration's critique feeding forward into the next plan.
+If the tasks are already known and finite, this is the wrong command — that is `/minimise:job`.
 
 ## Prerequisite
 
@@ -17,7 +19,9 @@ If `mini --help` fails, tell the user to run `/minimise:setup` and **stop**.
 
 ## PROPOSE — nothing runs until the user says yes
 
-Never author a spec or run `mini loop new` before the user agrees. Put in front of them:
+The user asked for a loop, but the goal and the rubric are what actually decide when it stops,
+and those are theirs to approve. Never author a spec or run `mini loop new` before they agree.
+Put in front of them:
 
 1. **The goal** — one sentence, and it must contain the stopping condition. "Improve the README"
    never terminates; "improve the README until a first-time reader can set up, use, and test the

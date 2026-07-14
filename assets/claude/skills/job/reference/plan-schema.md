@@ -62,7 +62,7 @@ findings are recorded, then grep the copy.
 pre_hooks:
   - name: review-plan
     estimated_duration_min: 5
-    shell: "claude -p '/minimise:plan-review' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+    shell: "claude -p '/minimise:review-plan' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
 ```
 
 ### The implementation gate (after a task's commit, sees the real diff)
@@ -72,7 +72,7 @@ post_hooks:
   - name: review-implementation
     estimated_duration_min: 8
     on_failure: retry
-    shell: "claude -p '/minimise:implementation-review' --dangerously-skip-permissions | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+    shell: "claude -p '/minimise:review-implementation' --dangerously-skip-permissions | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
 ```
 
 Any command honoring the contract works — a linter, a `jq` policy check, `pytest -q`. It does not

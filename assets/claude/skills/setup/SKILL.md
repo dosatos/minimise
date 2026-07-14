@@ -1,6 +1,7 @@
 ---
 name: setup
-description: Installs and verifies the prerequisites for running minimise jobs and loops — the `mini` CLI, the `claude` CLI, and a git repo. Use ONLY when explicitly invoked as `/minimise:setup`, or when another minimise skill reports that `mini` is not on PATH. Never auto-trigger on general setup, install, or environment questions.
+description: Verify and install the prerequisites for minimise — the `mini` CLI, the `claude` CLI, and a git repo.
+disable-model-invocation: true
 ---
 
 # Setting up minimise
@@ -61,6 +62,9 @@ rather than guessing.
 When all three checks pass, tell the user:
 
 - State lives in `~/.minimise/` (auto-created on first run) — nothing was added to their project.
-- They never need to type `mini` themselves: describing multi-step work will surface
-  `/minimise:delegate`, and open-ended iteration on one artifact will surface `/minimise:refine`.
+- The commands they can type — nothing fires on its own:
+  - `/minimise:job` — run multi-step work as a background job.
+  - `/minimise:loop` — iterate on one artifact until the goal is met.
+  - `/minimise:review-plan` — review a plan YAML (also usable as a blocking `pre_plan` hook).
+  - `/minimise:review-implementation` — review what a job implemented against its plan.
 - A quick smoke test if they want one: `mini job list` (empty list = working install).
