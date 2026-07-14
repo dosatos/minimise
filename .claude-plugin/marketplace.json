@@ -1,6 +1,6 @@
 {
   "name": "minimise",
-  "description": "Review skills for minimise (`mini`), the multi-agent plan runner.",
+  "description": "Skills for minimise (`mini`), the multi-agent plan runner.",
   "owner": {
     "name": "dosatos"
   },
@@ -9,7 +9,7 @@
       "name": "minimise",
       "source": "./",
       "version": "0.1.0",
-      "description": "Review-plan and review-implementation skills for minimise (`mini`), the multi-agent plan runner."
+      "description": "Five explicit-only skills for minimise (`mini`), the multi-agent plan runner: job, loop, review-plan, review-implementation, and setup. You type the command; nothing fires on its own."
     }
   ]
 }

@@ -168,7 +168,18 @@ different outcomes — `mini loop status` tells you which.
 /plugin install minimise@minimise
 ```
 
-Ships `/minimise:review-plan` and `/minimise:review-implementation` (the two reviewers above),
-plus `/minimise:setup`, `/minimise:job`, and `/minimise:loop`, which walk you through setting up
-a job or a refinement loop. Everything works without the plugin — the hooks above just need *some*
-command that reads the plan on stdin and exits nonzero to block.
+Five skills, and they are **explicit-only**: every one is marked
+`disable-model-invocation: true`, so none of them ever fires on its own. The user types the
+command (or a hook's `shell:` string invokes one via `claude -p`). The agent will not decide to
+run a job on your behalf.
+
+| Command | What it's for |
+|---|---|
+| `/minimise:job` | Author + run multi-step work as a background job. Writes the plan YAML, wires the gates, starts it, reports what landed. |
+| `/minimise:loop` | Author + run open-ended iteration on one artifact (plan → implement → evaluate). |
+| `/minimise:review-plan` | The blocking plan gate from the hook above. Reads a job plan or loop spec on stdin, prints `REVIEW: PASS` / `REVIEW: FAIL`. |
+| `/minimise:review-implementation` | The advisory post-task reviewer from the hook above. Reads the plan on stdin, inspects the diff, reports findings; never aborts the job. |
+| `/minimise:setup` | Install and verify the prerequisites: the `mini` CLI, the `claude` CLI, a git repo. |
+
+Everything works without the plugin — the hooks above just need *some* command that reads the
+plan on stdin and exits nonzero to block.

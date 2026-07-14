@@ -68,3 +68,4 @@ docs/plans/*.md
 .understand-anything/
 review.json
 findings.json
+!.claude/commands/

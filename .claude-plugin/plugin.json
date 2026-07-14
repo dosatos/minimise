@@ -1,12 +1,12 @@
 {
   "name": "minimise",
   "version": "0.1.0",
-  "description": "Skills for minimise (`mini`), the multi-agent plan runner: the review-plan and review-implementation hook gates, plus job, loop, and setup.",
+  "description": "Five explicit-only skills for minimise (`mini`), the multi-agent plan runner. You type the command; nothing fires on its own. /minimise:job runs multi-step work as a background job, /minimise:loop iterates on one artifact, /minimise:review-plan and /minimise:review-implementation are the hook gates, /minimise:setup installs the prerequisites.",
   "author": {
     "name": "dosatos"
   },
   "repository": "https://github.com/dosatos/minimise",
   "license": "MIT",
-  "keywords": ["minimise", "mini", "review-plan", "code-review", "agents", "orchestration"],
+  "keywords": ["minimise", "mini", "job", "loop", "review-plan", "review-implementation", "setup", "agents", "orchestration"],
   "skills": "./assets/claude/skills/"
 }
