@@ -98,7 +98,7 @@ The plan gate — blocking, before any task runs:
 pre_hooks:
   - name: review-plan
     estimated_duration_min: 5
-    shell: "claude -p '/minimise:plan-review' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+    shell: "claude -p '/minimise:review-plan' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
 ```
 
 The implementation gate — after a task's commit, sees the real diff:
@@ -108,7 +108,7 @@ post_hooks:
   - name: review-implementation
     estimated_duration_min: 8
     on_failure: retry
-    shell: "claude -p '/minimise:implementation-review' --dangerously-skip-permissions | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+    shell: "claude -p '/minimise:review-implementation' --dangerously-skip-permissions | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
 ```
 
 Two gotchas when the reviewer is an agent:
@@ -168,7 +168,7 @@ different outcomes — `mini loop status` tells you which.
 /plugin install minimise@minimise
 ```
 
-Ships `/minimise:plan-review` and `/minimise:implementation-review` (the two reviewers above),
-plus `/minimise:setup`, `/minimise:delegate`, and `/minimise:refine`, which offer the `mini` path
-on work that suits it. Everything works without the plugin — the hooks above just need *some*
+Ships `/minimise:review-plan` and `/minimise:review-implementation` (the two reviewers above),
+plus `/minimise:setup`, `/minimise:job`, and `/minimise:loop`, which walk you through setting up
+a job or a refinement loop. Everything works without the plugin — the hooks above just need *some*
 command that reads the plan on stdin and exits nonzero to block.

@@ -30,7 +30,7 @@ Minimise earns its keep when a task is too big for one agent session, or when yo
 - **Long multi-step builds** — a feature that spans tests → implementation → verification, where a single session would rot before finishing. Each step gets fresh context and the previous step's diff.
 - **Overnight / unattended runs** — kick off a job, review the diffs later. Retries plus an idempotent, reconcile-on-read start mean a mid-flight crash doesn't lose the work: re-running `mini job start` picks up from the first incomplete task.
 - **Several jobs at once** — refactoring three services in parallel without juggling three terminals. `mini job list` is the one place to see status and progress.
-- **Enforced quality gates** — a plan-review hook that blocks a bad plan before any code runs, or a post-task review that re-runs a task with the findings fed back in (a bounded fix-loop).
+- **Enforced quality gates** — a review-plan hook that blocks a bad plan before any code runs, or a post-task review that re-runs a task with the findings fed back in (a bounded fix-loop).
 - **Specialized steps** — pin a stricter reviewer model or a focused system prompt to just the review task via [personas](#personas), while the rest of the plan uses the default.
 - **Version-controlled pipelines** — the plan is a YAML file you commit, diff, and review like code. Your agentic pipeline lives in the repo with a history, instead of evaporating in a chat transcript.
 - **A/B testing pipelines** — run two variants of a plan (different task breakdown, models, or personas) over the same starting point and compare the resulting diffs and logs to see which approach wins.
@@ -65,10 +65,10 @@ Config and state live in `~/.minimise/` (created automatically on first run).
 /plugin install minimise@minimise
 ```
 
-Ships the two reviewer skills used by the hooks below (`/minimise:plan-review`,
-`/minimise:implementation-review`) plus `/minimise:setup`, and `/minimise:delegate` /
-`/minimise:refine`, which offer the `mini` path on work that suits it. Everything in this
-README works without the plugin.
+Ships the two reviewer skills used by the hooks below (`/minimise:review-plan`,
+`/minimise:review-implementation`) plus `/minimise:setup`, and `/minimise:job` /
+`/minimise:loop`, which walk you through setting up a job or a refinement loop.
+Everything in this README works without the plugin.
 
 ## Quick Start
 
@@ -392,7 +392,7 @@ pre_hooks:
   - name: review-plan
     estimated_duration_min: 5
     # tee: print the review (so it lands in the logs), THEN gate on the verdict.
-    shell: "claude -p '/minimise:plan-review' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+    shell: "claude -p '/minimise:review-plan' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
 ```
 
 **Writing your own reviewer.** A reviewer is any command that:
@@ -413,7 +413,7 @@ script — anything that honors that contract. Two gotchas:
   greps to set the exit code. For structured parsing use
   `claude -p '...' --output-format json | jq -e ...`.
 
-The example above uses `/minimise:plan-review`, a Claude Code skill (shipped by the
+The example above uses `/minimise:review-plan`, a Claude Code skill (shipped by the
 [plugin](#install-the-claude-code-plugin-optional)) that reads the plan on stdin and prints a
 `REVIEW: PASS` / `REVIEW: FAIL` verdict plus a findings JSON. Point the hook at whatever
 reviewer fits your project.
@@ -431,7 +431,7 @@ tasks:
       - name: review-implementation
         estimated_duration_min: 8
         on_failure: retry   # failing review re-runs the task with findings; capped by retries
-        shell: "claude -p '/minimise:implementation-review' --dangerously-skip-permissions | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+        shell: "claude -p '/minimise:review-implementation' --dangerously-skip-permissions | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
 ```
 
 ## Refinement Loops

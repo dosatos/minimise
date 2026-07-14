@@ -1,13 +1,15 @@
 ---
-name: plan-review
-description: Reviews a minimise implementation plan as a pragmatic BLOCKING quality gate, reading the plan (YAML) from stdin and printing a machine-readable REVIEW: PASS / REVIEW: FAIL verdict. Use when invoked as `/minimise:plan-review`, or when a minimise `pre_plan` hook runs `claude -p '/minimise:plan-review'` to gate a job before implementation. Reports ONLY severe issues (correctness bugs, data-loss/destructive risk, missing steps that make a task unimplementable, internal contradictions, factually wrong claims about the codebase) and ignores style, wording, and nice-to-haves.
+name: review-plan
+description: Reviews a minimise job plan or loop spec as a pragmatic BLOCKING quality gate, reading it (YAML) from stdin and printing a machine-readable REVIEW: PASS / REVIEW: FAIL verdict. Use when invoked as `/minimise:review-plan`, or when a minimise `pre_plan` hook runs `claude -p '/minimise:review-plan'` to gate a job before implementation. Reports ONLY severe issues (correctness bugs, data-loss/destructive risk, missing steps that make a task unimplementable, internal contradictions, factually wrong claims about the codebase, a loop goal with no stopping condition) and ignores style, wording, and nice-to-haves.
+disallowed-tools: Write Edit NotebookEdit
+disable-model-invocation: true
 ---
 
 # Reviewing a minimise plan
 
 You are a pragmatic engineering reviewer acting as a **BLOCKING quality gate** for a
-minimise implementation plan. The plan passes only if you find zero severe issues, so
-report **only** problems that genuinely must be fixed before implementation.
+minimise plan. The plan passes only if you find zero severe issues, so report **only**
+problems that genuinely must be fixed before implementation.
 
 ## Input
 
@@ -17,9 +19,21 @@ The plan (YAML) arrives on **stdin**. Read it first.
 cat            # the piped plan YAML is your input; no file path is given
 ```
 
-When invoked via the hook `claude -p '/minimise:plan-review'`, the calling `HookExecutor`
+When invoked via the hook `claude -p '/minimise:review-plan'`, the calling `HookExecutor`
 pipes the serialized plan to stdin. If stdin is empty, emit `REVIEW: FAIL` with a note
 that no plan was received — never pass a plan you could not read.
+
+## Triage: job plan or loop spec?
+
+Two different schemas arrive here. Decide on shape, then apply the matching checklist:
+
+- a **`tasks:`** key → **job plan**: a fixed task list, each task with
+  `goal` / `description` / `estimated_duration_min`.
+- a **`loop:`** key → **loop spec**: `goal`, `max_iterations`, and
+  `loop.{plan,implement,evaluate.dimensions}` — no task list. Authoritative schema:
+  `assets/claude/skills/loop/SKILL.md`.
+
+Never fault a loop spec for missing task-plan fields, or vice versa.
 
 ## What to report (and only this)
 
@@ -32,6 +46,13 @@ Report a finding ONLY if it is one of these SEVERE / CRITICAL problems:
 - **Missing step** that makes a task unimplementable or leaves the build/tests broken.
 - **Internal contradiction:** two instructions that cannot both be satisfied.
 - **Factually wrong claim** about the codebase that would mislead the implementer.
+- **Loop specs only — a goal with no stopping condition.** The `goal` is what the planner
+  reads each iteration to decide whether to stop. "Improve the README" states no observable
+  finish line, so the loop cannot converge: it burns every one of `max_iterations` and every
+  token in them. A goal that names no observable stopping condition is `high` severity and
+  BLOCKS (`REVIEW: FAIL`). "Improve the README until a first-time reader can set up, use, and
+  test the project unaided" passes — it says when to stop. (Job plans have no such failure
+  mode; do not apply this to them.)
 
 ## What to IGNORE (these are NOT findings)
 
@@ -44,13 +65,15 @@ Report a finding ONLY if it is one of these SEVERE / CRITICAL problems:
 A sound plan returns **zero findings**. That is the expected outcome — do not invent
 problems to look thorough.
 
-## Recommend verification gates (advisory, never blocks)
+## Recommend verification gates (advisory, never blocks) — JOB PLANS ONLY
+
+Loop specs have no hooks; for a loop, `recommendations` is always empty. Skip to Output.
 
 Separately from findings, suggest the plan add its own verification gates — but only
 where they earn their place. These go in a `recommendations` array and **never** affect
 the PASS/FAIL verdict (a missing gate is not a severe issue).
 
-This is best-effort and **only useful now, at plan-review time**: this skill runs as a
+This is best-effort and **only useful now, at review time**: this skill runs as a
 `pre_plan` hook, before any task executes, so a recommended hook can still be added.
 Once tasks start it is too late. So propose freely here; the plan author decides.
 
@@ -58,8 +81,8 @@ Match the gate to what the task actually produces — don't default everything t
 review:
 
 - **Plan review hook:** if the plan has real tasks but no `pre_plan` hook running
-  `/minimise:plan-review`, recommend adding one (the blocking plan gate).
-- **Code / behavior changes** → a `post_task` `/minimise:implementation-review <task-id>`
+  `/minimise:review-plan`, recommend adding one (the blocking plan gate).
+- **Code / behavior changes** → a `post_task` `/minimise:review-implementation <task-id>`
   hook, task id baked in so the review is pre-scoped to that task.
 - **Other task types** → whatever cheaply verifies *that* task's output, as a
   non-blocking (`on_failure: skip`) `post_task` hook. Examples: a task that writes docs
@@ -94,7 +117,7 @@ findings JSON, then a final verdict line as the **last line**:
       "task_id": "task-2 (or \"plan\" for a pre_plan hook)",
       "gate": "post_task",
       "suggestion": "Why this task benefits from a verification gate and what it checks",
-      "shell": "claude -p --dangerously-skip-permissions '/minimise:implementation-review task-2' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+      "shell": "claude -p --dangerously-skip-permissions '/minimise:review-implementation task-2' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
     }
   ],
   "summary": "Brief overall assessment"
@@ -124,7 +147,7 @@ pre_hooks:
   - name: review-plan
     estimated_duration_min: 5
     # tee: show the full review, THEN gate on the sentinel (grep reads the copy).
-    shell: "claude -p '/minimise:plan-review' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+    shell: "claude -p '/minimise:review-plan' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
 ```
 
 `tee /dev/stderr` echoes the whole review (findings JSON + verdict) so minimise records

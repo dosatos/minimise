@@ -9,7 +9,7 @@
       "name": "minimise",
       "source": "./",
       "version": "0.1.0",
-      "description": "Plan-review and implementation-review skills for minimise (`mini`), the multi-agent plan runner."
+      "description": "Review-plan and review-implementation skills for minimise (`mini`), the multi-agent plan runner."
     }
   ]
 }

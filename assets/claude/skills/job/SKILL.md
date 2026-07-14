@@ -41,7 +41,7 @@ Then wait. If the user says no, do the work inline without further mention of mi
    is required on every task and hook, and a plan missing it fails at `mini job new`.
    Write it to `worklogs/scratch/` if that exists, otherwise a plans dir the project already
    uses (`docs/plans/`), otherwise ask where it should live. Do not drop YAML in the repo root.
-2. **Wire the plan-review gate** — a plan-level `pre_hooks` entry running
+2. **Wire the review-plan gate** — a plan-level `pre_hooks` entry running
    `/minimise:review-plan` (exact shell string in the reference). It is a blocking gate: a
    failing review aborts the job before any task runs.
 3. **Show the user the plan file** before running it. It is theirs to edit.

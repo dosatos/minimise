@@ -1,6 +1,8 @@
 ---
-name: implementation-review
-description: Reviews what a minimise job actually IMPLEMENTED against its plan — a NON-BLOCKING advisory reviewer that reads the plan (YAML) from stdin, inspects the job's git diff, and reports findings without ever aborting the job. Use when invoked as `/minimise:implementation-review`, or when a minimise `post_plan` hook runs `claude -p '/minimise:implementation-review'` to critique the finished work. Always exits reporting; it never fails the job. Checks correctness, completeness vs. the plan's goals, obvious bugs, missing tests, and over-engineering — mirroring ralphex's post-implementation review, trimmed to the essentials.
+name: review-implementation
+disallowed-tools: Write Edit NotebookEdit
+disable-model-invocation: true
+description: Reviews what a minimise job actually IMPLEMENTED against its plan — a NON-BLOCKING advisory reviewer that reads the plan (YAML) from stdin, inspects the job's git diff, and reports findings without ever aborting the job. Use when invoked as `/minimise:review-implementation`, or when a minimise `post_plan` hook runs `claude -p '/minimise:review-implementation'` to critique the finished work. Always exits reporting; it never fails the job. Checks correctness, completeness vs. the plan's goals, obvious bugs, missing tests, and over-engineering — mirroring ralphex's post-implementation review, trimmed to the essentials.
 ---
 
 # Reviewing a minimise implementation
@@ -24,7 +26,7 @@ If stdin is empty, note it and review whatever the sole running job did (below).
 ## Step 1 — Determine your scope
 
 **If the invocation named one or more task ids/names** — e.g. a per-task post_task
-hook runs `claude -p '/minimise:implementation-review gantt-1'` — then **those tasks ARE
+hook runs `claude -p '/minimise:review-implementation gantt-1'` — then **those tasks ARE
 your scope, full stop.** Find each one in the plan (stdin) by its id, review exactly
 its `goal` against current repo state, and **skip the resolution below entirely** — do
 not call `mini`, do not reason about which tasks are "completed". This is the common,
@@ -35,7 +37,7 @@ cheap path: the caller already told you what to grade.
 > Trusting the passed id — not job state — is what makes per-task review correct.
 
 **Only if NO scope was passed** (the post_plan advisory use — one bare
-`/minimise:implementation-review` after all tasks finish) do you resolve it from minimise's
+`/minimise:review-implementation` after all tasks finish) do you resolve it from minimise's
 own state. Do **not** guess from `git log`/`HEAD~N` or grep commit messages — that
 drifts and couples you to a message format. Ask minimise instead:
 
@@ -124,7 +126,7 @@ that one task, correctly even though minimise has not marked it COMPLETED yet:
       - name: review-implementation
         estimated_duration_min: 8
         on_failure: retry   # failing review re-runs the task with findings fed back
-        shell: "claude -p --dangerously-skip-permissions '/minimise:implementation-review gantt-1' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+        shell: "claude -p --dangerously-skip-permissions '/minimise:review-implementation gantt-1' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
 ```
 
 **Whole-plan advisory (non-blocking).** One bare invocation in the plan's `post_plan`
@@ -132,12 +134,12 @@ hooks, after all tasks finish. No id → it resolves scope from job state (Step 
 
 ```yaml
 post_hooks:
-  - name: implementation-review
+  - name: review-implementation
     estimated_duration_min: 5
     on_failure: skip   # advisory: record findings, never block the job
     # --dangerously-skip-permissions lets the reviewer actually RUN the tests
     # (see "Running tests" above). tee: findings reach `mini job logs`.
-    shell: "claude -p --dangerously-skip-permissions '/minimise:implementation-review' | tee /dev/stderr"
+    shell: "claude -p --dangerously-skip-permissions '/minimise:review-implementation' | tee /dev/stderr"
 ```
 
 minimise captures the hook's stdout/stderr into the Execution record, so the findings

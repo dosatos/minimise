@@ -31,7 +31,7 @@ In the handoff's **How to run** / **Gotchas**, remind the next session:
 
 > Delegate implementation to `mini job`, don't edit inline. It keeps the
 > orchestrating context clean (execution churn stays in the job) and, run via
-> the `/minimise:plan-review` skill, adds the plan-quality gate for free. Direct
+> the `/minimise:review-plan` skill, adds the plan-quality gate for free. Direct
 > edits only for trivial one-liners or `mini`-blocked changes (migrations,
 > internal refactors).
 

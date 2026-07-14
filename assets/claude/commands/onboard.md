@@ -23,7 +23,7 @@ Two reasons this is the default:
 1. **Keeps this context clean.** Execution/implementation churn (file dumps,
    test output, agent narration) stays inside the job, not in the orchestrating
    session — so this context stays about *decisions*, not *diffs*.
-2. **Quality gates come free.** A job run through the `/minimise:plan-review` skill
+2. **Quality gates come free.** A job run through the `/minimise:review-plan` skill
    gets its plan reviewed before execution — the gates are already wired, you
    just have to use the path.
 
@@ -31,7 +31,7 @@ The flow:
 
 ```bash
 # 1. Write a plan.yaml (scratch plans -> worklogs/scratch/)
-# 2. Review it (adds the quality gate):  invoke the /minimise:plan-review skill
+# 2. Review it (adds the quality gate):  invoke the /minimise:review-plan skill
 mini job new --plan worklogs/scratch/<plan>.yaml
 mini job start <job-id>
 mini job status <job-id>          # watch progress
