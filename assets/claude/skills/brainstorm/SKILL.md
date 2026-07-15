@@ -1,6 +1,6 @@
 ---
 name: brainstorm
-description: Author a mini job or loop plan under control — triage loop-vs-job, run a retrieval-aware interview pre-filled from your personas and past runs, then preview the exact YAML behind an approve/edit/reject gate before handing off to the unchanged `mini job new` / `mini loop new`. Invoked as /minimise:brainstorm.
+description: Author a mini job or loop plan under control — triage loop-vs-job, run a retrieval-aware interview pre-filled from existing personas and recent runs, then preview the exact YAML behind an approve/edit/reject gate before handing off to the unchanged `mini job new` / `mini loop new`. Use when starting a new job or loop from a one-liner and you want to review the plan before anything runs.
 disable-model-invocation: true
 ---
 
@@ -26,8 +26,11 @@ choice decides which schema the survey fills, so getting it wrong wastes the who
 ## The interview
 
 Reverse-engineer the survey from the triaged schema: for a **loop**, fill `goal` +
-`dimensions` + `max_iterations` + reuse; for a **job**, the task breakdown + gates. Four settled
-mechanics:
+`dimensions` + `max_iterations` + reuse; for a **job**, the task breakdown + gates. The exact
+field contract is fixed — before authoring a **job** plan, follow
+[`../job/reference/plan-schema.md`](../job/reference/plan-schema.md) (`estimated_duration_min` is
+required on every task and hook, or `mini job new` rejects it); for a **loop**, the full spec is
+inlined in `/minimise:loop`. Four settled mechanics:
 
 1. **Ask cold, retrieve after (order A).** Ask the problem-framing questions cold *first*, then
    retrieve from the corpus against the fuller statement. Better-conditioned retrieval, and no
