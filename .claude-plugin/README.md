@@ -14,13 +14,14 @@ This repo doubles as a single-plugin Claude Code marketplace.
 /plugin install minimise@minimise
 ```
 
-## The five skills
+## The six skills
 
-All five are **explicit-only** (`disable-model-invocation: true`). Nothing fires on its
+All six are **explicit-only** (`disable-model-invocation: true`). Nothing fires on its
 own — you type the command.
 
 | Command | What it does |
 |---|---|
+| `/minimise:brainstorm` | Authors a job or loop plan under control: triage loop-vs-job, run a retrieval-aware interview, then preview the exact YAML behind an approve/edit/reject gate before handing off. |
 | `/minimise:job` | Runs multi-step work as a background job: authors the plan YAML, wires the gates, runs it, reports what landed. |
 | `/minimise:loop` | Runs open-ended iteration on one artifact: plan → implement → evaluate, until the goal is met or `max_iterations` is hit. |
 | `/minimise:review-plan` | The **blocking** plan gate. Reads a plan or loop spec on stdin, prints `REVIEW: PASS` / `REVIEW: FAIL`. |

@@ -168,13 +168,14 @@ different outcomes — `mini loop status` tells you which.
 /plugin install minimise@minimise
 ```
 
-Five skills, and they are **explicit-only**: every one is marked
+Six skills, and they are **explicit-only**: every one is marked
 `disable-model-invocation: true`, so none of them ever fires on its own. The user types the
 command (or a hook's `shell:` string invokes one via `claude -p`). The agent will not decide to
 run a job on your behalf.
 
 | Command | What it's for |
 |---|---|
+| `/minimise:brainstorm` | Author a job or loop plan under control: triage loop-vs-job, run a retrieval-aware interview, preview the exact YAML behind an approve/edit/reject gate, then hand off. |
 | `/minimise:job` | Author + run multi-step work as a background job. Writes the plan YAML, wires the gates, starts it, reports what landed. |
 | `/minimise:loop` | Author + run open-ended iteration on one artifact (plan → implement → evaluate). |
 | `/minimise:review-plan` | The blocking plan gate from the hook above. Reads a job plan or loop spec on stdin, prints `REVIEW: PASS` / `REVIEW: FAIL`. |

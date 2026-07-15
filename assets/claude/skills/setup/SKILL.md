@@ -63,6 +63,7 @@ When all three checks pass, tell the user:
 
 - State lives in `~/.minimise/` (auto-created on first run) — nothing was added to their project.
 - The commands they can type — nothing fires on its own:
+  - `/minimise:brainstorm` — author a job or loop plan under control before handing off.
   - `/minimise:job` — run multi-step work as a background job.
   - `/minimise:loop` — iterate on one artifact until the goal is met.
   - `/minimise:review-plan` — review a plan YAML (also usable as a blocking `pre_plan` hook).

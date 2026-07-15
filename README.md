@@ -65,13 +65,14 @@ Config and state live in `~/.minimise/` (created automatically on first run).
 /plugin install minimise@minimise
 ```
 
-It ships five skills, and they are **explicit-only**: each is marked
+It ships six skills, and they are **explicit-only**: each is marked
 `disable-model-invocation: true`, so none of them ever fires on its own. You type the command,
 or a hook's `shell:` string invokes one through `claude -p`. The agent will never decide to
 kick off a job for you.
 
 | Command | What it's for |
 |---|---|
+| `/minimise:brainstorm` | Authors a job or loop plan under control — triage loop-vs-job, run a retrieval-aware interview, then preview the exact YAML behind an approve/edit/reject gate before handing off. |
 | `/minimise:job` | Runs multi-step work as a background job — authors the plan YAML, wires the review gates, starts it, and reports what landed. |
 | `/minimise:loop` | Runs open-ended iteration on one artifact — plan → implement → evaluate, until the goal is met or `max_iterations` is hit. |
 | `/minimise:review-plan` | The **blocking** plan gate used by the `pre_hooks` example below. Reads a job plan or loop spec on stdin and prints `REVIEW: PASS` / `REVIEW: FAIL`. |
