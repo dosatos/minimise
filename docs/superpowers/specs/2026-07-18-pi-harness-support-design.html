@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Design: Pi CLI Harness Support (v2 — reviewed)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 2rem;
+            background-color: #fcfcfc;
+        }
+        h1, h2, h3 {
+            color: #111;
+        }
+        h1 {
+            border-bottom: 2px solid #eaeaea;
+            padding-bottom: 0.5rem;
+        }
+        h2 {
+            margin-top: 2rem;
+            border-bottom: 1px solid #eaeaea;
+            padding-bottom: 0.3rem;
+        }
+        p { margin-bottom: 1rem; }
+        ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+        li { margin-bottom: 0.5rem; }
+        code {
+            font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+            background-color: #f0f0f0;
+            padding: 0.2rem 0.4rem;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }
+        pre {
+            background-color: #f6f8fa;
+            border: 1px solid #e1e4e8;
+            padding: 1rem;
+            border-radius: 6px;
+            overflow-x: auto;
+        }
+        pre code { background-color: transparent; padding: 0; border-radius: 0; }
+        .section {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            margin-bottom: 2rem;
+            border: 1px solid #eaeaea;
+        }
+        .review-note {
+            background: #fff8e1;
+            border-left: 4px solid #ffc107;
+            padding: 0.75rem 1rem;
+            margin: 1rem 0;
+            border-radius: 0 4px 4px 0;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Design: Pi CLI Harness Support <small style="color:#888; font-weight:normal">(v2 — reviewed 2026-07-18)</small></h1>
+
+    <div class="review-note">
+        <strong>Review notes (v1 → v2 changes):</strong> Fixed incorrect JSON format assumptions (pi uses
+        <code>message_update</code>/<code>message_end</code> events, not <code>type:"assistant"</code>).
+        Added <code>--thinking off</code> for deterministic output. Defined
+        <code>AgentHarness.wrap_prompt()</code> for harness-specific prompt extensions.
+        Added <code>harness</code> field to <code>Worker</code>, <code>PlanTask</code>,
+        and <code>Task</code> models. Added model-string translation layer for the shared
+        persona registry. Defined concrete <code>HarnessFactory</code> interface.
+        Added integration test phase with real <code>pi</code> binary.
+        Fixed config file name (<code>settings.yaml</code>, not <code>config.yaml</code>).
+    </div>
+
+    <div class="section">
+        <h2>1. Problem Statement</h2>
+        <p>Minimise currently hardcodes <code>ClaudeCodeHarness</code> as the execution backend for tasks and loops (e.g., in <code>TaskExecutor</code> and <code>LoopEngine</code>). While the codebase correctly defines an abstract <code>AgentHarness</code> interface, the lack of configuration and a concrete implementation for other harnesses prevents users from orchestrating tasks with alternative capable agents.</p>
+        <p>Specifically, we want to add support for the <strong>Pi coding agent</strong> (<code>pi</code>), an open-source agent harness with multi-provider support (Google, Anthropic, OpenAI). This allows users to leverage pi's model flexibility, JSON streaming output, and tool control within Minimise's deterministic orchestration, refinement loops, and hook ecosystems.</p>
+        <p>Pi's <code>--mode json</code> event stream is documented at
+        <a href="https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/agent-types.ts"><code>agent-types.ts</code></a>.
+        The key event types we consume are: <code>message_start</code>, <code>message_update</code>,
+        <code>message_end</code>, and <code>agent_end</code>. This is structurally different from
+        Claude's <code>stream-json</code> — see §6.2 for the correct parsing strategy.</p>
+    </div>
+
+    <div class="section">
+        <h2>2. High Level Approach</h2>
+        <p>To introduce <code>pi</code> support while keeping the system extensible, we will:</p>
+        <ol>
+            <li><strong>Add <code>wrap_prompt()</code> to AgentHarness</strong>: A new optional method on the abstract interface that lets each harness inject its own prompt preamble (e.g. Claude's "do not create exploratory jobs" warnings, pi's tool-use instructions). This is the seam that moves harness-specific prompt text out of <code>TaskExecutor._invoke_agent</code>.</li>
+            <li><strong>Decouple Harness Selection</strong>: Introduce a <code>HarnessFactory</code> that resolves the active harness from the resolution hierarchy (task/step → persona → CLI → global settings). The factory accepts context (<code>step_type</code>, <code>worker</code>, <code>persona</code>) and returns an <code>AgentHarness</code> instance. This replaces the hardcoded <code>ClaudeCodeHarness()</code> calls in <code>TaskExecutor</code> and <code>LoopEngine</code>.</li>
+            <li><strong>Implement <code>PiHarness</code></strong>: Create a new class <code>PiHarness(AgentHarness)</code> in <code>src/minimise/agents/harness.py</code>.
+                <ul>
+                    <li>Manage the <code>pi</code> subprocess lifecycle via <code>subprocess.Popen</code> (same threaded stdin/stdout/stderr pattern as <code>ClaudeCodeHarness</code>).</li>
+                    <li>Implement <code>_build_env()</code> to pass through multi-provider API keys while isolating the environment.</li>
+                    <li>Map Minimise's abstract arguments (<code>model</code>, <code>system_prompt</code>, <code>allow_edits</code>) to pi's CLI parameters.</li>
+                </ul>
+            </li>
+            <li><strong>Log Streaming &amp; Parsing (corrected)</strong>: pi's <code>--mode json</code> emits a <em>different</em> JSON structure than Claude's <code>stream-json</code>. pi uses <code>"type":"message_start"</code> / <code>"type":"message_update"</code> / <code>"type":"message_end"</code> events with nested <code>assistantMessageEvent</code> deltas (including <code>thinking_delta</code> and <code>text_delta</code>). We need a <strong>separate</strong> <code>_extract_text_pi()</code> function that:
+                <ul>
+                    <li>Filters to <code>message_end</code> events (for live-logging, parse <code>text_delta</code> events in <code>message_update</code>)</li>
+                    <li>Extracts <code>content[].text</code> blocks where <code>role == "assistant"</code></li>
+                    <li>Filters out <code>content[].type == "thinking"</code> blocks (reasoning models)</li>
+                </ul>
+                This ensures <code>mini job logs --query</code> filtering and <code>LoopEngine</code> JSON control line stripping function correctly with both harnesses.</li>
+            <li><strong>Lifecycle &amp; Telemetry</strong>: PiHarness yields <code>HarnessResult</code> with accurate <code>exit_reason</code> values (<code>success</code>, <code>agent_error</code>, <code>timeout</code>), matching the exact contract required by Minimise.</li>
+        </ol>
+    </div>
+
+    <div class="section">
+        <h2>3. AgentHarness Interface Extension</h2>
+
+        <p>The existing <code>AgentHarness</code> interface needs one new method to support harness-specific prompt extensions without leaking harness knowledge into <code>TaskExecutor</code>:</p>
+
+        <pre><code>class AgentHarness(ABC):
+    @abstractmethod
+    def run(self, prompt, *, cwd=None, timeout=None, model=None,
+            system_prompt=None, allow_edits=False, log_path=None,
+            log_fields=None, log_filter=None) -> HarnessResult:
+        raise NotImplementedError
+
+    def wrap_prompt(self, prompt: str) -> str:
+        """Optional: inject harness-specific instructions into the prompt.
+
+        The default is a no-op. ClaudeCodeHarness overrides this to prepend
+        the "do not create exploratory jobs" / "no co-author trailers" warnings;
+        PiHarness leaves it as a no-op (those warnings are Claude-specific).
+        """
+        return prompt</code></pre>
+
+        <p>This method is called by <code>TaskExecutor._invoke_agent</code> (renamed from <code>_invoke_claude_code</code>) before passing the prompt to <code>self.harness.run()</code>. The Claude-specific warnings move from <code>TaskExecutor</code> into <code>ClaudeCodeHarness.wrap_prompt()</code>. PiHarness inherits the no-op default — pi doesn't need those warnings.</p>
+
+        <p><strong>Backward Compatibility:</strong> The default no-op means all existing code continues to work. Only <code>TaskExecutor</code> changes (one new call before <code>harness.run()</code>). The abstract <code>run()</code> interface is unchanged.</p>
+    </div>
+
+    <div class="section">
+        <h2>4. Model String Translation</h2>
+
+        <p>A <strong>shared persona registry</strong> means the same <code>model</code> field might be consumed by different harnesses with different model-string formats:</p>
+
+        <table style="width:100%; border-collapse: collapse; margin-top: 1rem;">
+            <tr style="background: #f6f8fa;">
+                <th style="text-align:left; padding:0.5rem; border-bottom:1px solid #e1e4e8">Harness</th>
+                <th style="text-align:left; padding:0.5rem; border-bottom:1px solid #e1e4e8">Format</th>
+                <th style="text-align:left; padding:0.5rem; border-bottom:1px solid #e1e4e8">Example</th>
+            </tr>
+            <tr><td style="padding:0.5rem; border-bottom:1px solid #eaeaea">claude</td><td style="padding:0.5rem; border-bottom:1px solid #eaeaea">Bare model ID</td><td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>claude-sonnet-4-8</code></td></tr>
+            <tr><td style="padding:0.5rem">pi</td><td style="padding:0.5rem">Provider-prefixed</td><td style="padding:0.5rem"><code>anthropic/claude-sonnet-4-8</code></td></tr>
+        </table>
+
+        <p><strong>Strategy:</strong> Personas and settings use <em>pi-style</em> model strings (provider-prefixed) as the canonical format. Each harness's <code>run()</code> method translates the canonical string to its own format:</p>
+
+        <pre><code># ClaudeCodeHarness.run(): strip the provider prefix
+if model and "/" in model:
+    model = model.split("/", 1)[1]   # "anthropic/claude-sonnet-4-8" → "claude-sonnet-4-8"
+
+# PiHarness.run(): use as-is (pi accepts provider/id format via --model)
+</code></pre>
+
+        <p>This translation is <strong>internal to each harness class</strong> — no external mapping table, no factory responsibility. The persona registry stores one canonical string. If a persona is used with ClaudeCodeHarness, the harness strips the prefix. If used with PiHarness, it passes through unchanged. This is the simplest approach (no global registry, no cross-cutting concern) and makes future harnesses trivial: each owns its own translation.</p>
+
+        <p>A bare model string (no <code>/</code>) is passed through unchanged by both harnesses — treated as "the user knows what they're doing."</p>
+    </div>
+
+    <div class="section">
+        <h2>5. Configuration &amp; Hybrid Harness Execution</h2>
+
+        <h3>5.1 Configuration File: <code>~/.minimise/settings.yaml</code></h3>
+
+        <p>A single new config file (alongside the existing <code>personas.yaml</code>). Schema:</p>
+
+        <pre><code># ~/.minimise/settings.yaml  (all keys optional)
+harness:
+  jobs: claude         # default for `mini job start`
+  loops: claude        # default for `mini loop start`
+  global: claude       # fallback when neither jobs nor loops is set
+
+# Model defaults (pi-format strings, prefix-translated per harness at runtime)
+model:
+  jobs: null           # null = use persona settings or harness default
+  loops: null
+  global: null</code></pre>
+
+        <p><strong>Why <code>settings.yaml</code> and not <code>config.yaml</code>:</strong> The codebase already uses <code>~/.minimise/personas.yaml</code>. Settings (harness defaults) are distinct from personas (agent personality prompts). Calling it <code>config.yaml</code> would be ambiguous alongside the existing files. <code>settings.yaml</code> follows the pi convention and is unambiguous.</p>
+
+        <h3>5.2 Hierarchical Resolution</h3>
+
+        <p>When Minimise resolves the active harness for a task/step, it applies the following precedence (highest to lowest):</p>
+        <ol>
+            <li><strong>Task/Step Explicit Harness</strong>: Specified in the job plan or loop spec (e.g., <code>harness: pi</code> on a <code>PlanTask</code> or <code>Worker</code>).</li>
+            <li><strong>Persona Default Harness</strong>: Defined in <code>~/.minimise/personas.yaml</code>. If a task assigns a persona, the execution inherits the persona's <code>harness</code> field.</li>
+            <li><strong>CLI Overrides</strong>: Passed at runtime (e.g., <code>mini job start --harness pi</code>).</li>
+            <li><strong>Global Config Defaults</strong>: From <code>~/.minimise/settings.yaml</code> (per-mode defaults with a global fallback).</li>
+            <li><strong>Hardcoded Default</strong>: <code>claude</code> (preserves today's behavior for users who configure nothing).</li>
+        </ol>
+
+        <h3>5.3 Model Schema Changes for Per-Task/Per-Step Harness</h3>
+
+        <p>The following model fields are added (all optional, all default <code>None</code> = inherit from higher-level config):</p>
+
+        <table style="width:100%; border-collapse: collapse; margin-top: 1rem;">
+            <tr style="background: #f6f8fa;">
+                <th style="text-align:left; padding:0.5rem; border-bottom:1px solid #e1e4e8">Model</th>
+                <th style="text-align:left; padding:0.5rem; border-bottom:1px solid #e1e4e8">New Field</th>
+                <th style="text-align:left; padding:0.5rem; border-bottom:1px solid #e1e4e8">Persistence</th>
+            </tr>
+            <tr>
+                <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>PlanTask</code></td>
+                <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>harness: Optional[str]</code></td>
+                <td style="padding:0.5rem; border-bottom:1px solid #eaeaea">Plan YAML (no DB change — plans are files)</td>
+            </tr>
+            <tr>
+                <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>Worker</code> (loop plan/implement/dimension)</td>
+                <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>harness: Optional[str]</code></td>
+                <td style="padding:0.5rem; border-bottom:1px solid #eaeaea">Loop spec YAML (no DB change)</td>
+            </tr>
+            <tr>
+                <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>Persona</code></td>
+                <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>harness: Optional[str]</code></td>
+                <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>personas.yaml</code></td>
+            </tr>
+            <tr>
+                <td style="padding:0.5rem"><code>Task</code> (dataclass)</td>
+                <td style="padding:0.5rem"><code>harness: Optional[str]</code></td>
+                <td style="padding:0.5rem">New <code>harness TEXT</code> column in <code>tasks</code> table (DB migration)</td>
+            </tr>
+        </table>
+
+        <p><strong>DB migration:</strong> A single <code>ALTER TABLE tasks ADD COLUMN harness TEXT</code> in <code>Database.init_db()</code>. The column is nullable — existing rows stay <code>NULL</code> (inherit from config). The <code>Task.to_dict()</code> serializer adds <code>"harness": self.harness</code> for API visibility.</p>
+
+        <p><strong>Why <code>Task</code> needs it in the DB:</strong> A resumed job must preserve the harness choice that was in effect when <code>mini job start</code> was first called. Without storing it with the task, a resume after crash would re-resolve from config and could pick a different harness. The DB column mirrors how <code>assignee</code> and <code>base_commit</code> are already persisted — same pattern.</p>
+
+        <h3>5.4 HarnessFactory Interface</h3>
+
+        <pre><code>class HarnessFactory:
+    """Resolve and instantiate AgentHarness implementations from config context."""
+
+    def __init__(self, settings: dict, personas: dict, cli_harness: Optional[str] = None):
+        self.settings = settings
+        self.personas = personas
+        self.cli_harness = cli_harness
+
+    def resolve(self, *, mode: str = "jobs", task_harness: Optional[str] = None,
+                persona_name: Optional[str] = None) -> str:
+        """Apply the resolution hierarchy; return a harness name ('claude' | 'pi').
+        Callers use the returned name to instantiate the right class."""
+        ...  # implements the 5-level hierarchy from §5.2
+
+    def build(self, name: str) -> AgentHarness:
+        """Instantiate a harness by name ('claude' → ClaudeCodeHarness, 'pi' → PiHarness)."""
+        ...
+
+    def resolve_and_build(self, *, mode="jobs", task_harness=None,
+                          persona_name=None) -> AgentHarness:
+        """Convenience: resolve() → build() in one call."""
+        return self.build(self.resolve(mode=mode, task_harness=task_harness,
+                                       persona_name=persona_name))</code></pre>
+
+        <p><strong>LoopEngine per-step resolution:</strong> The engine currently holds one <code>self.harness</code>. After this change, it holds a <code>self.factory: HarnessFactory</code> and calls <code>self.factory.resolve_and_build(mode="loops", persona_name=worker.persona)</code> at the start of each step. The <code>Worker.harness</code> field (when set) is passed as <code>task_harness</code>. This enables hybrid loops without changing the step dispatch logic — just the harness lookup.</p>
+
+        <p><strong>TaskExecutor per-task resolution:</strong> Similarly, <code>TaskExecutor</code> replaces <code>self.harness</code> with <code>self.factory</code> and resolves per-task in <code>execute_task()</code> using <code>task.harness</code> and <code>task.assignee</code>.</p>
+
+        <h3>5.5 Hybrid Modes in Action</h3>
+
+        <pre><code># ~/.minimise/settings.yaml
+harness:
+  jobs: claude
+  loops: pi
+
+# ~/.minimise/personas.yaml
+auditor:
+  harness: pi
+  model: openai/gpt-4o          # pi-format (canonical); ClaudeCodeHarness strips prefix
+  prompt: "You review code for security flaws."
+
+# Example loop spec — per-step harness overrides
+loop:
+  plan:
+    harness: claude              # fast planner on Claude
+  implement:
+    harness: pi                  # implementer on pi
+    model: anthropic/claude-sonnet-4-8
+  evaluate:
+    max_concurrent: 3
+    dimensions:
+      - name: security
+        harness: pi
+        model: openai/gpt-4o
+        rubric: "Check for OWASP top 10"</code></pre>
+    </div>
+
+    <div class="section">
+        <h2>6. User Experience</h2>
+        <ul>
+            <li><strong>Global Configuration</strong>: Set default harness in <code>~/.minimise/settings.yaml</code> or via <code>MINIMISE_HARNESS=pi</code>.</li>
+            <li><strong>Per-Job Override</strong>:
+                <pre><code>mini job start &lt;ID&gt; --harness pi</code></pre>
+            </li>
+            <li><strong>Provider &amp; Model Flexibility</strong>: Model strings in personas/settings use pi's <code>provider/model</code> format (canonical). Each harness translates internally:
+                <pre><code>mini job start &lt;ID&gt; --harness pi --model openai/gpt-4o</code></pre>
+            </li>
+            <li><strong>Transparent Execution</strong>: Logs, Gantt charts, git diffs, and hooks function identically. The only difference is which binary executes the tasks.</li>
+            <li><strong>Health Checks</strong>: A new <code>mini doctor</code> command verifies that the selected harness binary is installed and the chosen provider is authenticated.</li>
+        </ul>
+    </div>
+
+    <div class="section">
+        <h2>7. PiHarness Implementation Details</h2>
+
+        <h3>7.1 CLI Invocation</h3>
+
+        <pre><code>cmd = ["pi", "--mode", "json", "-p", "--no-session"]
+
+# Deterministic output: disable reasoning/thinking tokens
+cmd += ["--thinking", "off"]
+
+# Model: pi accepts provider/id format natively via --model
+if model is not None:
+    cmd += ["--model", model]
+
+# System prompt: replaces pi's default coding prompt entirely
+if system_prompt is not None:
+    cmd += ["--system-prompt", system_prompt]
+
+# Tool control: explicit allowlist (no permissions gate in pi)
+if allow_edits:
+    cmd += ["--tools", "read,bash,edit,write,grep,find,ls"]
+else:
+    cmd += ["--tools", "read,grep,find,ls"]
+
+# Clean environment: no project .pi/ state bleeds in
+cmd += ["--no-extensions", "--no-skills", "--no-context-files"]</code></pre>
+
+        <p><strong>Why <code>--thinking off</code>:</strong> Without it, models that support reasoning tokens emit <code>content[].type == "thinking"</code> blocks interleaved with text. These would interfere with:
+        (a) the <code>LoopEngine</code> control-line JSON extraction (<code>extract_last_json</code> would need to skip thinking blocks), and
+        (b) the log stream (thinking tokens noise in job logs). Setting <code>--thinking off</code> gives deterministic, text-only output across all providers.</p>
+
+        <h3>7.2 JSON Output Parsing (corrected)</h3>
+
+        <p>pi's <code>--mode json</code> event format is <strong>structurally different</strong> from Claude's <code>stream-json</code>. A single turn looks like:</p>
+
+        <pre><code>{"type":"session","version":3,"id":"...","timestamp":"...","cwd":"..."}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"assistant","content":[],...}}
+{"type":"message_update","message":{...},"assistantMessageEvent":{"type":"thinking_start",...}}
+{"type":"message_update","message":{...},"assistantMessageEvent":{"type":"thinking_delta","delta":"..."}}
+{"type":"message_update","message":{...},"assistantMessageEvent":{"type":"thinking_end","content":"..."}}
+{"type":"message_update","message":{...},"assistantMessageEvent":{"type":"text_start","contentIndex":1,...}}
+{"type":"message_update","message":{...},"assistantMessageEvent":{"type":"text_delta","delta":"Hello"}}
+{"type":"message_update","message":{...},"assistantMessageEvent":{"type":"text_end","content":"Hello world"}}
+{"type":"message_end","message":{"role":"assistant","content":[...]}}
+{"type":"turn_end","message":{...},"toolResults":[]}
+{"type":"agent_end","messages":[...]}</code></pre>
+
+        <p><strong>Key differences from Claude's stream-json:</strong></p>
+        <ul>
+            <li>No <code>"type":"assistant"</code> event — it's <code>"type":"message_start"</code> with <code>message.role == "assistant"</code></li>
+            <li>Text arrives as <code>"type":"message_update"</code> with nested <code>assistantMessageEvent.type == "text_delta"</code> (not flat)</li>
+            <li><code>assistantMessageEvent.type</code> can be <code>thinking_start</code>/<code>thinking_delta</code>/<code>thinking_end</code> (must be filtered)</li>
+            <li>The final <code>"type":"message_end"</code> contains the <strong>complete accumulated message</strong> — the simplest extraction target</li>
+            <li><code>"type":"agent_end"</code> carries the full conversation history</li>
+        </ul>
+
+        <p><strong>Parsing strategy: two extraction functions.</strong></p>
+
+        <p><strong>For live logging</strong> (per-chunk JSONL, enables <code>mini job logs -f</code>):</p>
+
+        <pre><code>def _extract_text_pi_live(event: dict) -> str:
+    """Extract assistant text from a single pi JSON event, for live streaming.
+
+    Handles message_update events with nested assistantMessageEvent deltas.
+    Filters out thinking blocks; only accumulates text_delta chunks.
+    """
+    if event.get("type") != "message_update":
+        return ""
+    ame = event.get("assistantMessageEvent")
+    if not isinstance(ame, dict):
+        return ""
+    if ame.get("type") == "text_delta":
+        return ame.get("delta", "")
+    return ""  # thinking_delta, thinking_start/end → skip</code></pre>
+
+        <p><strong>For final output</strong> (the accumulated text that feeds <code>HarnessResult.output</code>):</p>
+
+        <pre><code>def _extract_text_pi_final(event: dict) -> str:
+    """Extract the FULL assistant text from a message_end event.
+
+    This is called once at the end and replaces the per-chunk accumulation
+    for HarnessResult.output. It reads the complete, accumulated message.
+    """
+    if event.get("type") != "message_end":
+        return ""
+    msg = event.get("message") or {}
+    if msg.get("role") != "assistant":
+        return ""
+    content = msg.get("content") or []
+    if not isinstance(content, list):
+        return ""
+    return "".join(
+        block.get("text", "")
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    )</code></pre>
+
+        <p><strong>How PiHarness._read_stdout works:</strong></p>
+        <ol>
+            <li>Read lines from <code>proc.stdout</code> (one JSON object per line, same as Claude).</li>
+            <li>For each line, call <code>_extract_text_pi_live(event)</code> to get live text chunks → append to <code>chunks</code> list (for log streaming).</li>
+            <li>When <code>"type":"message_end"</code> arrives, call <code>_extract_text_pi_final(event)</code> to get the complete text → set as <code>final_output</code>.</li>
+            <li>Return <code>HarnessResult(output=final_output or "".join(chunks), ...)</code>.</li>
+        </ol>
+
+        <p>This keeps live logging working (each <code>text_delta</code> is recorded to job.log as it arrives) while also providing the clean, complete message for the control-line extraction (<code>LoopEngine</code>) and handoff.</p>
+
+        <h3>7.3 Environment Isolation</h3>
+
+        <p>pi reads configuration from <code>~/.pi/agent/</code>. <code>_build_env()</code> passes through provider credentials and minimal runtime vars:</p>
+
+        <pre><code>def _build_env(self) -> dict:
+    safe_keys = {
+        "PATH", "HOME", "USER", "SHELL", "LANG",
+        "PI_CODING_AGENT_DIR",
+    }
+    provider_keys = {
+        "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY",
+        "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_GENAI_USE_GENERATIVEAI",
+        "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION",
+        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN", "AWS_REGION",
+    }
+    safe_keys.update(provider_keys)
+    return {k: v for k, v in os.environ.items() if k in safe_keys}</code></pre>
+
+        <p><strong>Reproducibility note:</strong> Including <code>HOME</code> means pi reads <code>~/.pi/agent/settings.json</code>, which could contain custom API endpoints, model overrides, or startup preferences. The <code>--no-extensions --no-skills --no-context-files</code> flags disable the main sources of variance, but <code>settings.json</code> can still affect behavior (e.g., <code>quietStartup</code>). This is acceptable for v1 — the same concern exists with <code>claude</code> reading <code>~/.claude</code>. A future <code>--no-config</code> flag or <code>PI_CONFIG_DIR</code> override could make execution fully hermetic.</p>
+
+        <h3>7.4 Timeout Handling</h3>
+
+        <p>Same pattern as <code>ClaudeCodeHarness</code>: threaded stdin/stdout/stderr, wall-clock <code>reader.join(timeout=timeout)</code>, and <code>proc.kill()</code> on timeout. pi spawns child processes (bash commands), so <code>proc.kill()</code> alone doesn't terminate the whole tree — the same limitation exists for <code>ClaudeCodeHarness</code> today. Both harnesses should eventually use <code>os.killpg</code> with a new process group (<code>start_new_session=True</code>), but that's a shared improvement tracked separately, not a pi-specific concern.</p>
+
+        <h3>7.5 Prompt Wrapping</h3>
+
+        <p>The task prompt is fed via stdin (same approach as <code>ClaudeCodeHarness</code>). pi reads stdin when <code>-p</code> is provided. Same threading pattern:</p>
+
+        <pre><code>proc = subprocess.Popen(
+    cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE, text=True, encoding="utf-8",
+    cwd=cwd, env=self._build_env(),
+)
+threading.Thread(target=self._feed_stdin, args=(proc, prompt), daemon=True).start()</code></pre>
+
+        <h3>7.6 wrap_prompt (PiHarness)</h3>
+
+        <p>PiHarness inherits the no-op default. Unlike ClaudeCodeHarness, pi has no harness-specific warnings to inject. The prompt from <code>TaskExecutor</code> is passed through unchanged.</p>
+    </div>
+
+    <div class="section">
+        <h2>8. Proposed Plan (5 phases)</h2>
+
+        <h3>Phase 1: Interface &amp; Schema Changes</h3>
+        <ul>
+            <li>Add <code>wrap_prompt(prompt: str) -> str</code> to <code>AgentHarness</code> (no-op default).</li>
+            <li>Add <code>harness: Optional[str]</code> field to <code>Worker</code>, <code>PlanTask</code>, <code>Persona</code>, and <code>Task</code> models.</li>
+            <li>Add <code>harness TEXT</code> column to <code>tasks</code> table in <code>Database.init_db()</code> (schema version bump).</li>
+            <li>Update <code>Task.to_dict()</code> to include <code>"harness": self.harness</code>.</li>
+            <li>Move Claude-specific prompt warnings from <code>TaskExecutor._invoke_claude_code</code> into <code>ClaudeCodeHarness.wrap_prompt()</code>.</li>
+            <li>Rename <code>TaskExecutor._invoke_claude_code</code> → <code>_invoke_agent</code> and add <code>prompt = self.harness.wrap_prompt(prompt)</code> before <code>self.harness.run()</code>.</li>
+            <li>Update existing tests for the rename + moved warnings.</li>
+        </ul>
+
+        <h3>Phase 2: HarnessFactory &amp; Configuration</h3>
+        <ul>
+            <li>Define the <code>~/.minimise/settings.yaml</code> schema (Section 5.1).</li>
+            <li>Implement <code>HarnessFactory</code> with the 5-level resolution hierarchy (Section 5.4).</li>
+            <li>Add <code>mini job start --harness pi|claude</code> and <code>mini loop start --harness pi|claude</code> CLI flags.</li>
+            <li>Update <code>TaskExecutor.__init__</code> to accept <code>factory: HarnessFactory</code> instead of <code>harness: AgentHarness</code>.</li>
+            <li>Update <code>LoopEngine.__init__</code> to accept <code>factory: HarnessFactory</code> instead of <code>harness: AgentHarness</code>.</li>
+            <li>Implement model-string translation in each harness class (Section 4).</li>
+            <li>Wire <code>JobController</code> and <code>CLI _shared.py</code> to build the factory from <code>settings.yaml</code> + <code>personas.yaml</code> + CLI flags.</li>
+            <li>Update tests to verify dynamic harness injection and resolution hierarchy.</li>
+        </ul>
+
+        <h3>Phase 3: PiHarness Implementation</h3>
+        <ul>
+            <li>Create <code>PiHarness</code> in <code>src/minimise/agents/harness.py</code> implementing <code>AgentHarness</code>.</li>
+            <li>Implement <code>_build_env()</code> (multi-provider API keys, Section 7.3).</li>
+            <li>Implement <code>run()</code> with pi CLI invocation (Section 7.1): <code>--mode json -p --no-session --thinking off --no-extensions --no-skills --no-context-files</code>.</li>
+            <li>Implement <code>_extract_text_pi_live()</code> and <code>_extract_text_pi_final()</code> (Section 7.2).</li>
+            <li>Implement <code>_read_stdout</code> using the two extraction functions (live chunks + final message).</li>
+            <li>Implement timeout handling (<code>reader.join(timeout=...)</code> + <code>proc.kill()</code>).</li>
+            <li>Implement model-string translation: pi passes the canonical string through unchanged to <code>--model</code>.</li>
+            <li>Add unit tests in <code>tests/test_harness.py</code> with simulated pi output streams (all event types, thinking blocks, error exits).</li>
+        </ul>
+
+        <h3>Phase 4: Integration Testing</h3>
+        <ul>
+            <li>Add <strong>integration tests</strong> that invoke the real <code>pi</code> binary (gated on <code>pi --version</code> succeeding; skipped otherwise).</li>
+            <li>Test a full <code>mini job new → start</code> cycle with <code>--harness pi</code> on a small plan (one trivial task).</li>
+            <li>Test <code>mini loop start --harness pi</code> with a minimal loop spec.</li>
+            <li>Verify log output is queryable via <code>mini job logs --query</code>.</li>
+            <li>Verify control-line extraction works in <code>LoopEngine</code> with pi output.</li>
+            <li>Verify resume after crash (kill -9 during a pi task, restart — harness choice survives).</li>
+        </ul>
+
+        <h3>Phase 5: Setup, Docs &amp; Polish</h3>
+        <ul>
+            <li>Add <code>mini doctor</code> command: checks <code>pi --version</code>, provider authentication, and reports harness health.</li>
+            <li>Add graceful degradation: if <code>pi</code> is selected but not installed, print a clear error with install instructions (<code>npm install -g @mariozechner/pi-coding-agent</code>).</li>
+            <li>Update <code>README.md</code> with pi as a supported harness, configuration examples, and prerequisites.</li>
+            <li>Document the <code>settings.yaml</code> schema and resolution hierarchy.</li>
+            <li>Update <code>assets/claude/skills/</code> skill files to mention pi where relevant.</li>
+        </ul>
+    </div>
+
+    <div class="section">
+        <h2>9. Key Differences: PiHarness vs ClaudeCodeHarness</h2>
+
+        <table style="width:100%; border-collapse: collapse; margin-top: 1rem;">
+            <thead>
+                <tr style="background: #f6f8fa;">
+                    <th style="text-align: left; padding: 0.5rem; border-bottom: 1px solid #e1e4e8;">Aspect</th>
+                    <th style="text-align: left; padding: 0.5rem; border-bottom: 1px solid #e1e4e8;">ClaudeCodeHarness</th>
+                    <th style="text-align: left; padding: 0.5rem; border-bottom: 1px solid #e1e4e8;">PiHarness</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><strong>CLI command</strong></td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>claude -p --output-format stream-json --verbose</code></td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>pi --mode json -p --no-session --thinking off --no-extensions --no-skills --no-context-files</code></td>
+                </tr>
+                <tr>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><strong>Model format</strong></td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea">Bare: <code>claude-sonnet-4-8</code></td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea">Provider-prefixed: <code>anthropic/claude-sonnet-4-8</code></td>
+                </tr>
+                <tr>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><strong>Model translation</strong></td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea">Strips <code>provider/</code> prefix from canonical string</td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea">Passes canonical string through unchanged</td>
+                </tr>
+                <tr>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><strong>System prompt</strong></td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>--system-prompt "..."</code></td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>--system-prompt "..."</code> (same flag; replaces pi's default coding prompt)</td>
+                </tr>
+                <tr>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><strong>Allow edits</strong></td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>--dangerously-skip-permissions</code></td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>--tools read,bash,edit,write,grep,find,ls</code> (tool allowlist; no permissions gate)</td>
+                </tr>
+                <tr>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><strong>JSON event types</strong></td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>assistant</code>, <code>tool_use</code>, <code>tool_result</code></td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>message_start</code>, <code>message_update</code> (nested <code>assistantMessageEvent</code>), <code>message_end</code></td>
+                </tr>
+                <tr>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><strong>Text extraction</strong></td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>_extract_text()</code> — <code>type=="assistant"</code> → <code>content[].text</code></td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>_extract_text_pi_live()</code> (streaming) + <code>_extract_text_pi_final()</code> (complete)</td>
+                </tr>
+                <tr>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><strong>Thinking/reasoning</strong></td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea">N/A (not emitted in stream-json)</td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>--thinking off</code> suppresses; <code>thinking_delta</code> events filtered by parser</td>
+                </tr>
+                <tr>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><strong>Stdin prompt</strong></td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea">Fed via stdin</td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea">Fed via stdin (same approach)</td>
+                </tr>
+                <tr>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><strong>Environment</strong></td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea">ANTHROPIC_API_KEY (+ optional Bedrock)</td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea">Multi-provider: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, AWS_*, etc.</td>
+                </tr>
+                <tr>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><strong>wrap_prompt()</strong></td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea">Overrides: prepends "do not create exploratory jobs" + "no co-author trailers" warnings</td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea">Inherits no-op default (no harness-specific warnings needed)</td>
+                </tr>
+                <tr>
+                    <td style="padding:0.5rem"><strong>Edit tool</strong></td>
+                    <td style="padding:0.5rem">Claude-specific regex edit</td>
+                    <td style="padding:0.5rem">Minimise's <code>edit</code> tool (exact text replacement, no regex)</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+</body>
+</html>

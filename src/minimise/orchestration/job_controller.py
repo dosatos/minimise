@@ -9,6 +9,7 @@ lives in JobStore.
 from pathlib import Path
 from typing import Optional
 
+from minimise.agents.harness import HARNESS_CLAUDE, HARNESS_PI
 from minimise.models import Job, JobStatus, TaskStatus, Plan
 from minimise.storage.database import Database
 from minimise.storage.git_tracker import GitTracker
@@ -71,7 +72,7 @@ class JobController:
         """Get a job with all its tasks attached, or None if not found."""
         return self.store.load(job_id)
 
-    def start_job(self, job_id: str) -> Optional[str]:
+    def start_job(self, job_id: str, harness_name: str = HARNESS_CLAUDE) -> Optional[str]:
         """Idempotent start: run/resume the job, or step aside. Returns an outcome
         constant (RAN_OK / RAN_FAILED / BACKED_OFF / ALREADY_COMPLETE), or None if
         the job doesn't exist.
@@ -79,6 +80,10 @@ class JobController:
         store.load already reconciled the job, so a crashed RUNNING job arrives as
         FAILED; anything still RUNNING is genuinely live.
         """
+        if harness_name == HARNESS_PI:
+            from minimise.agents.harness import PiHarness
+            self.task_executor.harness = PiHarness()
+
         job = self.store.load(job_id)
         if not job:
             print(f"Job {job_id} not found")

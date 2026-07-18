@@ -562,6 +562,28 @@ def test_start_failed_job_resumes(runner, mock_config_dir, monkeypatch):
     assert called  # resumed → executor ran
 
 
+def test_start_with_harness_flag_passes_through(runner, mock_config_dir, monkeypatch):
+    """`--harness pi` is passed through to JobController.start_job()."""
+    from minimise.agents.harness import HARNESS_CLAUDE, HARNESS_PI
+    from minimise.orchestration.job_controller import JobController
+    captured = {}
+    orig = JobController.start_job
+
+    def fake_start_job(self, job_id, harness_name=HARNESS_CLAUDE):
+        captured["harness_name"] = harness_name
+        return orig(self, job_id, harness_name=harness_name)
+
+    from minimise.orchestration.job_executor import JobExecutor
+    monkeypatch.setattr(JobExecutor, "execute", lambda self, j, p: True)
+    monkeypatch.setattr(JobController, "start_job", fake_start_job)
+
+    _, job = _make_start_job(mock_config_dir, JobStatus.PENDING)
+    result = runner.invoke(mini, ["job", "start", job.id, "--harness", HARNESS_PI])
+
+    assert result.exit_code == 0
+    assert captured["harness_name"] == HARNESS_PI
+
+
 def test_start_dead_running_job_resumes(runner, mock_config_dir, monkeypatch):
     """A RUNNING job with a DEAD pid is reconciled to FAILED then resumed."""
     from minimise.orchestration.job_executor import JobExecutor

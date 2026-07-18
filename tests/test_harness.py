@@ -5,7 +5,15 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from minimise.agents.harness import HarnessResult, AgentHarness, ClaudeCodeHarness, _extract_text
+from minimise.agents.harness import (
+    HarnessResult,
+    AgentHarness,
+    ClaudeCodeHarness,
+    PiHarness,
+    _extract_text,
+    _extract_text_pi_live,
+    _extract_text_pi_final,
+)
 
 
 # --- Fake Popen helper for stream-json ---
@@ -42,6 +50,27 @@ def test_harness_result_defaults():
 def test_agent_harness_is_abstract():
     with pytest.raises(TypeError):
         AgentHarness()
+
+
+def test_wrap_prompt_default_is_noop():
+    class _StubHarness(AgentHarness):
+        def run(self, prompt, **kwargs):
+            return HarnessResult(success=True, output="")
+
+    assert _StubHarness().wrap_prompt("x") == "x"
+
+
+def test_claude_code_harness_wrap_prompt_prepends_warnings():
+    wrapped = ClaudeCodeHarness().wrap_prompt("hello")
+    assert "hello" in wrapped
+    assert "Do not create exploratory jobs" in wrapped
+
+
+def test_pi_harness_wrap_prompt_is_noop():
+    """PiHarness.wrap_prompt is an explicit no-op — pi has no harness-specific
+    guard rails yet (see comment in the source)."""
+    from minimise.agents.harness import PiHarness
+    assert PiHarness().wrap_prompt("x") == "x"
 
 
 # --- _build_env: Bedrock path ---
@@ -159,6 +188,19 @@ def test_command_includes_model_only_when_given(mock_popen):
     cmd = mock_popen.call_args.args[0]
     assert "--model" in cmd
     assert cmd[cmd.index("--model") + 1] == "claude-opus-4-8"
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_command_strips_provider_prefix_from_model(mock_popen):
+    mock_popen.side_effect = make_fake_popen([])
+
+    ClaudeCodeHarness().run("hi", model="anthropic/claude-sonnet-4-8")
+    cmd = mock_popen.call_args.args[0]
+    assert cmd[cmd.index("--model") + 1] == "claude-sonnet-4-8"
+
+    ClaudeCodeHarness().run("hi", model="claude-sonnet-4-8")
+    cmd = mock_popen.call_args.args[0]
+    assert cmd[cmd.index("--model") + 1] == "claude-sonnet-4-8"
 
 
 @patch("minimise.agents.harness.subprocess.Popen")
@@ -382,3 +424,214 @@ def test_run_generic_exception(mock_popen):
     assert result.success is False
     assert result.output == ""
     assert result.error == "claude not found"
+
+
+# --- _extract_text_pi_live (pi --mode json live streaming) ---
+
+def test_extract_text_pi_live_returns_delta_on_text_delta():
+    event = {
+        "type": "message_update",
+        "assistantMessageEvent": {"type": "text_delta", "delta": "Hello"},
+    }
+    assert _extract_text_pi_live(event) == "Hello"
+
+
+def test_extract_text_pi_live_discards_thinking_delta():
+    event = {
+        "type": "message_update",
+        "assistantMessageEvent": {"type": "thinking_delta", "delta": "pondering..."},
+    }
+    assert _extract_text_pi_live(event) == ""
+
+
+def test_extract_text_pi_live_ignores_non_message_update_event():
+    event = {"type": "message_start"}
+    assert _extract_text_pi_live(event) == ""
+
+
+def test_extract_text_pi_live_tolerates_missing_assistant_message_event():
+    event = {"type": "message_update"}
+    assert _extract_text_pi_live(event) == ""
+
+
+# --- _extract_text_pi_final (pi --mode json message_end) ---
+
+def test_extract_text_pi_final_returns_full_text_from_message_end():
+    event = {
+        "type": "message_end",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Hello there"}],
+        },
+    }
+    assert _extract_text_pi_final(event) == "Hello there"
+
+
+def test_extract_text_pi_final_skips_thinking_blocks():
+    event = {
+        "type": "message_end",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "text": "let me think..."},
+                {"type": "text", "text": "the answer"},
+            ],
+        },
+    }
+    assert _extract_text_pi_final(event) == "the answer"
+
+
+def test_extract_text_pi_final_ignores_user_message_end():
+    event = {
+        "type": "message_end",
+        "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+    }
+    assert _extract_text_pi_final(event) == ""
+
+
+def test_extract_text_pi_final_ignores_non_message_end_event():
+    event = {"type": "message_update"}
+    assert _extract_text_pi_final(event) == ""
+
+
+# --- PiHarness ---
+
+def _pi_delta_event(text):
+    return {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": text}}
+
+
+def _pi_final_event(text):
+    return {
+        "type": "message_end",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": text}]},
+    }
+
+
+@patch.dict(
+    os.environ,
+    {
+        "PATH": "/usr/bin",
+        "HOME": "/home/u",
+        "ANTHROPIC_API_KEY": "sk-ant-123",
+        "SOME_OTHER_SECRET": "nope",
+    },
+    clear=True,
+)
+def test_pi_build_env_includes_common_and_provider_keys():
+    env = PiHarness()._build_env()
+    assert env["PATH"] == "/usr/bin"
+    assert env["HOME"] == "/home/u"
+    assert env["ANTHROPIC_API_KEY"] == "sk-ant-123"
+    assert "SOME_OTHER_SECRET" not in env
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_pi_run_extracts_text_via_final_event(mock_popen):
+    lines = [
+        json.dumps(_pi_delta_event("Hello ")),
+        json.dumps(_pi_delta_event("world")),
+        json.dumps(_pi_final_event("Hello world")),
+    ]
+    mock_popen.side_effect = make_fake_popen(lines, returncode=0)
+    result = PiHarness().run("hi")
+    assert result.success is True
+    assert result.output == "Hello world"
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_pi_run_falls_back_to_joined_chunks_without_final_event(mock_popen):
+    lines = [json.dumps(_pi_delta_event("partial "))]
+    mock_popen.side_effect = make_fake_popen(lines, returncode=0)
+    result = PiHarness().run("hi")
+    assert result.output == "partial "
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_pi_run_timeout(mock_popen):
+    import threading
+
+    released = threading.Event()
+
+    class _BlockingStdout:
+        def __iter__(self):
+            return self
+        def __next__(self):
+            released.wait()
+            raise StopIteration
+
+    def factory(*args, **kwargs):
+        proc = MagicMock()
+        proc.stdin = MagicMock()
+        proc.stdout = _BlockingStdout()
+        proc.stderr = MagicMock()
+        proc.stderr.read.return_value = ""
+        proc.kill.side_effect = lambda: released.set()
+        return proc
+    mock_popen.side_effect = factory
+    result = PiHarness().run("hi", timeout=0.2)
+    assert result.success is False
+    assert result.exit_reason == "timeout"
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_pi_run_returncode_nonzero_failure(mock_popen):
+    mock_popen.side_effect = make_fake_popen(
+        [json.dumps(_pi_final_event("partial"))], returncode=1, stderr="boom"
+    )
+    result = PiHarness().run("hi")
+    assert result.success is False
+    assert result.exit_reason == "agent_error"
+    assert result.error == "boom"
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_pi_command_includes_write_tools_only_when_allow_edits(mock_popen):
+    mock_popen.side_effect = make_fake_popen([])
+
+    PiHarness().run("hi", allow_edits=False)
+    cmd = mock_popen.call_args.args[0]
+    assert "--tools" in cmd
+    assert cmd[cmd.index("--tools") + 1] == "read,grep,find,ls"
+
+    PiHarness().run("hi", allow_edits=True)
+    cmd = mock_popen.call_args.args[0]
+    assert cmd[cmd.index("--tools") + 1] == "read,bash,edit,write,grep,find,ls"
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_pi_command_includes_model_only_when_given(mock_popen):
+    mock_popen.side_effect = make_fake_popen([])
+
+    PiHarness().run("hi")
+    assert "--model" not in mock_popen.call_args.args[0]
+
+    PiHarness().run("hi", model="gpt-5")
+    cmd = mock_popen.call_args.args[0]
+    assert "--model" in cmd
+    assert cmd[cmd.index("--model") + 1] == "gpt-5"
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_pi_command_passes_canonical_model_through_unchanged(mock_popen):
+    mock_popen.side_effect = make_fake_popen([])
+
+    PiHarness().run("hi", model="anthropic/claude-sonnet-4-8")
+    cmd = mock_popen.call_args.args[0]
+    assert cmd[cmd.index("--model") + 1] == "anthropic/claude-sonnet-4-8"
+
+    PiHarness().run("hi", model="openai/gpt-4o")
+    cmd = mock_popen.call_args.args[0]
+    assert cmd[cmd.index("--model") + 1] == "openai/gpt-4o"
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_pi_command_includes_system_prompt_only_when_given(mock_popen):
+    mock_popen.side_effect = make_fake_popen([])
+
+    PiHarness().run("hi")
+    assert "--system-prompt" not in mock_popen.call_args.args[0]
+
+    PiHarness().run("hi", system_prompt="PERSONA")
+    cmd = mock_popen.call_args.args[0]
+    assert "--system-prompt" in cmd
+    assert cmd[cmd.index("--system-prompt") + 1] == "PERSONA"

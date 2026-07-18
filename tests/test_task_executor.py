@@ -103,7 +103,7 @@ def test_task_completion_without_base_commit(temp_db_dir, db, git_repo):
     def mock_invoke(context):
         return True, "Task completed", "success"
 
-    executor._invoke_claude_code = mock_invoke
+    executor._invoke_agent = mock_invoke
 
     # Execute task
     success, output = executor.execute_task(task, job_id, "")
@@ -151,7 +151,7 @@ def test_task_commits_against_base_commit(temp_db_dir, db, git_repo):
         test_file.write_text("changes made by task")
         return True, "Changes made", "success"
 
-    executor._invoke_claude_code = mock_invoke
+    executor._invoke_agent = mock_invoke
 
     # Execute task
     success, output = executor.execute_task(task, job_id, "")
@@ -203,7 +203,7 @@ def test_task_commit_message_format(temp_db_dir, db, git_repo):
         test_file.write_text("fixed")
         return True, "Fixed", "success"
 
-    executor._invoke_claude_code = mock_invoke
+    executor._invoke_agent = mock_invoke
 
     # Execute task
     success, output = executor.execute_task(task, job_id, "")
@@ -251,7 +251,7 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, db, git_repo):
         test_file.write_text("task1 content")
         return True, "Task 1 done", "success"
 
-    executor._invoke_claude_code = mock_invoke_task1
+    executor._invoke_agent = mock_invoke_task1
 
     # Execute task 1
     success1, _ = executor.execute_task(task1, job_id, "")
@@ -277,7 +277,7 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, db, git_repo):
         test_file.write_text("task2 content")
         return True, "Task 2 done", "success"
 
-    executor._invoke_claude_code = mock_invoke_task2
+    executor._invoke_agent = mock_invoke_task2
 
     # Execute task 2 - it should only diff against task1_commit, not base_commit
     success2, _ = executor.execute_task(task2, job_id, "")
@@ -319,7 +319,7 @@ def test_failed_attempt_handover_injected_into_retry(temp_db_dir, db, git_repo):
             return False, "boom: missing import", "agent_error"
         return True, "ok", "success"
 
-    executor._invoke_claude_code = mock_invoke
+    executor._invoke_agent = mock_invoke
     success, _ = executor.execute_task(task, job_id, "ORIGINAL_HANDOVER")
 
     assert success
@@ -350,7 +350,7 @@ def test_retry_reads_prior_attempt_agent_written_handoff(temp_db_dir, db, git_re
         Path(context["handoff_path"]).write_text(f"HANDOFF-{len(seen) - 1}")
         return (False, "err", "agent_error") if len(seen) == 1 else (True, "ok", "success")
 
-    executor._invoke_claude_code = mock_invoke
+    executor._invoke_agent = mock_invoke
     success, _ = executor.execute_task(task, job_id, "ORIG")
 
     assert success
@@ -375,7 +375,7 @@ def test_missing_handoff_returns_autogen_fallback(temp_db_dir, db, git_repo):
     next_task = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
                      name="NEXT_TASK_NAME", description="nd", status=TaskStatus.PENDING)
 
-    executor._invoke_claude_code = lambda context: (True, "did the work", "success")
+    executor._invoke_agent = lambda context: (True, "did the work", "success")
     success, handover = executor.execute_task(task, job_id, "", next_task=next_task)
 
     assert success
@@ -405,7 +405,7 @@ def test_three_attempts_leave_three_handoff_files(temp_db_dir, db, git_repo):
         Path(context["handoff_path"]).write_text(f"h{len(calls) - 1}")
         return (False, "x", "agent_error") if len(calls) < 3 else (True, "ok", "success")
 
-    executor._invoke_claude_code = mock_invoke
+    executor._invoke_agent = mock_invoke
     success, _ = executor.execute_task(task, job_id, "")
 
     assert success
@@ -431,7 +431,7 @@ def test_last_task_persists_handoff_when_agent_wrote_none(temp_db_dir, db, git_r
     db.create_task(task)
 
     # Agent succeeds but writes NO handoff file, and there is no next_task.
-    executor._invoke_claude_code = lambda context: (True, "did the work", "success")
+    executor._invoke_agent = lambda context: (True, "did the work", "success")
     success, _ = executor.execute_task(task, job_id, "", next_task=None)
 
     assert success
@@ -464,7 +464,7 @@ def test_executions_recorded_across_retry(temp_db_dir, db, git_repo):
         (git_repo / "out.txt").write_text("done by retry")
         return True, "ok", "success"
 
-    executor._invoke_claude_code = mock_invoke
+    executor._invoke_agent = mock_invoke
     success, _ = executor.execute_task(task, job_id, "")
     assert success
 
@@ -544,7 +544,7 @@ def test_no_hooks_records_only_attempts(temp_db_dir, db, git_repo):
     git_tracker = GitTracker(git_repo)
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
     job_id, task = _setup_job_and_task(db, git_tracker)
-    executor._invoke_claude_code = lambda context: (True, "ok", "success")
+    executor._invoke_agent = lambda context: (True, "ok", "success")
 
     executor.execute_task(task, job_id, "")
 
@@ -562,7 +562,7 @@ def test_execution_completed_at_is_agent_finish_not_lifecycle_end(temp_db_dir, d
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
     job_id, task = _setup_job_and_task(db, git_tracker)
 
-    executor._invoke_claude_code = lambda context: (True, "ok", "success")
+    executor._invoke_agent = lambda context: (True, "ok", "success")
 
     # A gating post_task hook that burns wall-clock time. The Execution window
     # must NOT include it; the task-row's completed_at (stamped after) must.
@@ -585,7 +585,7 @@ def test_hook_retry_attempt_is_not_recorded_as_success(temp_db_dir, db, git_repo
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
     job_id, task = _setup_job_and_task(db, git_tracker)
 
-    executor._invoke_claude_code = lambda context: (True, "ok", "success")
+    executor._invoke_agent = lambda context: (True, "ok", "success")
     verify = lambda attempt: ("retry", "findings") if attempt == 0 else ("fail", "nope")
 
     success, _ = executor.execute_task(task, job_id, "", verify=verify)
@@ -616,10 +616,11 @@ def test_injected_harness_is_stored(temp_db_dir, db, git_repo):
 
 
 def test_invoke_delegates_to_harness_and_propagates_success(temp_db_dir, db, git_repo):
-    """_invoke_claude_code delegates to harness.run and propagates success/output."""
+    """_invoke_agent delegates to harness.run and propagates success/output."""
     git_tracker = GitTracker(git_repo)
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(success=True, output="agent did the work", exit_reason="success")
+    fake.wrap_prompt.side_effect = lambda p: p
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
 
     context = {
@@ -628,7 +629,7 @@ def test_invoke_delegates_to_harness_and_propagates_success(temp_db_dir, db, git
         "task_goal": "A working widget",
         "handover": "prior context",
     }
-    success, output, exit_reason = executor._invoke_claude_code(context)
+    success, output, exit_reason = executor._invoke_agent(context)
 
     assert success is True
     assert output == "agent did the work"
@@ -656,10 +657,11 @@ def test_invoke_prompt_names_handoff_path_and_section_headers(temp_db_dir, db, g
     git_tracker = GitTracker(git_repo)
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(success=True, output="done")
+    fake.wrap_prompt.side_effect = lambda p: p
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
 
     handoff_path = str(temp_db_dir / "jobs" / "j1" / "handoffs" / "t1" / "attempt-0.md")
-    executor._invoke_claude_code({
+    executor._invoke_agent({
         "task_name": "T", "task_description": "D", "handoff_path": handoff_path,
     })
 
@@ -670,7 +672,7 @@ def test_invoke_prompt_names_handoff_path_and_section_headers(temp_db_dir, db, g
 
 
 def test_invoke_failure_returns_error_when_present(temp_db_dir, db, git_repo):
-    """On failure, _invoke_claude_code returns result.error when set."""
+    """On failure, _invoke_agent returns result.error when set."""
     git_tracker = GitTracker(git_repo)
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(
@@ -678,7 +680,7 @@ def test_invoke_failure_returns_error_when_present(temp_db_dir, db, git_repo):
     )
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
 
-    success, output, exit_reason = executor._invoke_claude_code({"task_name": "T", "task_description": "D"})
+    success, output, exit_reason = executor._invoke_agent({"task_name": "T", "task_description": "D"})
 
     assert success is False
     assert output == "boom: it failed"
@@ -692,7 +694,7 @@ def test_invoke_failure_falls_back_to_output_when_no_error(temp_db_dir, db, git_
     fake.run.return_value = HarnessResult(success=False, output="just stdout", error=None)
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
 
-    success, output, exit_reason = executor._invoke_claude_code({"task_name": "T", "task_description": "D"})
+    success, output, exit_reason = executor._invoke_agent({"task_name": "T", "task_description": "D"})
 
     assert success is False
     assert output == "just stdout"
@@ -793,7 +795,7 @@ def test_execute_task_step_marks_retry_attempt(temp_db_dir, db, git_repo):
         calls["n"] += 1
         return (calls["n"] > 1), ("boom" if calls["n"] == 1 else "ok"), "agent_error"
 
-    executor._invoke_claude_code = mock_invoke
+    executor._invoke_agent = mock_invoke
     executor.execute_task(task, job_id, "")
 
     assert seen_steps[0] == "Implement endpoint"
@@ -867,12 +869,12 @@ def test_failed_task_stashes_uncommitted_work(temp_db_dir, db, git_repo):
         (git_repo / "new_pkg" / "mod.py").write_text("untracked work")
         return False, "boom", "agent_error"
 
-    original = executor._invoke_claude_code
-    executor._invoke_claude_code = mock_invoke
+    original = executor._invoke_agent
+    executor._invoke_agent = mock_invoke
     try:
         success, output = executor.execute_task(task, job_id, "")
     finally:
-        executor._invoke_claude_code = original
+        executor._invoke_agent = original
 
     assert not success
     assert "git stash pop" in output

@@ -84,7 +84,7 @@ class TaskExecutor:
             )
             handoff_path = self.store.handoff_path(job_id, task.id, attempt)
             persona = self.personas.get(task.assignee) if task.assignee else None
-            success, output, exit_reason = self._invoke_claude_code({
+            success, output, exit_reason = self._invoke_agent({
                 "handover": context,
                 "task_name": task.name,
                 "task_description": task.description,
@@ -182,12 +182,14 @@ class TaskExecutor:
             return f"(agent-written handoff)\n\n{content}"
         return f"WARNING auto-generated from diff - not reviewed\n\n{fallback()}"
 
-    def _invoke_claude_code(self, context: dict) -> tuple[bool, str, str]:
+    def _invoke_agent(self, context: dict) -> tuple[bool, str, str]:
         """
-        Invoke Claude Code agent to execute task.
+        Delegate to the injected agent harness.
 
-        Spawns a Claude Code agent subprocess with task description and context.
-        The agent modifies the codebase and returns success status.
+        Builds the task prompt, calls harness.wrap_prompt(), then delegates to
+        harness.run(). The harness owns env construction, subprocess invocation,
+        and error handling. Timeout is only applied when the plan opts in via
+        timeout_min.
 
         Args:
             context: Context dictionary with task_name, task_description, task_goal, handover
@@ -225,11 +227,6 @@ Task: {task_name}
 Context from previous tasks:
 {handover if handover else "(no prior context)"}
 
-⚠️  CRITICAL: Do not create exploratory jobs with 'mini job new'. If you accidentally create any jobs (test plans, temporary explorations, etc.), delete them before finishing:
-   mini job delete <job_id>
-
-⚠️  COMMITS: If you create any git commits, do NOT add co-author trailers (no "Co-Authored-By:" lines, no "Generated with Claude Code" lines). Use a plain commit message only. Prefer to leave changes uncommitted — the orchestrator commits your work for you.
-
 Execute this task by modifying the codebase as needed. When done, write a summary of what you implemented.{handoff_section}"""
 
         # Delegate to the injected harness. The harness owns env construction,
@@ -237,6 +234,7 @@ Execute this task by modifying the codebase as needed. When done, write a summar
         # plan opts in with timeout_min — an agent is killed only on request.
         timeout = context["timeout_min"] * 60 if context.get("timeout_min") else None
         repo_root = str(self.git_tracker.repo_path)
+        prompt = self.harness.wrap_prompt(prompt)
         result = self.harness.run(
             prompt, cwd=repo_root, allow_edits=True,
             model=model, system_prompt=system_prompt,

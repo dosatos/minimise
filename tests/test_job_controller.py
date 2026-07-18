@@ -141,6 +141,44 @@ def test_get_job_status_not_found(job_controller):
     assert retrieved_job is None
 
 
+def test_start_job_with_pi_harness_sets_task_executor_harness(job_controller, plan_file):
+    """start_job(harness_name=HARNESS_PI) swaps TaskExecutor.harness to a PiHarness."""
+    from minimise.agents.harness import HARNESS_PI, PiHarness
+
+    created_job = job_controller.create_job(plan_file)
+    job_id = created_job.id
+
+    def mock_execute_task(task, job_id, handover_context, next_task=None, verify=None):
+        job_controller.db.update_task_status(task.id, TaskStatus.COMPLETED,
+                                             completed_at=datetime.utcnow())
+        return True, f"Executed {task.name}"
+
+    job_controller.task_executor.execute_task = mock_execute_task
+
+    job_controller.start_job(job_id, harness_name=HARNESS_PI)
+
+    assert isinstance(job_controller.task_executor.harness, PiHarness)
+
+
+def test_start_job_default_harness_keeps_claude(job_controller, plan_file):
+    """start_job() without harness_name leaves the ClaudeCodeHarness default in place."""
+    from minimise.agents.harness import ClaudeCodeHarness
+
+    created_job = job_controller.create_job(plan_file)
+    job_id = created_job.id
+
+    def mock_execute_task(task, job_id, handover_context, next_task=None, verify=None):
+        job_controller.db.update_task_status(task.id, TaskStatus.COMPLETED,
+                                             completed_at=datetime.utcnow())
+        return True, f"Executed {task.name}"
+
+    job_controller.task_executor.execute_task = mock_execute_task
+
+    job_controller.start_job(job_id)
+
+    assert isinstance(job_controller.task_executor.harness, ClaudeCodeHarness)
+
+
 def test_cancel_job_basic(job_controller, plan_file):
     """Test cancel job cancels a job and its tasks."""
     created_job = job_controller.create_job(plan_file)

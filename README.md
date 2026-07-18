@@ -42,9 +42,9 @@ If you just need a quick one-off edit, use your agent directly — Minimise is f
 ### Prerequisites
 
 - **Python 3.9+**
-- **An agent harness on your `PATH`** — tasks are executed by shelling out to the
-  [`claude`](https://docs.anthropic.com/en/docs/claude-code) CLI, so it must be
-  installed and authenticated. Verify with `claude --version`.
+- **An agent harness on your `PATH`** — tasks are executed by shelling out to an agent CLI.
+  - **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** (`claude` — default) must be installed and authenticated. Verify with `claude --version`.
+  - **[pi](https://github.com/mariozechner/pi-coding-agent)** (`pi` — opt-in via `--harness pi`) must be installed and configured. Verify with `pi --version`.
 - **Git** — jobs run inside a git repo and use commits/diffs to track task output.
 
 ### Setup
@@ -265,6 +265,7 @@ mini job new --plan FILE                      # Create job (PENDING state)
 mini job show <ID>                            # Show plan structure
 mini job show <ID> --task-id <TASK_ID>        # Show full prompt with context for a task
 mini job start <ID>                           # Start/resume a job (idempotent); backs off a live one
+mini job start <ID> --harness pi              # Run with pi instead of claude (default: claude)
 mini job stop <ID>                            # Stop job (RUNNING → STOPPED)
 ```
 

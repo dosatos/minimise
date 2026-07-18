@@ -11,6 +11,7 @@ from rich.table import Table
 from rich.text import Text
 
 import minimise.interfaces.cli as _cli  # patchable constants; read at call time
+from minimise.agents.harness import HARNESS_CLAUDE, HARNESS_PI
 from minimise.models import JobStatus, TaskStatus, Plan
 from minimise.interfaces.terminal_ui import get_status_color, render_execution_table_with_gantt, humanize_duration
 from minimise.interfaces.cli._shared import (
@@ -106,7 +107,9 @@ def job_new(plan: str):
 
 @job.command(name="start")
 @click.argument("job_id")
-def job_start(job_id: str):
+@click.option("--harness", type=click.Choice([HARNESS_CLAUDE, HARNESS_PI]),
+              default=HARNESS_CLAUDE, help="Agent harness to use")
+def job_start(job_id: str, harness: str):
     """Start or resume a job in the foreground (idempotent).
 
     A PENDING job runs; a crashed FAILED/STOPPED job resumes from its first
@@ -116,7 +119,7 @@ def job_start(job_id: str):
         job_id, db, job_obj = _get_and_validate_job(job_id)
         job_controller = get_job_controller(db)
 
-        outcome = job_controller.start_job(job_id)
+        outcome = job_controller.start_job(job_id, harness_name=harness)
 
         if outcome == controller.RAN_FAILED:
             console.print(f"[red]Error: Job failed[/red]")
