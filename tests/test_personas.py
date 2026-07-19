@@ -47,6 +47,14 @@ def test_user_mini_namespace_rejected(tmp_path):
         load_personas(tmp_path)
 
 
+def test_inline_prompt_with_harness(tmp_path):
+    (tmp_path / "personas.yaml").write_text(
+        "coder:\n  prompt: you are a coder\n  harness: codex\n"
+    )
+    personas = load_personas(tmp_path)
+    assert personas["coder"].harness == "codex"
+
+
 def test_prompt_file_relative(tmp_path):
     (tmp_path / "coder.md").write_text("file-based prompt")
     (tmp_path / "personas.yaml").write_text(

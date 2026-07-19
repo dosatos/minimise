@@ -8,6 +8,7 @@ from pydantic import BaseModel
 class Persona(BaseModel):
     name: str
     model: Optional[str] = None
+    harness: Optional[str] = None
     system_prompt: str
 
 
@@ -65,6 +66,8 @@ def load_personas(config_dir: Path) -> dict[str, Persona]:
             raise ValueError(f"persona '{name}': 'mini:' is reserved for built-ins")
         prompt = spec.get("prompt")
         prompt_file = spec.get("prompt_file")
+        model = spec.get("model")
+        harness = spec.get("harness")
         if (prompt is None) == (prompt_file is None):
             raise ValueError(f"persona '{name}': set exactly one of prompt / prompt_file")
         if prompt_file is not None:
@@ -76,5 +79,5 @@ def load_personas(config_dir: Path) -> dict[str, Persona]:
             system_prompt = fp.read_text()
         else:
             system_prompt = prompt
-        personas[name] = Persona(name=name, model=spec.get("model"), system_prompt=system_prompt)
+        personas[name] = Persona(name=name, model=model, harness=harness, system_prompt=system_prompt)
     return personas

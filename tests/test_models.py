@@ -41,6 +41,8 @@ def test_task_to_dict():
         "completed_at": None,
         "diff_path": "/tmp/diff",
         "assignee": None,
+        "harness": None,
+        "model": None,
     }
 
 
@@ -50,6 +52,56 @@ def test_task_to_dict_carries_assignee():
     assigned = Task(id="t1", job_id="j1", name="n", description="d",
                     estimated_duration_min=5, assignee="coder")
     assert assigned.to_dict()["assignee"] == "coder"
+
+
+def test_task_to_dict_carries_harness():
+    default = Task(id="t1", job_id="j1", name="n", description="d", estimated_duration_min=5)
+    assert default.to_dict()["harness"] is None
+    harnessed = Task(id="t1", job_id="j1", name="n", description="d",
+                      estimated_duration_min=5, harness="claude")
+    assert harnessed.to_dict()["harness"] == "claude"
+
+
+def test_plan_task_parses_harness():
+    from minimise.models import PlanTask
+    pt = PlanTask(id="t1", name="n", description="d", goal="g", estimated_duration_min=5, harness="codex")
+    assert pt.harness == "codex"
+    default = PlanTask(id="t1", name="n", description="d", goal="g", estimated_duration_min=5)
+    assert default.harness is None
+
+
+def test_plan_task_parses_model():
+    from minimise.models import PlanTask
+    pt = PlanTask(id="t1", name="n", description="d", goal="g", estimated_duration_min=5, model="gpt-5")
+    assert pt.model == "gpt-5"
+    default = PlanTask(id="t1", name="n", description="d", goal="g", estimated_duration_min=5)
+    assert default.model is None
+
+
+def test_plan_from_yaml_parses_model(tmp_path):
+    from minimise.models import Plan
+    p = tmp_path / "plan.yaml"
+    p.write_text("""\
+name: test
+tasks:
+  - id: t1
+    name: task1
+    description: desc
+    goal: do it
+    estimated_duration_min: 5
+    model: claude-sonnet-4-8
+""")
+    plan = Plan.from_yaml(p)
+    assert plan.tasks[0].model == "claude-sonnet-4-8"
+
+
+def test_task_to_dict_carries_model():
+    default = Task(id="t1", job_id="j1", name="n", description="d", estimated_duration_min=5)
+    assert default.to_dict()["model"] is None
+    modeled = Task(id="t1", job_id="j1", name="n", description="d",
+                   estimated_duration_min=5, model="claude-sonnet-4-8")
+    assert modeled.to_dict()["model"] == "claude-sonnet-4-8"
+    assert modeled.model == "claude-sonnet-4-8"
 
 
 def test_job_to_dict_with_nested_tasks():
@@ -231,3 +283,11 @@ def test_timeout_min_omitted_accepted():
     assert Hook(name="h", shell="true", estimated_duration_min=5).timeout_min is None
     assert PlanTask(id="t1", name="N", description="d", goal="g",
                     estimated_duration_min=5).timeout_min is None
+
+
+def test_harness_and_assignee_mutually_exclusive():
+    from minimise.models import PlanTask
+    import pytest
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        PlanTask(id="t1", name="N", description="d", goal="g",
+                 estimated_duration_min=5, harness="pi", assignee="auditor")

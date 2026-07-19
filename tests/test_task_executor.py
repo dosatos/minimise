@@ -13,6 +13,20 @@ from minimise.agents.harness import AgentHarness, HarnessResult
 import uuid
 
 
+class _FixedHarnessFactory:
+    """Test double: ignores the task, always returns the same harness."""
+
+    def __init__(self, harness, model=None):
+        self._harness = harness
+        self._model = model
+
+    def from_task(self, task):
+        return self._harness
+
+    def resolve_model(self, task):
+        return self._model
+
+
 @pytest.fixture
 def git_repo():
     """Create a temporary git repository for testing."""
@@ -100,7 +114,7 @@ def test_task_completion_without_base_commit(temp_db_dir, db, git_repo):
     db.create_task(task)
 
     # Mock Claude Code to succeed
-    def mock_invoke(context):
+    def mock_invoke(harness, context):
         return True, "Task completed", "success"
 
     executor._invoke_agent = mock_invoke
@@ -145,7 +159,7 @@ def test_task_commits_against_base_commit(temp_db_dir, db, git_repo):
     db.create_task(task)
 
     # Mock Claude Code to create a file change
-    def mock_invoke(context):
+    def mock_invoke(harness, context):
         # Create a change in the repo
         test_file = git_repo / "changes.txt"
         test_file.write_text("changes made by task")
@@ -198,7 +212,7 @@ def test_task_commit_message_format(temp_db_dir, db, git_repo):
     db.create_task(task)
 
     # Mock Claude Code to create a file change
-    def mock_invoke(context):
+    def mock_invoke(harness, context):
         test_file = git_repo / "fix.txt"
         test_file.write_text("fixed")
         return True, "Fixed", "success"
@@ -246,7 +260,7 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, db, git_repo):
     db.create_task(task1)
 
     # Mock first task: create file1
-    def mock_invoke_task1(context):
+    def mock_invoke_task1(harness, context):
         test_file = git_repo / "file1.txt"
         test_file.write_text("task1 content")
         return True, "Task 1 done", "success"
@@ -272,7 +286,7 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, db, git_repo):
     db.create_task(task2)
 
     # Mock second task: create file2
-    def mock_invoke_task2(context):
+    def mock_invoke_task2(harness, context):
         test_file = git_repo / "file2.txt"
         test_file.write_text("task2 content")
         return True, "Task 2 done", "success"
@@ -312,7 +326,7 @@ def test_failed_attempt_handover_injected_into_retry(temp_db_dir, db, git_repo):
 
     seen_handovers = []
 
-    def mock_invoke(context):
+    def mock_invoke(harness, context):
         seen_handovers.append(context["handover"])
         # Fail first attempt, succeed second.
         if len(seen_handovers) == 1:
@@ -344,7 +358,7 @@ def test_retry_reads_prior_attempt_agent_written_handoff(temp_db_dir, db, git_re
 
     seen = []
 
-    def mock_invoke(context):
+    def mock_invoke(harness, context):
         seen.append(context["handover"])
         # Each attempt writes its own handoff file.
         Path(context["handoff_path"]).write_text(f"HANDOFF-{len(seen) - 1}")
@@ -375,7 +389,7 @@ def test_missing_handoff_returns_autogen_fallback(temp_db_dir, db, git_repo):
     next_task = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
                      name="NEXT_TASK_NAME", description="nd", status=TaskStatus.PENDING)
 
-    executor._invoke_agent = lambda context: (True, "did the work", "success")
+    executor._invoke_agent = lambda harness, context: (True, "did the work", "success")
     success, handover = executor.execute_task(task, job_id, "", next_task=next_task)
 
     assert success
@@ -400,7 +414,7 @@ def test_three_attempts_leave_three_handoff_files(temp_db_dir, db, git_repo):
 
     calls = []
 
-    def mock_invoke(context):
+    def mock_invoke(harness, context):
         calls.append(1)
         Path(context["handoff_path"]).write_text(f"h{len(calls) - 1}")
         return (False, "x", "agent_error") if len(calls) < 3 else (True, "ok", "success")
@@ -431,7 +445,7 @@ def test_last_task_persists_handoff_when_agent_wrote_none(temp_db_dir, db, git_r
     db.create_task(task)
 
     # Agent succeeds but writes NO handoff file, and there is no next_task.
-    executor._invoke_agent = lambda context: (True, "did the work", "success")
+    executor._invoke_agent = lambda harness, context: (True, "did the work", "success")
     success, _ = executor.execute_task(task, job_id, "", next_task=None)
 
     assert success
@@ -456,7 +470,7 @@ def test_executions_recorded_across_retry(temp_db_dir, db, git_repo):
 
     calls = []
 
-    def mock_invoke(context):
+    def mock_invoke(harness, context):
         calls.append(1)
         if len(calls) == 1:
             return False, "boom", "agent_error"
@@ -486,7 +500,7 @@ def test_failed_attempt_records_exit_reason(temp_db_dir, db, git_repo):
     fake.run.return_value = HarnessResult(
         success=False, output="stdout", error="timeout after 900s", exit_reason="timeout"
     )
-    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, factory=_FixedHarnessFactory(fake))
 
     job_id = str(uuid.uuid4())
     db.create_job(Job(id=job_id, name="J", status=JobStatus.PENDING,
@@ -511,7 +525,7 @@ def test_failure_detail_reconstructed_from_job_log(temp_db_dir, db, git_repo, mo
     fake.run.return_value = HarnessResult(
         success=False, output="", error="timeout after 900s", exit_reason="timeout"
     )
-    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, factory=_FixedHarnessFactory(fake))
 
     job_id = str(uuid.uuid4())
     db.create_job(Job(id=job_id, name="J", status=JobStatus.PENDING,
@@ -544,7 +558,7 @@ def test_no_hooks_records_only_attempts(temp_db_dir, db, git_repo):
     git_tracker = GitTracker(git_repo)
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
     job_id, task = _setup_job_and_task(db, git_tracker)
-    executor._invoke_agent = lambda context: (True, "ok", "success")
+    executor._invoke_agent = lambda harness, context: (True, "ok", "success")
 
     executor.execute_task(task, job_id, "")
 
@@ -562,7 +576,7 @@ def test_execution_completed_at_is_agent_finish_not_lifecycle_end(temp_db_dir, d
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
     job_id, task = _setup_job_and_task(db, git_tracker)
 
-    executor._invoke_agent = lambda context: (True, "ok", "success")
+    executor._invoke_agent = lambda harness, context: (True, "ok", "success")
 
     # A gating post_task hook that burns wall-clock time. The Execution window
     # must NOT include it; the task-row's completed_at (stamped after) must.
@@ -585,7 +599,7 @@ def test_hook_retry_attempt_is_not_recorded_as_success(temp_db_dir, db, git_repo
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
     job_id, task = _setup_job_and_task(db, git_tracker)
 
-    executor._invoke_agent = lambda context: (True, "ok", "success")
+    executor._invoke_agent = lambda harness, context: (True, "ok", "success")
     verify = lambda attempt: ("retry", "findings") if attempt == 0 else ("fail", "nope")
 
     success, _ = executor.execute_task(task, job_id, "", verify=verify)
@@ -597,22 +611,29 @@ def test_hook_retry_attempt_is_not_recorded_as_success(temp_db_dir, db, git_repo
 
 
 def test_default_harness_is_claude_code(temp_db_dir, db, git_repo):
-    """TaskExecutor defaults to ClaudeCodeHarness when no harness injected."""
+    """With no factory injected, from_task defaults to ClaudeCodeHarness."""
     from minimise.agents.harness import ClaudeCodeHarness
+    from minimise.models import Task
 
     git_tracker = GitTracker(git_repo)
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
 
-    assert isinstance(executor.harness, ClaudeCodeHarness)
+    assert isinstance(executor._factory.from_task(Task(
+        id="t1", job_id="j1", name="n", description="d", estimated_duration_min=5,
+    )), ClaudeCodeHarness)
 
 
-def test_injected_harness_is_stored(temp_db_dir, db, git_repo):
-    """An explicitly injected harness is stored on the executor."""
+def test_injected_harness_factory_is_used(temp_db_dir, db, git_repo):
+    """An explicitly injected factory is used to build the harness."""
+    from minimise.models import Task
+
     git_tracker = GitTracker(git_repo)
     fake = Mock(spec=AgentHarness)
-    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, factory=_FixedHarnessFactory(fake))
 
-    assert executor.harness is fake
+    assert executor._factory.from_task(Task(
+        id="t1", job_id="j1", name="n", description="d", estimated_duration_min=5,
+    )) is fake
 
 
 def test_invoke_delegates_to_harness_and_propagates_success(temp_db_dir, db, git_repo):
@@ -621,7 +642,7 @@ def test_invoke_delegates_to_harness_and_propagates_success(temp_db_dir, db, git
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(success=True, output="agent did the work", exit_reason="success")
     fake.wrap_prompt.side_effect = lambda p: p
-    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, factory=_FixedHarnessFactory(fake))
 
     context = {
         "task_name": "task-7: Build widget",
@@ -629,7 +650,7 @@ def test_invoke_delegates_to_harness_and_propagates_success(temp_db_dir, db, git
         "task_goal": "A working widget",
         "handover": "prior context",
     }
-    success, output, exit_reason = executor._invoke_agent(context)
+    success, output, exit_reason = executor._invoke_agent(fake, context)
 
     assert success is True
     assert output == "agent did the work"
@@ -658,10 +679,10 @@ def test_invoke_prompt_names_handoff_path_and_section_headers(temp_db_dir, db, g
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(success=True, output="done")
     fake.wrap_prompt.side_effect = lambda p: p
-    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, factory=_FixedHarnessFactory(fake))
 
     handoff_path = str(temp_db_dir / "jobs" / "j1" / "handoffs" / "t1" / "attempt-0.md")
-    executor._invoke_agent({
+    executor._invoke_agent(fake, {
         "task_name": "T", "task_description": "D", "handoff_path": handoff_path,
     })
 
@@ -678,9 +699,9 @@ def test_invoke_failure_returns_error_when_present(temp_db_dir, db, git_repo):
     fake.run.return_value = HarnessResult(
         success=False, output="partial stdout", error="boom: it failed", exit_reason="agent_error"
     )
-    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, factory=_FixedHarnessFactory(fake))
 
-    success, output, exit_reason = executor._invoke_agent({"task_name": "T", "task_description": "D"})
+    success, output, exit_reason = executor._invoke_agent(fake, {"task_name": "T", "task_description": "D"})
 
     assert success is False
     assert output == "boom: it failed"
@@ -692,9 +713,9 @@ def test_invoke_failure_falls_back_to_output_when_no_error(temp_db_dir, db, git_
     git_tracker = GitTracker(git_repo)
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(success=False, output="just stdout", error=None)
-    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, factory=_FixedHarnessFactory(fake))
 
-    success, output, exit_reason = executor._invoke_agent({"task_name": "T", "task_description": "D"})
+    success, output, exit_reason = executor._invoke_agent(fake, {"task_name": "T", "task_description": "D"})
 
     assert success is False
     assert output == "just stdout"
@@ -706,7 +727,7 @@ def test_execute_task_passes_job_log_path_to_harness(temp_db_dir, db, git_repo):
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(success=True, output="ok")
     store = JobStore(db, temp_db_dir)
-    executor = TaskExecutor(store, git_tracker, harness=fake)
+    executor = TaskExecutor(store, git_tracker, factory=_FixedHarnessFactory(fake))
     job_id, task = _setup_job_and_task(db, git_tracker)
 
     executor.execute_task(task, job_id, "")
@@ -720,7 +741,7 @@ def test_execute_task_timeout_from_explicit_timeout_min(temp_db_dir, db, git_rep
     git_tracker = GitTracker(git_repo)
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(success=True, output="ok")
-    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, factory=_FixedHarnessFactory(fake))
     job_id, task = _setup_job_and_task(db, git_tracker)
     task.timeout_min = 40
 
@@ -734,7 +755,7 @@ def test_execute_task_without_timeout_min_is_unbounded(temp_db_dir, db, git_repo
     git_tracker = GitTracker(git_repo)
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(success=True, output="ok")
-    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, factory=_FixedHarnessFactory(fake))
     job_id, task = _setup_job_and_task(db, git_tracker)
 
     executor.execute_task(task, job_id, "")
@@ -750,7 +771,7 @@ def test_execute_task_passes_execution_log_fields_to_harness(temp_db_dir, db, gi
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(success=True, output="ok")
     store = JobStore(db, temp_db_dir)
-    executor = TaskExecutor(store, git_tracker, harness=fake)
+    executor = TaskExecutor(store, git_tracker, factory=_FixedHarnessFactory(fake))
     job_id, task = _setup_job_and_task(db, git_tracker)
 
     executor.execute_task(task, job_id, "")
@@ -766,7 +787,7 @@ def test_execute_task_step_is_task_name_on_first_attempt(temp_db_dir, db, git_re
     git_tracker = GitTracker(git_repo)
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(success=True, output="ok")
-    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, factory=_FixedHarnessFactory(fake))
     job_id, task = _setup_job_and_task(db, git_tracker)
 
     executor.execute_task(task, job_id, "")
@@ -790,7 +811,7 @@ def test_execute_task_step_marks_retry_attempt(temp_db_dir, db, git_repo):
     seen_steps = []
     calls = {"n": 0}
 
-    def mock_invoke(context):
+    def mock_invoke(harness, context):
         seen_steps.append(context["log_fields"]["step"])
         calls["n"] += 1
         return (calls["n"] > 1), ("boom" if calls["n"] == 1 else "ok"), "agent_error"
@@ -808,7 +829,7 @@ def test_execute_task_writes_no_banner_to_log(temp_db_dir, db, git_repo):
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(success=True, output="ok")
     store = JobStore(db, temp_db_dir)
-    executor = TaskExecutor(store, git_tracker, harness=fake)
+    executor = TaskExecutor(store, git_tracker, factory=_FixedHarnessFactory(fake))
     job_id, task = _setup_job_and_task(db, git_tracker)
 
     executor.execute_task(task, job_id, "")
@@ -827,7 +848,7 @@ def test_assigned_task_passes_persona_system_prompt_and_model(temp_db_dir, db, g
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(success=True, output="ok")
     persona = Persona(name="reviewer", model="claude-opus-4-8", system_prompt="You are a picky reviewer.")
-    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake,
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, factory=_FixedHarnessFactory(fake, model=persona.model),
                             personas={"reviewer": persona})
     job_id, task = _setup_job_and_task(db, git_tracker)
     task.assignee = "reviewer"
@@ -845,7 +866,7 @@ def test_unassigned_task_passes_none_system_prompt_and_model(temp_db_dir, db, gi
     git_tracker = GitTracker(git_repo)
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(success=True, output="ok")
-    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, harness=fake,
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, factory=_FixedHarnessFactory(fake),
                             personas={"reviewer": Persona(name="reviewer", system_prompt="x")})
     job_id, task = _setup_job_and_task(db, git_tracker)  # no assignee
 
@@ -863,7 +884,7 @@ def test_failed_task_stashes_uncommitted_work(temp_db_dir, db, git_repo):
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
     job_id, task = _setup_job_and_task(db, git_tracker)
 
-    def mock_invoke(context):
+    def mock_invoke(harness, context):
         (git_repo / "test.txt").write_text("edited by agent")   # tracked
         (git_repo / "new_pkg").mkdir(exist_ok=True)
         (git_repo / "new_pkg" / "mod.py").write_text("untracked work")
@@ -886,3 +907,47 @@ def test_failed_task_stashes_uncommitted_work(temp_db_dir, db, git_repo):
     subprocess.run(["git", "stash", "pop"], cwd=git_repo, capture_output=True, check=True)
     assert (git_repo / "test.txt").read_text() == "edited by agent"
     assert (git_repo / "new_pkg" / "mod.py").read_text() == "untracked work"
+
+
+def test_invoke_agent_resolves_pi_harness_from_task_harness(temp_db_dir, db, git_repo, monkeypatch):
+    """A task with harness='pi' resolves to PiHarness and shells out to the pi CLI."""
+    from minimise.personas import Persona
+
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker,
+                            personas={"reviewer": Persona(name="reviewer", system_prompt="x")})
+    job_id = str(uuid.uuid4())
+    from minimise.models import Job, JobStatus
+    db.create_job(Job(id=job_id, name="J", status=JobStatus.PENDING,
+                      base_commit=git_tracker.get_current_commit()))
+    task = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
+                name="T", description="d", status=TaskStatus.PENDING, harness="pi")
+    db.create_task(task)
+
+    captured_cmd = []
+    real_popen = subprocess.Popen
+
+    class FakeProc:
+        stdin = None
+        stdout = []
+        stderr = None
+        returncode = 0
+
+        def wait(self, timeout=None):
+            pass
+
+        def kill(self):
+            pass
+
+    def fake_popen(cmd, **kwargs):
+        if cmd[0] != "pi":
+            return real_popen(cmd, **kwargs)
+        captured_cmd.append(cmd)
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    executor.execute_task(task, job_id, "")
+
+    assert captured_cmd
+    assert captured_cmd[0][0] == "pi"

@@ -7,6 +7,7 @@ We read them lazily through ``_cli`` here so a patched value is always honored.
 """
 
 import json
+import os
 import sqlite3
 from pathlib import Path  # noqa: F401  (kept for parity / type ergonomics)
 
@@ -28,11 +29,23 @@ def get_db() -> Database:
     return db
 
 
-def get_job_controller(db: Database) -> JobController:
+def get_job_controller(db: Database, *, cli_harness: str | None = None, cli_model: str | None = None) -> JobController:
     """Get job controller instance."""
     from minimise.personas import load_personas
+    from minimise.settings import load_settings
+    from minimise.agents.harness import HarnessFactory
+
     personas = load_personas(_cli.CONFIG_DIR)
-    return JobController.from_paths(db, _cli.REPO_PATH, _cli.JOBS_DIR, personas=personas)
+    settings = load_settings(_cli.CONFIG_DIR)
+    default_harness = cli_harness or os.environ.get("MINIMISE_HARNESS") or settings.harness
+    default_model = cli_model or os.environ.get("MINIMISE_MODEL") or settings.model
+    factory = HarnessFactory(personas, default_harness=default_harness, default_model=default_model)
+
+    return JobController.from_paths(
+        db, _cli.REPO_PATH, _cli.JOBS_DIR,
+        factory=factory,
+        personas=personas,
+    )
 
 
 def resolve_job_id(job_id_or_prefix: str) -> str:

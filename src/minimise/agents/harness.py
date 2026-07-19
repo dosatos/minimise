@@ -323,19 +323,63 @@ class PiHarness(AgentHarness):
     def _build_env(self) -> dict:
         """Build secure environment for the pi subprocess.
 
-        Whitelists PATH/HOME/etc plus provider credentials for the multiple
-        LLM backends pi can be configured against (Anthropic, OpenAI, Google,
-        AWS Bedrock).
+        Whitelists PATH/HOME/etc plus provider credentials for every LLM
+        backend pi recognises. pi also reads ~/.pi/agent/auth.json, so
+        env vars are only needed when the user has not set up auth.json.
         """
         safe_keys = {"PATH", "HOME", "USER", "SHELL", "LANG", "PI_CODING_AGENT_DIR"}
+        # Full set of provider env vars pi supports (see pi docs: providers.md).
+        # Kept in sync with pi's env-api-keys.ts /auth.json key map.
         provider_keys = {
+            # Anthropic
             "ANTHROPIC_API_KEY",
+            # Azure
+            "AZURE_OPENAI_API_KEY",
+            # OpenAI
             "OPENAI_API_KEY",
+            # DeepSeek
+            "DEEPSEEK_API_KEY",
+            # Google Gemini
             "GOOGLE_API_KEY",
             "GOOGLE_GENAI_USE_VERTEXAI",
             "GOOGLE_GENAI_USE_GENERATIVEAI",
             "GOOGLE_CLOUD_PROJECT",
             "GOOGLE_CLOUD_LOCATION",
+            # Mistral
+            "MISTRAL_API_KEY",
+            # Groq
+            "GROQ_API_KEY",
+            # Cerebras
+            "CEREBRAS_API_KEY",
+            # Cloudflare
+            "CLOUDFLARE_API_KEY",
+            "CLOUDFLARE_ACCOUNT_ID",
+            "CLOUDFLARE_GATEWAY_ID",
+            # xAI
+            "XAI_API_KEY",
+            # OpenRouter
+            "OPENROUTER_API_KEY",
+            # Vercel AI Gateway
+            "AI_GATEWAY_API_KEY",
+            # ZAI
+            "ZAI_API_KEY",
+            # OpenCode
+            "OPENCODE_API_KEY",
+            # Hugging Face
+            "HF_TOKEN",
+            # Fireworks
+            "FIREWORKS_API_KEY",
+            # Kimi
+            "KIMI_API_KEY",
+            # MiniMax
+            "MINIMAX_API_KEY",
+            "MINIMAX_CN_API_KEY",
+            # Xiaomi MiMo
+            "XIAOMI_API_KEY",
+            "XIAOMI_TOKEN_PLAN_CN_API_KEY",
+            "XIAOMI_TOKEN_PLAN_AMS_API_KEY",
+            "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
+            # AWS Bedrock
             "AWS_ACCESS_KEY_ID",
             "AWS_SECRET_ACCESS_KEY",
             "AWS_SESSION_TOKEN",
@@ -358,7 +402,6 @@ class PiHarness(AgentHarness):
     ) -> HarnessResult:
         # Pi accepts provider/id format natively via --model; no translation needed.
         # Pass canonical model string through unchanged.
-        pass
 
         # Let pi use its default thinking level — the model/provider decides.
         # Our parsers already filter thinking blocks from logs (_extract_text_pi_live)
@@ -488,3 +531,114 @@ class PiHarness(AgentHarness):
             logged = log_filter(buf) if log_filter else buf
             if logged:
                 backend.record(log_path, log_fields, logged)
+
+
+_BUILDERS: dict[str, type[AgentHarness]] = {
+    HARNESS_CLAUDE: ClaudeCodeHarness,
+    HARNESS_PI: PiHarness,
+}
+
+
+class _NameResolver:
+    """Resolve which harness name to use from context.
+
+    Resolution order:
+      1. Explicit per-task/step override  (PlanTask.harness / Worker.harness)
+      2. Persona default                  (personas.yaml → persona.harness)
+      3. Global default                   (constructor arg)
+    """
+
+    def __init__(
+        self,
+        personas: dict,
+        *,
+        default_harness: str = HARNESS_CLAUDE,
+        default_model: Optional[str] = None,
+    ) -> None:
+        self._personas = personas
+        self._default_harness = default_harness
+        self._default_model = default_model
+
+    def resolve(
+        self,
+        *,
+        task_harness: Optional[str] = None,
+        persona_name: Optional[str] = None,
+    ) -> str:
+        # task.harness and task.assignee are validated as mutually exclusive
+        # at plan parse time, so at most one of these branches fires.
+        if task_harness:
+            return task_harness
+        if persona_name:
+            persona = self._personas.get(persona_name)
+            if persona is not None and getattr(persona, "harness", None):
+                return persona.harness
+        return self._default_harness
+
+    def resolve_for_task(self, task) -> str:
+        """Extract harness and assignee from a Task dataclass."""
+        return self.resolve(
+            task_harness=getattr(task, "harness", None),
+            persona_name=getattr(task, "assignee", None),
+        )
+
+    def resolve_model(
+        self,
+        *,
+        task_model: Optional[str] = None,
+        persona_name: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve which model to use from context.
+
+        Resolution order:
+          1. Explicit per-task model override  (Task.model)
+          2. Persona default                   (personas.yaml → persona.model)
+          3. Global default                    (constructor arg)
+          4. None                              (no model configured anywhere)
+        """
+        if task_model:
+            return task_model
+        if persona_name:
+            persona = self._personas.get(persona_name)
+            if persona is not None and persona.model:
+                return persona.model
+        return self._default_model
+
+    def resolve_model_for_task(self, task) -> Optional[str]:
+        """Extract model and assignee from a Task dataclass."""
+        return self.resolve_model(
+            task_model=getattr(task, "model", None),
+            persona_name=getattr(task, "assignee", None),
+        )
+
+
+class HarnessFactory:
+    """Instantiate an AgentHarness for a Task."""
+
+    def __init__(
+        self,
+        personas=None,
+        *,
+        default_harness: str = HARNESS_CLAUDE,
+        default_model: Optional[str] = None,
+        backend: Optional[JobLogBackend] = None,
+    ) -> None:
+        self._resolver = _NameResolver(
+            personas or {},
+            default_harness=default_harness,
+            default_model=default_model,
+        )
+        self._backend = backend or JsonlLogBackend()
+
+    def from_task(self, task) -> AgentHarness:
+        """Resolve + instantiate the harness for a Task."""
+        name = self._resolver.resolve_for_task(task)
+        cls = _BUILDERS[name]
+        return cls(backend=self._backend)
+
+    def resolve_model(self, task) -> Optional[str]:
+        """Resolve the model string for *task* using the resolution chain.
+
+        Order: task.model → persona.model → factory default_model → None.
+        """
+        return self._resolver.resolve_model_for_task(task)

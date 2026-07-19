@@ -36,6 +36,8 @@ class Task:
     base_commit: Optional[str] = None
     goal: Optional[str] = None
     assignee: Optional[str] = None
+    harness: Optional[str] = None
+    model: Optional[str] = None
     timeout_min: Optional[int] = None  # validated at the plan boundary; None = unbounded
 
     def to_dict(self) -> dict:
@@ -52,6 +54,8 @@ class Task:
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "diff_path": self.diff_path,
             "assignee": self.assignee,
+            "harness": self.harness,
+            "model": self.model,
         }
 
 @dataclass
@@ -182,11 +186,17 @@ class PlanTask(BaseModel):
     estimated_duration_min: int = Field(gt=0, strict=True)
     timeout_min: Optional[int] = Field(default=None, gt=0, strict=True)
     assignee: Optional[str] = None
+    harness: Optional[str] = None
+    model: Optional[str] = None
     pre_hooks: list[Hook] = Field(default_factory=list)
     post_hooks: list[Hook] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_hooks(self):
+        if self.harness is not None and self.assignee is not None:
+            raise ValueError(
+                f"task '{self.id}': 'harness' and 'assignee' are mutually exclusive"
+            )
         _validate_hook_list(self.pre_hooks, f"task '{self.id}' pre_hooks")
         _validate_hook_list(self.post_hooks, f"task '{self.id}' post_hooks")
         return _validate_timeout(self)

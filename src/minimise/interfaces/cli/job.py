@@ -108,8 +108,9 @@ def job_new(plan: str):
 @job.command(name="start")
 @click.argument("job_id")
 @click.option("--harness", type=click.Choice([HARNESS_CLAUDE, HARNESS_PI]),
-              default=HARNESS_CLAUDE, help="Agent harness to use")
-def job_start(job_id: str, harness: str):
+              default=None, help="Agent harness to use (default: settings or claude)")
+@click.option("--model", default=None, help="Default model for agent invocations (overrides settings.model)")
+def job_start(job_id: str, harness: str | None, model: str | None):
     """Start or resume a job in the foreground (idempotent).
 
     A PENDING job runs; a crashed FAILED/STOPPED job resumes from its first
@@ -117,9 +118,9 @@ def job_start(job_id: str, harness: str):
     """
     try:
         job_id, db, job_obj = _get_and_validate_job(job_id)
-        job_controller = get_job_controller(db)
+        job_controller = get_job_controller(db, cli_harness=harness, cli_model=model)
 
-        outcome = job_controller.start_job(job_id, harness_name=harness)
+        outcome = job_controller.start_job(job_id)
 
         if outcome == controller.RAN_FAILED:
             console.print(f"[red]Error: Job failed[/red]")

@@ -4,7 +4,6 @@ from minimise.models import Execution, Task, TaskStatus
 from minimise.storage.git_tracker import GitTracker
 from minimise.storage.job_store import JobStore
 from minimise.orchestration.handover_manager import HandoverManager
-from minimise.agents.harness import AgentHarness, ClaudeCodeHarness
 from minimise.logging.backend import JsonlLogBackend
 
 
@@ -17,12 +16,15 @@ class TaskExecutor:
         self,
         store: JobStore,
         git_tracker: GitTracker,
-        harness: Optional[AgentHarness] = None,
+        *,
+        factory: Optional["HarnessFactory"] = None,
         personas: Optional[dict] = None,
     ):
+        from minimise.agents.harness import HarnessFactory
+
         self.store = store
         self.git_tracker = git_tracker
-        self.harness = harness or ClaudeCodeHarness()
+        self._factory = factory or HarnessFactory(personas or {})
         self.personas = personas or {}
 
     def execute_task(
@@ -83,8 +85,10 @@ class TaskExecutor:
                 job_id=job_id, task_id=task.id, attempt=attempt, execution_type="task"
             )
             handoff_path = self.store.handoff_path(job_id, task.id, attempt)
+            harness = self._factory.from_task(task)
+            model = self._factory.resolve_model(task)
             persona = self.personas.get(task.assignee) if task.assignee else None
-            success, output, exit_reason = self._invoke_agent({
+            success, output, exit_reason = self._invoke_agent(harness, {
                 "handover": context,
                 "task_name": task.name,
                 "task_description": task.description,
@@ -92,7 +96,7 @@ class TaskExecutor:
                 "timeout_min": task.timeout_min,
                 "handoff_path": str(handoff_path),
                 "system_prompt": persona.system_prompt if persona else None,
-                "model": persona.model if persona else None,
+                "model": model,
                 "log_path": str(job_log_path),
                 "log_fields": {
                     "execution_id": ex.execution_id,
@@ -182,7 +186,7 @@ class TaskExecutor:
             return f"(agent-written handoff)\n\n{content}"
         return f"WARNING auto-generated from diff - not reviewed\n\n{fallback()}"
 
-    def _invoke_agent(self, context: dict) -> tuple[bool, str, str]:
+    def _invoke_agent(self, harness, context: dict) -> tuple[bool, str, str]:
         """
         Delegate to the injected agent harness.
 
@@ -192,6 +196,7 @@ class TaskExecutor:
         timeout_min.
 
         Args:
+            harness: Resolved AgentHarness instance.
             context: Context dictionary with task_name, task_description, task_goal, handover
 
         Returns:
@@ -229,13 +234,13 @@ Context from previous tasks:
 
 Execute this task by modifying the codebase as needed. When done, write a summary of what you implemented.{handoff_section}"""
 
-        # Delegate to the injected harness. The harness owns env construction,
+        # Delegate to the resolved harness. The harness owns env construction,
         # the subprocess invocation, and error handling. No timeout unless the
         # plan opts in with timeout_min — an agent is killed only on request.
         timeout = context["timeout_min"] * 60 if context.get("timeout_min") else None
         repo_root = str(self.git_tracker.repo_path)
-        prompt = self.harness.wrap_prompt(prompt)
-        result = self.harness.run(
+        prompt = harness.wrap_prompt(prompt)
+        result = harness.run(
             prompt, cwd=repo_root, allow_edits=True,
             model=model, system_prompt=system_prompt,
             log_path=log_path, log_fields=log_fields,

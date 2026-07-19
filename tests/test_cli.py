@@ -563,25 +563,35 @@ def test_start_failed_job_resumes(runner, mock_config_dir, monkeypatch):
 
 
 def test_start_with_harness_flag_passes_through(runner, mock_config_dir, monkeypatch):
-    """`--harness pi` is passed through to JobController.start_job()."""
-    from minimise.agents.harness import HARNESS_CLAUDE, HARNESS_PI
+    """`--harness pi` is passed through to get_job_controller(cli_harness=...), and
+    start_job() is called with no harness_name argument."""
+    from minimise.agents.harness import HARNESS_PI
     from minimise.orchestration.job_controller import JobController
+    import sys
+    job_module = sys.modules["minimise.interfaces.cli.job"]
     captured = {}
-    orig = JobController.start_job
+    orig_get_job_controller = job_module.get_job_controller
+    orig_start_job = JobController.start_job
 
-    def fake_start_job(self, job_id, harness_name=HARNESS_CLAUDE):
-        captured["harness_name"] = harness_name
-        return orig(self, job_id, harness_name=harness_name)
+    def fake_get_job_controller(db, *, cli_harness=None, cli_model=None):
+        captured["cli_harness"] = cli_harness
+        return orig_get_job_controller(db, cli_harness=cli_harness, cli_model=cli_model)
+
+    def fake_start_job(self, job_id):
+        captured["start_job_called_without_harness_name"] = True
+        return orig_start_job(self, job_id)
 
     from minimise.orchestration.job_executor import JobExecutor
     monkeypatch.setattr(JobExecutor, "execute", lambda self, j, p: True)
+    monkeypatch.setattr(job_module, "get_job_controller", fake_get_job_controller)
     monkeypatch.setattr(JobController, "start_job", fake_start_job)
 
     _, job = _make_start_job(mock_config_dir, JobStatus.PENDING)
     result = runner.invoke(mini, ["job", "start", job.id, "--harness", HARNESS_PI])
 
     assert result.exit_code == 0
-    assert captured["harness_name"] == HARNESS_PI
+    assert captured["cli_harness"] == HARNESS_PI
+    assert captured["start_job_called_without_harness_name"]
 
 
 def test_start_dead_running_job_resumes(runner, mock_config_dir, monkeypatch):

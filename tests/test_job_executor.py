@@ -22,6 +22,20 @@ from minimise.storage.git_tracker import GitTracker
 from minimise.storage.job_store import JobStore
 
 
+class _FixedHarnessFactory:
+    """Test double: ignores the task, always returns the same harness."""
+
+    def __init__(self, harness, model=None):
+        self._harness = harness
+        self._model = model
+
+    def from_task(self, task):
+        return self._harness
+
+    def resolve_model(self, task):
+        return self._model
+
+
 @pytest.fixture
 def git_repo():
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -71,7 +85,7 @@ def test_task1_agent_handoff_flows_to_task2(temp_db_dir, db, git_repo):
         {"id": t2.id, "name": "T2", "description": "d2", "goal": "g2", "estimated_duration_min": 5},
     ])
 
-    executor = JobExecutor(TaskExecutor(store, git_tracker, harness=harness), HookExecutor())
+    executor = JobExecutor(TaskExecutor(store, git_tracker, factory=_FixedHarnessFactory(harness)), HookExecutor())
     assert executor.execute(job, plan)
 
     # Task 2's prompt carries task 1's agent-written handoff, not the raw stdout.
@@ -103,7 +117,7 @@ def test_post_task_hook_failure_fails_task(temp_db_dir, db, git_repo):
         post=[{"name": "check", "shell": "exit 1", "estimated_duration_min": 1}])
 
     executor = JobExecutor(
-        TaskExecutor(store, git_tracker, harness=HandoffWritingHarness()), HookExecutor())
+        TaskExecutor(store, git_tracker, factory=_FixedHarnessFactory(HandoffWritingHarness())), HookExecutor())
     assert executor.execute(job, plan) is False
     failed = db.get_task(t1.id)
     assert failed.status == TaskStatus.FAILED
@@ -131,7 +145,7 @@ def test_post_task_hook_retry_reruns_with_findings(temp_db_dir, db, git_repo, tm
             return r
 
     harness = FixOnRetryHarness()
-    executor = JobExecutor(TaskExecutor(store, git_tracker, harness=harness), HookExecutor())
+    executor = JobExecutor(TaskExecutor(store, git_tracker, factory=_FixedHarnessFactory(harness)), HookExecutor())
     assert executor.execute(job, plan) is True
     assert len(harness.prompts) == 2  # re-ran once
     assert "NEEDS_FIX" in harness.prompts[1]  # findings fed into retry
@@ -156,7 +170,7 @@ def test_post_task_hook_skip_never_blocks(temp_db_dir, db, git_repo):
     harness = HandoffWritingHarness()
     # Store-backed HookExecutor so the failing hook is persisted as an Execution.
     hooks = HookExecutor(store=store, job_id=job.id, repo_root=git_repo)
-    executor = JobExecutor(TaskExecutor(store, git_tracker, harness=harness), hooks)
+    executor = JobExecutor(TaskExecutor(store, git_tracker, factory=_FixedHarnessFactory(harness)), hooks)
     assert executor.execute(job, plan) is True
     assert len(harness.prompts) == 1  # no retry
     assert db.get_task(t1.id).status == TaskStatus.COMPLETED
@@ -173,7 +187,7 @@ def test_pre_task_hook_failure_skips_task(temp_db_dir, db, git_repo):
         pre=[{"name": "check", "shell": "exit 1", "estimated_duration_min": 1}])
 
     harness = HandoffWritingHarness()
-    executor = JobExecutor(TaskExecutor(store, git_tracker, harness=harness), HookExecutor())
+    executor = JobExecutor(TaskExecutor(store, git_tracker, factory=_FixedHarnessFactory(harness)), HookExecutor())
     assert executor.execute(job, plan) is False
     assert harness.prompts == []  # task never ran
     failed = db.get_task(t1.id)
@@ -189,7 +203,7 @@ def test_pre_plan_hook_receives_plan_yaml_on_stdin(temp_db_dir, db, git_repo, tm
         {"name": "review", "shell": f"cat > {captured}", "estimated_duration_min": 1}])
 
     executor = JobExecutor(
-        TaskExecutor(store, git_tracker, harness=HandoffWritingHarness()), HookExecutor())
+        TaskExecutor(store, git_tracker, factory=_FixedHarnessFactory(HandoffWritingHarness())), HookExecutor())
     assert executor.execute(job, plan)
 
     content = captured.read_text()
@@ -205,7 +219,7 @@ def test_pre_plan_hook_failure_aborts_before_any_task(temp_db_dir, db, git_repo)
         {"name": "reject", "shell": "exit 1", "estimated_duration_min": 1}])
 
     harness = HandoffWritingHarness()
-    executor = JobExecutor(TaskExecutor(store, git_tracker, harness=harness), HookExecutor())
+    executor = JobExecutor(TaskExecutor(store, git_tracker, factory=_FixedHarnessFactory(harness)), HookExecutor())
     assert executor.execute(job, plan) is False
     assert harness.prompts == []  # no task ran
 
@@ -234,7 +248,7 @@ def test_resume_skips_completed_and_seeds_prev_handoff(temp_db_dir, db, git_repo
         {"id": t2.id, "name": "T2", "description": "d2", "goal": "g2", "estimated_duration_min": 5},
     ])
 
-    executor = JobExecutor(TaskExecutor(store, git_tracker, harness=harness), HookExecutor())
+    executor = JobExecutor(TaskExecutor(store, git_tracker, factory=_FixedHarnessFactory(harness)), HookExecutor())
     assert executor.execute(job, plan)
 
     # Only task 2 ran, and it got task 1's persisted handoff.

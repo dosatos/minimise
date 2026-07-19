@@ -141,28 +141,42 @@ def test_get_job_status_not_found(job_controller):
     assert retrieved_job is None
 
 
-def test_start_job_with_pi_harness_sets_task_executor_harness(job_controller, plan_file):
-    """start_job(harness_name=HARNESS_PI) swaps TaskExecutor.harness to a PiHarness."""
-    from minimise.agents.harness import HARNESS_PI, PiHarness
+def test_start_job_with_pi_harness_resolver_resolves_pi(temp_db_dir, git_repo, plan_file):
+    """A controller built with a pi-defaulting factory produces pi tasks."""
+    from minimise.agents.harness import HARNESS_PI, PiHarness, HarnessFactory
+    from minimise.models import Task
 
-    created_job = job_controller.create_job(plan_file)
+    db = Database(temp_db_dir / "test.db")
+    db.init_db()
+    git_tracker = GitTracker(git_repo)
+    jobs_dir = temp_db_dir / "jobs"
+
+    controller = JobController(
+        db, git_tracker, jobs_dir, git_repo,
+        factory=HarnessFactory({}, default_harness=HARNESS_PI),
+    )
+
+    created_job = controller.create_job(plan_file)
     job_id = created_job.id
 
     def mock_execute_task(task, job_id, handover_context, next_task=None, verify=None):
-        job_controller.db.update_task_status(task.id, TaskStatus.COMPLETED,
-                                             completed_at=datetime.utcnow())
+        db.update_task_status(task.id, TaskStatus.COMPLETED, completed_at=datetime.utcnow())
         return True, f"Executed {task.name}"
 
-    job_controller.task_executor.execute_task = mock_execute_task
+    controller.task_executor.execute_task = mock_execute_task
 
-    job_controller.start_job(job_id, harness_name=HARNESS_PI)
+    controller.start_job(job_id)
 
-    assert isinstance(job_controller.task_executor.harness, PiHarness)
+    executor = controller.task_executor
+    assert isinstance(executor._factory.from_task(Task(
+        id="t1", job_id=job_id, name="n", description="d", estimated_duration_min=5,
+    )), PiHarness)
 
 
 def test_start_job_default_harness_keeps_claude(job_controller, plan_file):
     """start_job() without harness_name leaves the ClaudeCodeHarness default in place."""
     from minimise.agents.harness import ClaudeCodeHarness
+    from minimise.models import Task
 
     created_job = job_controller.create_job(plan_file)
     job_id = created_job.id
@@ -176,7 +190,10 @@ def test_start_job_default_harness_keeps_claude(job_controller, plan_file):
 
     job_controller.start_job(job_id)
 
-    assert isinstance(job_controller.task_executor.harness, ClaudeCodeHarness)
+    executor = job_controller.task_executor
+    assert isinstance(executor._factory.from_task(Task(
+        id="t1", job_id=job_id, name="n", description="d", estimated_duration_min=5,
+    )), ClaudeCodeHarness)
 
 
 def test_cancel_job_basic(job_controller, plan_file):

@@ -31,11 +31,11 @@ def test_loop_roundtrip_and_schema_v6(db, temp_db_dir):
     assert db.current_iteration("l1") == 3
     assert db.current_iteration("nope") == 0
 
-    # Fresh DB opens at user_version 6 and jobs still work.
+    # Fresh DB opens at SCHEMA_VERSION and jobs still work.
     fresh = Database(temp_db_dir / "fresh.db")
     fresh.init_db()
     conn = sqlite3.connect(fresh.db_path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == Database.SCHEMA_VERSION
     conn.close()
     fresh.create_job(Job(id="j1", name="n", status=JobStatus.PENDING))
     assert fresh.get_job("j1").name == "n"
@@ -619,6 +619,56 @@ def test_update_task_persists_assignee(db):
     task.assignee = "bob"
     db.update_task(task)
     assert db.get_task(task.id).assignee == "bob"
+
+
+def test_model_round_trips(db):
+    """model persists through create/get and list; unset reloads as None."""
+    job = Job(id=str(uuid.uuid4()), name="Test Job", status=JobStatus.PENDING)
+    db.create_job(job)
+
+    with_model = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job.id,
+                      name="With Model", description="", status=TaskStatus.PENDING,
+                      model="claude-sonnet-4-8")
+    without = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job.id,
+                   name="No Model", description="", status=TaskStatus.PENDING)
+    db.create_task(with_model)
+    db.create_task(without)
+
+    assert db.get_task(with_model.id).model == "claude-sonnet-4-8"
+    assert db.get_task(without.id).model is None
+
+    by_name = {t.name: t for t in db.list_tasks_for_job(job.id)}
+    assert by_name["With Model"].model == "claude-sonnet-4-8"
+    assert by_name["No Model"].model is None
+
+
+def test_update_task_persists_model(db):
+    """update_task writes model."""
+    job = Job(id=str(uuid.uuid4()), name="Test Job", status=JobStatus.PENDING)
+    db.create_job(job)
+    task = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job.id,
+                name="T", description="", status=TaskStatus.PENDING)
+    db.create_task(task)
+
+    task.model = "gpt-5"
+    db.update_task(task)
+    assert db.get_task(task.id).model == "gpt-5"
+
+
+def test_row_to_task_missing_model_column(db):
+    """Absent model column maps to None, not a crash (pre-migration compat)."""
+    from minimise.storage.database import _row_to_task
+    row = _row(
+        ["id", "job_id", "name", "description", "status", "retries",
+         "created_at", "started_at", "completed_at", "diff_path",
+         "base_commit", "goal", "assignee", "harness", "estimated_duration_min"],
+        ["t1", "j1", "n", "d", "pending", 0, "2026-01-01T00:00:00",
+         None, None, None, None, None, None, None, 5],
+    )
+    keys = row.keys()
+    assert "model" not in keys
+    task = _row_to_task(row)
+    assert task.model is None
 
 
 def test_init_db_idempotent(tmp_path):

@@ -5,11 +5,15 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+from types import SimpleNamespace
+
 from minimise.agents.harness import (
     HarnessResult,
     AgentHarness,
     ClaudeCodeHarness,
     PiHarness,
+    HarnessFactory,
+    _NameResolver,
     _extract_text,
     _extract_text_pi_live,
     _extract_text_pi_final,
@@ -635,3 +639,139 @@ def test_pi_command_includes_system_prompt_only_when_given(mock_popen):
     cmd = mock_popen.call_args.args[0]
     assert "--system-prompt" in cmd
     assert cmd[cmd.index("--system-prompt") + 1] == "PERSONA"
+
+
+# --- HarnessFactory from_task() ---
+
+
+def test_from_task_default():
+    """factory.from_task(Task(harness=None, assignee=None)) returns ClaudeCodeHarness."""
+    Task = SimpleNamespace
+    factory = HarnessFactory()
+    result = factory.from_task(Task(harness=None, assignee=None))
+    assert isinstance(result, ClaudeCodeHarness)
+
+
+def test_from_task_explicit():
+    """factory.from_task(Task(harness='pi', assignee=None)) returns PiHarness."""
+    Task = SimpleNamespace
+    factory = HarnessFactory()
+    result = factory.from_task(Task(harness="pi", assignee=None))
+    assert isinstance(result, PiHarness)
+
+
+def test_from_task_persona():
+    """Persona harness selected via assignee."""
+    Task = SimpleNamespace
+    Persona = SimpleNamespace
+    personas = {"auditor": Persona(harness="pi")}
+    factory = HarnessFactory(personas=personas)
+    result = factory.from_task(Task(harness=None, assignee="auditor"))
+    assert isinstance(result, PiHarness)
+
+
+def test_from_task_default_harness():
+    """HarnessFactory(default_harness='pi') returns PiHarness when no overrides."""
+    Task = SimpleNamespace
+    factory = HarnessFactory(default_harness="pi")
+    result = factory.from_task(Task(harness=None, assignee=None))
+    assert isinstance(result, PiHarness)
+
+
+# --- _NameResolver.resolve_model chain ---
+
+
+def test_resolve_model_task_wins_over_persona_over_default():
+    """task.model beats persona.model beats default_model."""
+    Persona = SimpleNamespace
+    personas = {"auditor": Persona(model="persona-model")}
+    resolver = _NameResolver(personas, default_model="default-model")
+
+    # task.model wins
+    assert (
+        resolver.resolve_model(
+            task_model="task-model", persona_name="auditor"
+        )
+        == "task-model"
+    )
+    # persona.model wins over default
+    assert (
+        resolver.resolve_model(task_model=None, persona_name="auditor")
+        == "persona-model"
+    )
+    # default_model is fallback
+    assert (
+        resolver.resolve_model(task_model=None, persona_name=None)
+        == "default-model"
+    )
+
+
+def test_resolve_model_no_model_anywhere_returns_none():
+    """When nothing sets a model, resolve_model returns None."""
+    resolver = _NameResolver({})
+    assert resolver.resolve_model() is None
+    assert resolver.resolve_model(task_model=None, persona_name=None) is None
+
+
+def test_resolve_model_for_task_extracts_fields():
+    """resolve_model_for_task pulls model + assignee from a Task-like object."""
+    Task = SimpleNamespace
+    Persona = SimpleNamespace
+    personas = {"auditor": Persona(model="persona-model")}
+    resolver = _NameResolver(personas, default_model="default-model")
+
+    # task.model wins
+    assert (
+        resolver.resolve_model_for_task(Task(model="task-model", assignee="auditor"))
+        == "task-model"
+    )
+    # persona.model via assignee
+    assert (
+        resolver.resolve_model_for_task(Task(model=None, assignee="auditor"))
+        == "persona-model"
+    )
+    # default_model when nothing else set
+    assert (
+        resolver.resolve_model_for_task(Task(model=None, assignee=None))
+        == "default-model"
+    )
+
+
+def test_persona_model_none_does_not_override_default_model():
+    """A persona with model=None does NOT shadow a non-None default_model."""
+    Persona = SimpleNamespace
+    personas = {"auditor": Persona(model=None)}
+    resolver = _NameResolver(personas, default_model="default-model")
+
+    # persona.model is None (falsy) → falls through to default
+    assert (
+        resolver.resolve_model(task_model=None, persona_name="auditor")
+        == "default-model"
+    )
+
+
+def test_harness_factory_resolve_model_delegates():
+    """HarnessFactory.resolve_model(task) delegates to the resolver chain."""
+    Task = SimpleNamespace
+    Persona = SimpleNamespace
+    personas = {"auditor": Persona(model="persona-model")}
+    factory = HarnessFactory(personas=personas, default_model="default-model")
+
+    # task.model → wins
+    assert (
+        factory.resolve_model(Task(model="task-model", assignee="auditor"))
+        == "task-model"
+    )
+    # persona.model → via assignee
+    assert (
+        factory.resolve_model(Task(model=None, assignee="auditor"))
+        == "persona-model"
+    )
+    # default_model → fallback
+    assert (
+        factory.resolve_model(Task(model=None, assignee=None))
+        == "default-model"
+    )
+    # no model anywhere → None
+    factory_no_default = HarnessFactory()
+    assert factory_no_default.resolve_model(Task(model=None, assignee=None)) is None

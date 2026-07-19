@@ -9,6 +9,18 @@ def _new_job(store):
     return store.create(plan, base_commit="abc", plan_path="plan.yaml")
 
 
+def test_create_carries_harness_through_db_roundtrip(db, temp_db_dir):
+    store = JobStore(db, temp_db_dir / "jobs")
+    plan = Plan(name="p", tasks=[
+        PlanTask(id="t1", name="t1", description="d", goal="g", estimated_duration_min=1, harness="codex"),
+    ])
+    job = store.create(plan, base_commit="abc", plan_path="plan.yaml")
+
+    loaded = store.load(job.id)
+
+    assert loaded.tasks[0].harness == "codex"
+
+
 def test_handoff_path_per_attempt_and_creates_parent(db, temp_db_dir):
     """handoff_path returns <jobs_dir>/<job>/handoffs/<task>/attempt-N.md and ensures its dir."""
     jobs_dir = temp_db_dir / "jobs"
@@ -75,6 +87,18 @@ def test_reconcile_leaves_live_running_and_other_statuses(db, temp_db_dir):
         job = _new_job(store)
         db.update_job_status(job.id, status, pid=_dead_pid())
         assert store.load(job.id).status == status
+
+
+def test_create_carries_model_through_db_roundtrip(db, temp_db_dir):
+    store = JobStore(db, temp_db_dir / "jobs")
+    plan = Plan(name="p", tasks=[
+        PlanTask(id="t1", name="t1", description="d", goal="g", estimated_duration_min=1, model="deepseek/deepseek-v4-flash"),
+    ])
+    job = store.create(plan, base_commit="abc", plan_path="plan.yaml")
+
+    loaded = store.load(job.id)
+
+    assert loaded.tasks[0].model == "deepseek/deepseek-v4-flash"
 
 
 def test_load_many_downgrades_crashed_job_in_list(db, temp_db_dir):
