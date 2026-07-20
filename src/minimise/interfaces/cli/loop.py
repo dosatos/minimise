@@ -5,6 +5,7 @@ lives in journal.jsonl and narration in job.log — hence the extra `journal` ve
 """
 
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -15,6 +16,7 @@ from rich.table import Table
 from rich.text import Text
 
 import minimise.interfaces.cli as _cli  # patchable constants; read at call time
+from minimise.agents.harness import HARNESS_CLAUDE, HARNESS_PI, HarnessFactory, HarnessNotFoundError
 from minimise.models import JobStatus, LoopSpec
 from minimise.interfaces.terminal_ui import (
     get_status_color,
@@ -29,11 +31,13 @@ from minimise.interfaces.cli._shared import (
     console,
     get_db,
     resolve_loop_id,
+    print_harness_not_found,
     _format_datetime,
 )
 from minimise.storage.loop_store import LoopStore
 from minimise.orchestration.loop_engine import LoopEngine
 from minimise.personas import load_personas
+from minimise.settings import load_settings
 
 
 def _get_store(db) -> LoopStore:
@@ -172,7 +176,10 @@ def loop_patch(loop_id: str, plan: Optional[str]):
 
 @loop.command(name="start")
 @click.argument("loop_id")
-def loop_start(loop_id: str):
+@click.option("--harness", type=click.Choice([HARNESS_CLAUDE, HARNESS_PI]),
+              default=None, help="Agent harness to use (default: settings or claude)")
+@click.option("--model", default=None, help="Default model for agent invocations (overrides settings.model)")
+def loop_start(loop_id: str, harness: str | None, model: str | None):
     """Start or resume a loop in the foreground (idempotent).
 
     The engine sets status RUNNING + pid, resumes from the journal anchor, and
@@ -193,7 +200,12 @@ def loop_start(loop_id: str):
             return
 
         personas = load_personas(_cli.CONFIG_DIR)
-        engine = LoopEngine(store=store, db=db, personas=personas, cwd=str(_cli.REPO_PATH))
+        settings = load_settings(_cli.CONFIG_DIR)
+        default_harness = harness or os.environ.get("MINIMISE_HARNESS") or settings.harness
+        default_model = model or os.environ.get("MINIMISE_MODEL") or settings.model
+        factory = HarnessFactory(personas, default_harness=default_harness, default_model=default_model)
+
+        engine = LoopEngine(factory=factory, store=store, db=db, cwd=str(_cli.REPO_PATH))
         status = engine.run(loop_id)
 
         if status == JobStatus.FAILED:
@@ -209,6 +221,9 @@ def loop_start(loop_id: str):
 
     except SystemExit:
         raise
+    except HarnessNotFoundError as e:
+        print_harness_not_found(e)
+        raise SystemExit(1)
     except Exception as e:
         console.print(f"[red]Error: {str(e)}[/red]")
         raise SystemExit(1)

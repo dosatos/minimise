@@ -2412,3 +2412,194 @@ def test_mini_job_list_shows_failed_for_dead_pid(runner, mock_config_dir):
     assert result.exit_code == 0
     entry = next(j for j in json.loads(result.output) if j["id"] == job.id)
     assert entry["status"] == "failed"
+
+
+def test_loop_start_with_harness_and_model_builds_factory(runner, mock_config_dir, monkeypatch):
+    """`--harness pi --model openai/gpt-4o` builds a HarnessFactory with those
+    defaults and passes it (not a bare harness) to LoopEngine."""
+    import sys
+    from minimise.agents.harness import HARNESS_PI, HarnessFactory, PiHarness
+    from minimise.models import LoopSpec, JobStatus, Worker
+    from minimise.storage.database import Database
+    from minimise.storage.loop_store import LoopStore
+
+    spec = {
+        "version": "1", "name": "Demo", "goal": "make it better", "max_iterations": 3,
+        "loop": {
+            "plan": {"prompt": "plan it"}, "implement": {"prompt": "do it"},
+            "evaluate": {"max_concurrent": 1, "dimensions": [{"name": "a", "rubric": "ra"}]},
+        },
+    }
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+    store = LoopStore(db, mock_config_dir / "jobs")
+    loop_obj = store.create(LoopSpec.model_validate(spec), "example.yaml")
+
+    loop_module = sys.modules["minimise.interfaces.cli.loop"]
+    captured = {}
+
+    class FakeEngine:
+        def __init__(self, *, factory=None, store=None, db=None, personas=None, cwd=None):
+            captured["factory"] = factory
+        def run(self, loop_id):
+            return JobStatus.COMPLETED
+
+    monkeypatch.setattr(loop_module, "LoopEngine", FakeEngine)
+
+    result = runner.invoke(mini, ["loop", "start", loop_obj.loop_id,
+                                   "--harness", HARNESS_PI, "--model", "openai/gpt-4o"])
+
+    assert result.exit_code == 0
+    factory = captured["factory"]
+    assert isinstance(factory, HarnessFactory)
+    harness = factory.for_worker(Worker())
+    assert isinstance(harness, PiHarness)
+    assert harness._model == "openai/gpt-4o"
+
+
+# --- mini job start --harness pi (dogfood, real pi binary, real API call) -------
+
+def _pi_available() -> bool:
+    import subprocess
+    try:
+        proc = subprocess.run(["pi", "--version"], capture_output=True, timeout=10, text=True)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
+pytest_pi = pytest.mark.skipif(not _pi_available(), reason="pi binary not available")
+
+_TRIVIAL_PI_PLAN = """
+name: Trivial pi Plan
+tasks:
+  - id: t1
+    name: Write hello file
+    description: Write the exact text "hello from pi" (no quotes, no newline) to /tmp/pi-test.txt
+    goal: Create /tmp/pi-test.txt containing "hello from pi"
+    estimated_duration_min: 5
+"""
+
+
+@pytest.fixture
+def trivial_pi_plan(tmp_path):
+    plan_path = tmp_path / "trivial-pi.yaml"
+    plan_path.write_text(_TRIVIAL_PI_PLAN)
+    Path("/tmp/pi-test.txt").unlink(missing_ok=True)
+    yield plan_path
+    Path("/tmp/pi-test.txt").unlink(missing_ok=True)
+
+
+@pytest_pi
+def test_mini_job_start_with_pi_harness_completes(runner, mock_config_dir, isolated_repo, trivial_pi_plan):
+    new = runner.invoke(mini, ["job", "new", "--plan", str(trivial_pi_plan)])
+    assert new.exit_code == 0, new.output
+
+    db = Database(mock_config_dir / "minimise.db")
+    job_id = db.list_jobs(limit=1)[0].id
+
+    start = runner.invoke(mini, ["job", "start", job_id, "--harness", "pi"])
+    assert start.exit_code == 0, start.output
+
+    status = runner.invoke(mini, ["job", "status", job_id, "--format", "json"])
+    assert status.exit_code == 0, status.output
+    assert json.loads(status.output)["status"] == "completed"
+
+    assert Path("/tmp/pi-test.txt").read_text().strip() == "hello from pi"
+
+
+@pytest_pi
+def test_mini_job_start_with_pi_harness_and_model_completes(runner, mock_config_dir, isolated_repo, trivial_pi_plan):
+    new = runner.invoke(mini, ["job", "new", "--plan", str(trivial_pi_plan)])
+    assert new.exit_code == 0, new.output
+
+    db = Database(mock_config_dir / "minimise.db")
+    job_id = db.list_jobs(limit=1)[0].id
+
+    start = runner.invoke(mini, ["job", "start", job_id,
+                                  "--harness", "pi", "--model", "deepseek/deepseek-v4-pro"])
+    assert start.exit_code == 0, start.output
+
+    status = runner.invoke(mini, ["job", "status", job_id, "--format", "json"])
+    assert status.exit_code == 0, status.output
+    assert json.loads(status.output)["status"] == "completed"
+
+
+def test_mini_job_start_with_missing_pi_binary_prints_clear_error(
+    runner, mock_config_dir, isolated_repo, trivial_pi_plan, monkeypatch
+):
+    """`mini job start --harness pi` prints a clear error (not a traceback) when pi isn't on PATH."""
+    new = runner.invoke(mini, ["job", "new", "--plan", str(trivial_pi_plan)])
+    assert new.exit_code == 0, new.output
+
+    db = Database(mock_config_dir / "minimise.db")
+    job_id = db.list_jobs(limit=1)[0].id
+
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    start = runner.invoke(mini, ["job", "start", job_id, "--harness", "pi"])
+
+    assert start.exit_code == 1
+    assert "not installed" in start.output
+    assert "mini doctor" in start.output
+    assert "Traceback" not in start.output
+
+
+def test_mini_doctor_help(runner):
+    result = runner.invoke(mini, ["doctor", "--help"])
+    assert result.exit_code == 0
+    assert "doctor" in result.output.lower()
+
+
+def _clear_all_provider_env(monkeypatch):
+    from minimise.interfaces.cli.doctor import _PROVIDER_KEYS
+    for key in _PROVIDER_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
+def _doctor_module():
+    """Return the actual doctor module, not the Click command.
+
+    minimise.interfaces.cli.__init__ shadows the module name with the
+    imported Command object, so ``import minimise.interfaces.cli.doctor``
+    gives back a Command, not a module. Use sys.modules to reach the real one.
+    """
+    import sys
+    return sys.modules["minimise.interfaces.cli.doctor"]
+
+
+def test_mini_doctor_reports_sections(runner, mock_config_dir, monkeypatch):
+    _clear_all_provider_env(monkeypatch)
+    # Ensure auth.json fallback doesn't make the test fragile on dev machines
+    monkeypatch.setattr(_doctor_module().Path, "is_file", lambda self: False)
+    monkeypatch.setattr(_doctor_module().Path, "home", lambda: Path("/nonexistent"))
+    result = runner.invoke(mini, ["doctor"])
+    assert "Harnesses" in result.output
+    assert "Provider API Keys" in result.output
+    assert "Active Settings" in result.output
+    assert "ANTHROPIC_API_KEY" not in result.output or "not set" in result.output
+
+
+def test_mini_doctor_exit_code_reflects_missing_keys(runner, mock_config_dir, monkeypatch):
+    _clear_all_provider_env(monkeypatch)
+    monkeypatch.setattr(_doctor_module().Path, "is_file", lambda self: False)
+    monkeypatch.setattr(_doctor_module().Path, "home", lambda: Path("/nonexistent"))
+    result = runner.invoke(mini, ["doctor"])
+    assert result.exit_code == 1
+
+
+def test_mini_doctor_exit_code_healthy_with_key_and_harness(runner, mock_config_dir, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake")
+
+    def fake_which(binary):
+        return f"/usr/bin/{binary}"
+
+    def fake_run(cmd, **kwargs):
+        class R:
+            stdout = "1.0.0"
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr("shutil.which", fake_which)
+    monkeypatch.setattr("subprocess.run", fake_run)
+    result = runner.invoke(mini, ["doctor"])
+    assert result.exit_code == 0, result.output

@@ -22,10 +22,9 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
-from minimise.agents.harness import AgentHarness, ClaudeCodeHarness
+from minimise.agents.harness import HarnessFactory
 from minimise.logging.backend import JsonlLogBackend
 from minimise.models import JobStatus, LoopStep, TaskStatus
 from minimise.orchestration import loop_journal as journal
@@ -95,17 +94,15 @@ class LoopEngine:
 
     def __init__(
         self,
-        harness: Optional[AgentHarness] = None,
+        factory: HarnessFactory,
         store: Optional[LoopStore] = None,
         db: Optional[Database] = None,
-        personas: Optional[dict] = None,
         cwd: Optional[str] = None,
     ):
-        self.harness = harness or ClaudeCodeHarness()
         self.store = store
         self.db = db
-        self.personas = personas or {}
         self.cwd = cwd
+        self._factory = factory
         self.backend = JsonlLogBackend()
         # Serialize the two shared sinks so the parallel evaluate fan-out is safe.
         self._db_lock = threading.Lock()
@@ -229,7 +226,8 @@ class LoopEngine:
     def _run_step(self, loop_id, spec, jpath, step_type, worker, iteration,
                   dimension=None, rubric=None, allow_edits=False, journal_context=None) -> str:
         """Dispatch one step, gate its control line with bounded retries, return control."""
-        system_prompt, model = self._resolve_worker(step_type, worker)
+        system_prompt = self._resolve_worker_prompt(step_type, worker)
+        harness = self._factory.for_worker(worker)
         context = journal_context if journal_context is not None else self._journal_text(jpath)
 
         step_id = new_id("step")
@@ -242,9 +240,9 @@ class LoopEngine:
 
         feedback = ""
         for attempt in range(self.MAX_RETRIES + 1):
-            prompt = self._build_prompt(spec, step_type, context, rubric, feedback)
-            result = self.harness.run(
-                prompt, cwd=self.cwd, allow_edits=allow_edits, model=model,
+            prompt = harness.wrap_prompt(self._build_prompt(spec, step_type, context, rubric, feedback))
+            result = harness.run(
+                prompt, cwd=self.cwd, allow_edits=allow_edits,
                 system_prompt=system_prompt + OUTPUT_CONTRACT,
                 log_path=str(self.store.loop_log_path(loop_id)),
                 log_fields={
@@ -290,18 +288,13 @@ class LoopEngine:
 
     # ---- helpers ------------------------------------------------------------
 
-    def _resolve_worker(self, step_type, worker) -> tuple[str, Optional[str]]:
-        """Resolve a Worker to (system_prompt, model): persona | prompt | prompt_file | default."""
-        if worker.persona:
-            p = self.personas.get(worker.persona)
-            if p is None:
-                raise ValueError(f"unknown persona {worker.persona!r} for {step_type} step")
-            return p.system_prompt, p.model
-        if worker.prompt:
-            return worker.prompt, None
-        if worker.prompt_file:
-            return Path(worker.prompt_file).read_text(), None
-        return DEFAULT_PROMPTS[step_type], None
+    def _resolve_worker_prompt(self, step_type, worker) -> str:
+        """Resolve a Worker to its system prompt, falling back to the step's default."""
+        try:
+            prompt = self._factory.resolve_prompt_for_worker(worker)
+        except ValueError as e:
+            raise ValueError(f"{e} for {step_type} step") from e
+        return prompt if prompt is not None else DEFAULT_PROMPTS[step_type]
 
     def _build_prompt(self, spec, step_type, context, rubric, feedback) -> str:
         """The runtime turn: goal + journal history (+ dimension rubric) + retry feedback."""
@@ -343,102 +336,6 @@ class LoopEngine:
 
 def _no_line():
     raise ValueError("no parseable control line in step output")
-
-
-def demo():
-    """Self-check with a STUB harness: exercises the terminal mappings + resume."""
-    import tempfile
-    from minimise.agents.harness import HarnessResult
-    from minimise.models import LoopSpec
-
-    spec_dict = {
-        "version": "1", "name": "Demo", "goal": "make it better", "max_iterations": 3,
-        "loop": {
-            "plan": {"prompt": "plan it"}, "implement": {"prompt": "do it"},
-            "evaluate": {"max_concurrent": 2, "dimensions": [
-                {"name": "a", "rubric": "ra"}, {"name": "b", "rubric": "rb"}]},
-        },
-    }
-
-    class Stub(AgentHarness):
-        """Cycles its scripts (mod len) so a per-iteration pattern repeats."""
-        def __init__(self, scripts):
-            self.scripts, self.i = scripts, 0
-        def run(self, prompt, **kw):
-            out = self.scripts[self.i % len(self.scripts)]
-            self.i += 1
-            return HarnessResult(success=True, output=out)
-
-    def build(tmp):
-        db = Database(Path(tmp) / "t.db"); db.init_db()
-        store = LoopStore(db, Path(tmp) / "jobs")
-        loop = store.create(LoopSpec.model_validate(spec_dict), "demo.yaml")
-        return db, store, loop.loop_id
-
-    # 1) plan continue -> implement done -> 2 evals -> plan done => COMPLETED
-    with tempfile.TemporaryDirectory() as tmp:
-        db, store, lid = build(tmp)
-        eng = LoopEngine(harness=Stub([
-            '{"control":"continue","plan":"go"}',      # plan (iter 1)
-            '{"control":"done"}',                        # implement
-            '{"control":"done","findings":"f"}',         # eval a
-            '{"control":"done","findings":"f"}',         # eval b
-            '{"control":"done"}',                        # plan (iter 2) -> stop
-        ]), store=store, db=db)
-        assert eng.run(lid) == JobStatus.COMPLETED
-        assert journal.last_committed_iteration(store.journal_path(lid)) == 1
-        recs = [r for r in journal.read(store.journal_path(lid)) if "marker" not in r]
-        assert recs and all(r.get("plan_version") == 1 for r in recs)
-
-    # 2) planner never stops -> hits max_iterations ceiling => FAILED
-    with tempfile.TemporaryDirectory() as tmp:
-        db, store, lid = build(tmp)
-        eng = LoopEngine(harness=Stub(['{"control":"continue"}', '{"control":"done"}',
-                                       '{"control":"done"}', '{"control":"done"}']),
-                         store=store, db=db)
-        assert eng.run(lid) == JobStatus.FAILED
-        assert journal.last_committed_iteration(store.journal_path(lid)) == 3
-
-    # 3) implement failed -> inner loop back to plan, skips evaluate this pass
-    with tempfile.TemporaryDirectory() as tmp:
-        db, store, lid = build(tmp)
-        eng = LoopEngine(harness=Stub([
-            '{"control":"continue"}',                    # plan
-            '{"control":"failed","handover":"stuck"}',   # implement fails
-            '{"control":"done"}',                        # re-plan -> stop => COMPLETED
-        ]), store=store, db=db)
-        assert eng.run(lid) == JobStatus.COMPLETED
-        # no commit marker: the failing pass never reached evaluate
-        assert journal.last_committed_iteration(store.journal_path(lid)) == 0
-
-    # 4) malformed control retried, then exhausted => FAILED
-    with tempfile.TemporaryDirectory() as tmp:
-        db, store, lid = build(tmp)
-        eng = LoopEngine(harness=Stub(['no json at all']), store=store, db=db)
-        assert eng.run(lid) == JobStatus.FAILED
-
-    # 5) implement fails + planner keeps saying 'continue' -> re-plan cap => FAILED
-    #    (would spin forever without MAX_REPLANS; iteration never advances here)
-    class ByStep(AgentHarness):
-        """Route by step: implement always fails, plan always continues."""
-        def run(self, prompt, **kw):
-            impl = "do it" in kw.get("system_prompt", "")
-            out = ('{"control":"failed","handover":"stuck"}' if impl
-                   else '{"control":"continue"}')
-            return HarnessResult(success=True, output=out)
-
-    with tempfile.TemporaryDirectory() as tmp:
-        db, store, lid = build(tmp)
-        eng = LoopEngine(harness=ByStep(), store=store, db=db)
-        assert eng.run(lid) == JobStatus.FAILED
-        # never reached evaluate/commit — the failing pass never converges
-        assert journal.last_committed_iteration(store.journal_path(lid)) == 0
-
-    print("loop_engine demo OK")
-
-
-if __name__ == "__main__":
-    demo()
 
 
 def _safe_control(rec) -> Optional[str]:

@@ -168,9 +168,10 @@ def test_start_job_with_pi_harness_resolver_resolves_pi(temp_db_dir, git_repo, p
     controller.start_job(job_id)
 
     executor = controller.task_executor
-    assert isinstance(executor._factory.from_task(Task(
+    harness = executor._factory.for_task(Task(
         id="t1", job_id=job_id, name="n", description="d", estimated_duration_min=5,
-    )), PiHarness)
+    ))
+    assert isinstance(harness, PiHarness)
 
 
 def test_start_job_default_harness_keeps_claude(job_controller, plan_file):
@@ -191,9 +192,10 @@ def test_start_job_default_harness_keeps_claude(job_controller, plan_file):
     job_controller.start_job(job_id)
 
     executor = job_controller.task_executor
-    assert isinstance(executor._factory.from_task(Task(
+    harness = executor._factory.for_task(Task(
         id="t1", job_id=job_id, name="n", description="d", estimated_duration_min=5,
-    )), ClaudeCodeHarness)
+    ))
+    assert isinstance(harness, ClaudeCodeHarness)
 
 
 def test_cancel_job_basic(job_controller, plan_file):

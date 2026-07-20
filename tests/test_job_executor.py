@@ -25,15 +25,14 @@ from minimise.storage.job_store import JobStore
 class _FixedHarnessFactory:
     """Test double: ignores the task, always returns the same harness."""
 
-    def __init__(self, harness, model=None):
+    def __init__(self, harness):
         self._harness = harness
-        self._model = model
 
-    def from_task(self, task):
+    def for_task(self, task):
         return self._harness
 
-    def resolve_model(self, task):
-        return self._model
+    def resolve_prompt_for_task(self, task):
+        return None
 
 
 @pytest.fixture
@@ -54,7 +53,7 @@ class HandoffWritingHarness(AgentHarness):
     def __init__(self):
         self.prompts = []
 
-    def run(self, prompt, *, cwd=None, timeout=900, model=None, system_prompt=None,
+    def run(self, prompt, *, cwd=None, timeout=900, system_prompt=None,
             allow_edits=False, log_path=None, log_fields=None):
         self.prompts.append(prompt)
         # The prompt names the exact handoff path; task 1 writes a known handoff there.

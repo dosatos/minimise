@@ -14,17 +14,25 @@ import uuid
 
 
 class _FixedHarnessFactory:
-    """Test double: ignores the task, always returns the same harness."""
+    """Test double: ignores the task's harness/model resolution, always returns
+    the same harness. system_prompt resolution still goes through *personas*
+    (by task.assignee) so persona-threading tests can exercise it."""
 
-    def __init__(self, harness, model=None):
+    def __init__(self, harness, personas=None):
         self._harness = harness
-        self._model = model
+        self._personas = personas or {}
 
-    def from_task(self, task):
+    def for_task(self, task):
         return self._harness
 
-    def resolve_model(self, task):
-        return self._model
+    def resolve_prompt_for_task(self, task):
+        assignee = getattr(task, "assignee", None)
+        if not assignee:
+            return None
+        persona = self._personas.get(assignee)
+        if persona is None:
+            raise ValueError(f"unknown persona {assignee!r}")
+        return persona.system_prompt
 
 
 @pytest.fixture
@@ -611,16 +619,17 @@ def test_hook_retry_attempt_is_not_recorded_as_success(temp_db_dir, db, git_repo
 
 
 def test_default_harness_is_claude_code(temp_db_dir, db, git_repo):
-    """With no factory injected, from_task defaults to ClaudeCodeHarness."""
+    """With no factory injected, for_task defaults to ClaudeCodeHarness."""
     from minimise.agents.harness import ClaudeCodeHarness
     from minimise.models import Task
 
     git_tracker = GitTracker(git_repo)
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
 
-    assert isinstance(executor._factory.from_task(Task(
+    harness = executor._factory.for_task(Task(
         id="t1", job_id="j1", name="n", description="d", estimated_duration_min=5,
-    )), ClaudeCodeHarness)
+    ))
+    assert isinstance(harness, ClaudeCodeHarness)
 
 
 def test_injected_harness_factory_is_used(temp_db_dir, db, git_repo):
@@ -631,9 +640,10 @@ def test_injected_harness_factory_is_used(temp_db_dir, db, git_repo):
     fake = Mock(spec=AgentHarness)
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, factory=_FixedHarnessFactory(fake))
 
-    assert executor._factory.from_task(Task(
+    harness = executor._factory.for_task(Task(
         id="t1", job_id="j1", name="n", description="d", estimated_duration_min=5,
-    )) is fake
+    ))
+    assert harness is fake
 
 
 def test_invoke_delegates_to_harness_and_propagates_success(temp_db_dir, db, git_repo):
@@ -661,10 +671,9 @@ def test_invoke_delegates_to_harness_and_propagates_success(temp_db_dir, db, git
     args, kwargs = fake.run.call_args
     assert kwargs["allow_edits"] is True
     assert kwargs["cwd"] == str(git_repo)
-    # A context without timeout_min runs unbounded, and model/system_prompt
-    # are None (no persona) so the harness omits --model/--system-prompt.
+    # A context without timeout_min runs unbounded, and system_prompt
+    # is None (no persona) so the harness omits --system-prompt.
     assert kwargs["timeout"] is None
-    assert kwargs["model"] is None
     assert kwargs["system_prompt"] is None
 
     # Prompt (first positional arg) carries the task name and description.
@@ -840,7 +849,7 @@ def test_execute_task_writes_no_banner_to_log(temp_db_dir, db, git_repo):
 
 
 def test_assigned_task_passes_persona_system_prompt_and_model(temp_db_dir, db, git_repo):
-    """A task with an assignee runs with the persona's system_prompt and model,
+    """A task with an assignee runs with the persona's system_prompt,
     proving the value threads through the context dict all the way to harness.run."""
     from minimise.personas import Persona
 
@@ -848,19 +857,18 @@ def test_assigned_task_passes_persona_system_prompt_and_model(temp_db_dir, db, g
     fake = Mock(spec=AgentHarness)
     fake.run.return_value = HarnessResult(success=True, output="ok")
     persona = Persona(name="reviewer", model="claude-opus-4-8", system_prompt="You are a picky reviewer.")
-    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, factory=_FixedHarnessFactory(fake, model=persona.model),
-                            personas={"reviewer": persona})
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker,
+                            factory=_FixedHarnessFactory(fake, personas={"reviewer": persona}))
     job_id, task = _setup_job_and_task(db, git_tracker)
     task.assignee = "reviewer"
 
     executor.execute_task(task, job_id, "")
 
     assert fake.run.call_args.kwargs["system_prompt"] == "You are a picky reviewer."
-    assert fake.run.call_args.kwargs["model"] == "claude-opus-4-8"
 
 
 def test_unassigned_task_passes_none_system_prompt_and_model(temp_db_dir, db, git_repo):
-    """A task with no assignee runs with system_prompt=None and model=None (today's behavior)."""
+    """A task with no assignee runs with system_prompt=None (today's behavior)."""
     from minimise.personas import Persona
 
     git_tracker = GitTracker(git_repo)
@@ -873,7 +881,6 @@ def test_unassigned_task_passes_none_system_prompt_and_model(temp_db_dir, db, gi
     executor.execute_task(task, job_id, "")
 
     assert fake.run.call_args.kwargs["system_prompt"] is None
-    assert fake.run.call_args.kwargs["model"] is None
 
 
 

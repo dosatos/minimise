@@ -13,6 +13,7 @@ from minimise.agents.harness import (
     ClaudeCodeHarness,
     PiHarness,
     HarnessFactory,
+    HarnessNotFoundError,
     _NameResolver,
     _extract_text,
     _extract_text_pi_live,
@@ -188,7 +189,7 @@ def test_command_includes_model_only_when_given(mock_popen):
     ClaudeCodeHarness().run("hi")
     assert "--model" not in mock_popen.call_args.args[0]
 
-    ClaudeCodeHarness().run("hi", model="claude-opus-4-8")
+    ClaudeCodeHarness(model="claude-opus-4-8").run("hi")
     cmd = mock_popen.call_args.args[0]
     assert "--model" in cmd
     assert cmd[cmd.index("--model") + 1] == "claude-opus-4-8"
@@ -198,11 +199,11 @@ def test_command_includes_model_only_when_given(mock_popen):
 def test_command_strips_provider_prefix_from_model(mock_popen):
     mock_popen.side_effect = make_fake_popen([])
 
-    ClaudeCodeHarness().run("hi", model="anthropic/claude-sonnet-4-8")
+    ClaudeCodeHarness(model="anthropic/claude-sonnet-4-8").run("hi")
     cmd = mock_popen.call_args.args[0]
     assert cmd[cmd.index("--model") + 1] == "claude-sonnet-4-8"
 
-    ClaudeCodeHarness().run("hi", model="claude-sonnet-4-8")
+    ClaudeCodeHarness(model="claude-sonnet-4-8").run("hi")
     cmd = mock_popen.call_args.args[0]
     assert cmd[cmd.index("--model") + 1] == "claude-sonnet-4-8"
 
@@ -609,7 +610,7 @@ def test_pi_command_includes_model_only_when_given(mock_popen):
     PiHarness().run("hi")
     assert "--model" not in mock_popen.call_args.args[0]
 
-    PiHarness().run("hi", model="gpt-5")
+    PiHarness(model="gpt-5").run("hi")
     cmd = mock_popen.call_args.args[0]
     assert "--model" in cmd
     assert cmd[cmd.index("--model") + 1] == "gpt-5"
@@ -619,11 +620,11 @@ def test_pi_command_includes_model_only_when_given(mock_popen):
 def test_pi_command_passes_canonical_model_through_unchanged(mock_popen):
     mock_popen.side_effect = make_fake_popen([])
 
-    PiHarness().run("hi", model="anthropic/claude-sonnet-4-8")
+    PiHarness(model="anthropic/claude-sonnet-4-8").run("hi")
     cmd = mock_popen.call_args.args[0]
     assert cmd[cmd.index("--model") + 1] == "anthropic/claude-sonnet-4-8"
 
-    PiHarness().run("hi", model="openai/gpt-4o")
+    PiHarness(model="openai/gpt-4o").run("hi")
     cmd = mock_popen.call_args.args[0]
     assert cmd[cmd.index("--model") + 1] == "openai/gpt-4o"
 
@@ -641,41 +642,71 @@ def test_pi_command_includes_system_prompt_only_when_given(mock_popen):
     assert cmd[cmd.index("--system-prompt") + 1] == "PERSONA"
 
 
-# --- HarnessFactory from_task() ---
+# --- HarnessFactory.for_task() ---
 
 
-def test_from_task_default():
-    """factory.from_task(Task(harness=None, assignee=None)) returns ClaudeCodeHarness."""
+def test_for_task_default():
+    """factory.for_task(Task(harness=None, assignee=None)) returns ClaudeCodeHarness."""
     Task = SimpleNamespace
     factory = HarnessFactory()
-    result = factory.from_task(Task(harness=None, assignee=None))
-    assert isinstance(result, ClaudeCodeHarness)
+    harness = factory.for_task(Task(harness=None, assignee=None, model=None))
+    assert isinstance(harness, ClaudeCodeHarness)
 
 
-def test_from_task_explicit():
-    """factory.from_task(Task(harness='pi', assignee=None)) returns PiHarness."""
+def test_for_task_explicit():
+    """factory.for_task(Task(harness='pi', assignee=None)) returns PiHarness."""
     Task = SimpleNamespace
     factory = HarnessFactory()
-    result = factory.from_task(Task(harness="pi", assignee=None))
-    assert isinstance(result, PiHarness)
+    harness = factory.for_task(Task(harness="pi", assignee=None, model=None))
+    assert isinstance(harness, PiHarness)
 
 
-def test_from_task_persona():
+def test_for_task_persona():
     """Persona harness selected via assignee."""
     Task = SimpleNamespace
     Persona = SimpleNamespace
-    personas = {"auditor": Persona(harness="pi")}
+    personas = {"auditor": Persona(harness="pi", model=None)}
     factory = HarnessFactory(personas=personas)
-    result = factory.from_task(Task(harness=None, assignee="auditor"))
-    assert isinstance(result, PiHarness)
+    harness = factory.for_task(Task(harness=None, assignee="auditor", model=None))
+    assert isinstance(harness, PiHarness)
 
 
-def test_from_task_default_harness():
+def test_for_task_unknown_persona_raises():
+    """An assignee naming a persona absent from the registry must fail loudly,
+    not silently fall back to the default harness/model."""
+    Task = SimpleNamespace
+    factory = HarnessFactory(personas={})
+    with pytest.raises(ValueError, match="unknown persona"):
+        factory.for_task(Task(harness=None, assignee="ghost", model=None))
+
+
+def test_resolve_prompt_for_task_unknown_persona_raises():
+    Task = SimpleNamespace
+    factory = HarnessFactory(personas={})
+    with pytest.raises(ValueError, match="unknown persona"):
+        factory.resolve_prompt_for_task(Task(assignee="ghost"))
+
+
+def test_resolve_prompt_for_task_no_assignee_returns_none():
+    Task = SimpleNamespace
+    factory = HarnessFactory(personas={})
+    assert factory.resolve_prompt_for_task(Task(assignee=None)) is None
+
+
+def test_resolve_prompt_for_task_known_persona():
+    Task = SimpleNamespace
+    Persona = SimpleNamespace
+    personas = {"reviewer": Persona(system_prompt="be picky")}
+    factory = HarnessFactory(personas=personas)
+    assert factory.resolve_prompt_for_task(Task(assignee="reviewer")) == "be picky"
+
+
+def test_for_task_default_harness():
     """HarnessFactory(default_harness='pi') returns PiHarness when no overrides."""
     Task = SimpleNamespace
     factory = HarnessFactory(default_harness="pi")
-    result = factory.from_task(Task(harness=None, assignee=None))
-    assert isinstance(result, PiHarness)
+    harness = factory.for_task(Task(harness=None, assignee=None, model=None))
+    assert isinstance(harness, PiHarness)
 
 
 # --- _NameResolver.resolve_model chain ---
@@ -750,28 +781,71 @@ def test_persona_model_none_does_not_override_default_model():
     )
 
 
-def test_harness_factory_resolve_model_delegates():
-    """HarnessFactory.resolve_model(task) delegates to the resolver chain."""
-    Task = SimpleNamespace
-    Persona = SimpleNamespace
-    personas = {"auditor": Persona(model="persona-model")}
-    factory = HarnessFactory(personas=personas, default_model="default-model")
+def test_resolve_unknown_persona_raises():
+    """An unregistered persona_name must raise, for both harness and model
+    resolution, instead of silently falling back to the default."""
+    resolver = _NameResolver({}, default_harness="claude", default_model="default-model")
+    with pytest.raises(ValueError, match="unknown persona"):
+        resolver.resolve(task_harness=None, persona_name="ghost")
+    with pytest.raises(ValueError, match="unknown persona"):
+        resolver.resolve_model(task_model=None, persona_name="ghost")
 
-    # task.model → wins
-    assert (
-        factory.resolve_model(Task(model="task-model", assignee="auditor"))
-        == "task-model"
-    )
-    # persona.model → via assignee
-    assert (
-        factory.resolve_model(Task(model=None, assignee="auditor"))
-        == "persona-model"
-    )
-    # default_model → fallback
-    assert (
-        factory.resolve_model(Task(model=None, assignee=None))
-        == "default-model"
-    )
-    # no model anywhere → None
-    factory_no_default = HarnessFactory()
-    assert factory_no_default.resolve_model(Task(model=None, assignee=None)) is None
+
+# --- HarnessFactory._instantiate / for_worker ---
+
+
+def test_instantiate_claude_and_pi():
+    factory = HarnessFactory()
+    assert isinstance(factory._instantiate("claude"), ClaudeCodeHarness)
+    assert isinstance(factory._instantiate("pi"), PiHarness)
+
+
+def test_instantiate_unknown_raises_value_error():
+    factory = HarnessFactory()
+    with pytest.raises(ValueError):
+        factory._instantiate("nope")
+
+
+def test_instantiate_missing_binary_raises_harness_not_found(monkeypatch):
+    """factory._instantiate('pi') raises HarnessNotFoundError when 'pi' isn't on PATH."""
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    factory = HarnessFactory()
+    with pytest.raises(HarnessNotFoundError) as exc_info:
+        factory._instantiate("pi")
+    assert exc_info.value.harness_name == "pi"
+    assert "pi" in str(exc_info.value)
+    assert "mini doctor" in str(exc_info.value)
+
+
+def test_for_task_missing_binary_raises_harness_not_found(monkeypatch):
+    """factory.for_task(...) raises HarnessNotFoundError when the resolved binary is missing."""
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    Task = SimpleNamespace
+    factory = HarnessFactory()
+    with pytest.raises(HarnessNotFoundError):
+        factory.for_task(Task(harness="pi", assignee=None, model=None))
+
+
+def test_for_worker_resolution_order():
+    """worker.harness/model beats persona.harness/model beats factory defaults."""
+    Persona = SimpleNamespace
+    Worker = SimpleNamespace
+    personas = {"auditor": Persona(harness="pi", model="persona-model")}
+    factory = HarnessFactory(personas=personas, default_harness="claude", default_model="default-model")
+
+    # explicit worker.harness/model wins
+    harness = factory.for_worker(Worker(harness="pi", persona=None, model="worker-model"))
+    assert isinstance(harness, PiHarness) and harness._model == "worker-model"
+    # persona default used when no explicit worker override
+    harness = factory.for_worker(Worker(harness=None, persona="auditor", model=None))
+    assert isinstance(harness, PiHarness) and harness._model == "persona-model"
+    # global defaults are the fallback
+    harness = factory.for_worker(Worker(harness=None, persona=None, model=None))
+    assert isinstance(harness, ClaudeCodeHarness) and harness._model == "default-model"
+
+
+def test_resolve_prompt_for_worker_unknown_persona_raises():
+    Worker = SimpleNamespace
+    factory = HarnessFactory(personas={})
+    with pytest.raises(ValueError, match="unknown persona"):
+        factory.resolve_prompt_for_worker(Worker(persona="ghost", prompt=None, prompt_file=None))

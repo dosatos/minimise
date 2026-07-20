@@ -195,6 +195,75 @@ mini job results diff a1b2c3d4 --task-id task-2
 mini job show a1b2c3d4 --task-id task-2
 ```
 
+## Harness Configuration
+
+By default every task and loop step runs on `claude` with no explicit model. Override
+that per-task, per-persona, globally via `~/.minimise/settings.yaml`, or per-invocation
+via a CLI flag or env var.
+
+### Resolution chain
+
+For each task/step, harness and model are each resolved independently, highest priority first:
+
+**Harness:**
+1. `task.harness` (plan YAML) / `step.harness` (loop YAML)
+2. `persona.harness` (if the task has an `assignee`)
+3. `--harness` CLI flag → `MINIMISE_HARNESS` env var → `settings.yaml` `harness:` — whichever is set first, resolved once at `job start` / `loop start` time
+4. `claude` (hardcoded default)
+
+**Model:**
+1. `task.model` / `step.model`
+2. `persona.model` (if the task has an `assignee`)
+3. `--model` CLI flag → `MINIMISE_MODEL` env var → `settings.yaml` `model:`
+4. `None` (harness's own default model)
+
+`harness`/`model` and `assignee`/`persona` are mutually exclusive — on a task, `harness`/
+`model` vs. `assignee`; on a loop step, `harness`/`model` vs. `persona`. A persona already
+carries its own harness/model, so set one or the other, not both. `harness`/`model` may
+freely accompany a step's `prompt`/`prompt_file`.
+
+### `settings.yaml`
+
+```yaml
+# ~/.minimise/settings.yaml
+version: "0.0.1"
+harness: pi              # optional, default: claude
+model: claude-opus-4-8   # optional, default: none
+```
+
+Both keys are optional; a missing file or missing keys fall back to the hardcoded
+defaults. Check what's active with `mini doctor`.
+
+**Example — pin loops to pi, keep jobs on claude:**
+
+```yaml
+# ~/.minimise/settings.yaml
+version: "0.0.1"
+harness: claude
+```
+
+```bash
+mini loop start <ID> --harness pi   # override just this loop
+mini job start <ID>                 # unaffected, still claude
+```
+
+**Example — hybrid loop with per-step harness:**
+
+```yaml
+# loop spec
+loop:
+  plan:
+    persona: architect        # inherits settings/CLI default harness
+  implement:
+    harness: pi               # this step always runs on pi
+    model: gpt-5
+  evaluate:
+    dimensions:
+      - name: clarity
+        rubric: Is the change easy to follow?
+        harness: claude       # this dimension always runs on claude
+```
+
 ## Task Goals
 
 Each task in a plan should include a `goal` field that clearly states the task's objective:
@@ -245,7 +314,9 @@ architect:
 
 Assign a persona to a task with the optional per-task `assignee:` field naming a
 persona. A task with no `assignee` uses the default prompt and model. An unknown
-persona name causes `mini job new` to fail up front.
+persona name causes `mini job new` to fail up front, and also fails loudly at
+run time (rather than silently falling back to defaults) if the persona was
+since removed or renamed.
 
 ```yaml
 tasks:
@@ -266,6 +337,7 @@ mini job show <ID>                            # Show plan structure
 mini job show <ID> --task-id <TASK_ID>        # Show full prompt with context for a task
 mini job start <ID>                           # Start/resume a job (idempotent); backs off a live one
 mini job start <ID> --harness pi              # Run with pi instead of claude (default: claude)
+mini job start <ID> --model claude-opus-4-8   # Override the default model for this job
 mini job stop <ID>                            # Stop job (RUNNING → STOPPED)
 ```
 
@@ -313,6 +385,8 @@ mini job logs <ID> --query 'fields @timestamp, message | filter type = "task" | 
 ```bash
 mini loop new --plan FILE                     # Register a loop from a spec (does not execute)
 mini loop start <ID>                          # Start/resume a loop in the foreground (idempotent)
+mini loop start <ID> --harness pi             # Run with pi instead of claude (default: claude)
+mini loop start <ID> --model claude-opus-4-8  # Override the default model for this loop
 mini loop stop <ID>                           # Stop a running loop
 mini loop list                                # List all loops
 mini loop status <ID>                         # Iteration progress (per-iteration Gantt)
@@ -326,6 +400,12 @@ mini loop logs <ID> [-f] [--query '...']      # Agent narration (same query gram
 
 ```bash
 mini view start                # Launch web UI (Ctrl+C to stop)
+```
+
+### Diagnostics
+
+```bash
+mini doctor                    # Harness/provider health: binaries on PATH, API keys, active settings
 ```
 
 ## Job Lifecycle

@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import threading
 from abc import ABC, abstractmethod
@@ -13,6 +14,26 @@ from minimise.logging.backend import JobLogBackend, JsonlLogBackend
 # so grep/reference-finding stays precise as the registry grows.
 HARNESS_CLAUDE = "claude"
 HARNESS_PI = "pi"
+
+# Install hints shown by HarnessNotFoundError; keep in sync with each
+# harness's actual CLI package.
+_INSTALL_HINTS = {
+    HARNESS_CLAUDE: "npm install -g @anthropic-ai/claude-code",
+    HARNESS_PI: "npm install -g @mariozechner/pi-coding-agent",
+}
+
+
+class HarnessNotFoundError(RuntimeError):
+    """Raised when a resolved harness's binary isn't found on PATH."""
+
+    def __init__(self, harness_name: str) -> None:
+        self.harness_name = harness_name
+        install_cmd = _INSTALL_HINTS.get(harness_name, f"install the '{harness_name}' CLI")
+        super().__init__(
+            f"Harness '{harness_name}' is not installed (binary not found on PATH).\n"
+            f"  Install it: {install_cmd}\n"
+            f"  Diagnose further: mini doctor"
+        )
 
 
 @dataclass
@@ -106,7 +127,6 @@ class AgentHarness(ABC):
         *,
         cwd: Optional[str] = None,
         timeout: Optional[float] = None,
-        model: Optional[str] = None,
         system_prompt: Optional[str] = None,
         allow_edits: bool = False,
         log_path: Optional[Union[str, Path]] = None,
@@ -142,8 +162,9 @@ class AgentHarness(ABC):
 class ClaudeCodeHarness(AgentHarness):
     """AgentHarness backed by the `claude -p` CLI subprocess."""
 
-    def __init__(self, backend: Optional[JobLogBackend] = None) -> None:
+    def __init__(self, backend: Optional[JobLogBackend] = None, model: Optional[str] = None) -> None:
         self._backend = backend or JsonlLogBackend()
+        self._model = model
 
     def wrap_prompt(self, prompt: str) -> str:
         return (
@@ -198,7 +219,6 @@ class ClaudeCodeHarness(AgentHarness):
         *,
         cwd: Optional[str] = None,
         timeout: Optional[float] = None,
-        model: Optional[str] = None,
         system_prompt: Optional[str] = None,
         allow_edits: bool = False,
         log_path: Optional[Union[str, Path]] = None,
@@ -206,6 +226,7 @@ class ClaudeCodeHarness(AgentHarness):
         log_filter: Optional[Callable[[str], str]] = None,
     ) -> HarnessResult:
         # Translate canonical model string: strip provider/ prefix
+        model = self._model
         if model and "/" in model:
             model = model.split("/", 1)[1]
 
@@ -309,8 +330,9 @@ class ClaudeCodeHarness(AgentHarness):
 class PiHarness(AgentHarness):
     """AgentHarness backed by the `pi --mode json` CLI subprocess."""
 
-    def __init__(self, backend: Optional[JobLogBackend] = None) -> None:
+    def __init__(self, backend: Optional[JobLogBackend] = None, model: Optional[str] = None) -> None:
         self._backend = backend or JsonlLogBackend()
+        self._model = model
 
     def wrap_prompt(self, prompt: str) -> str:
         # Pi has no harness-specific guard rails yet. ClaudeCodeHarness
@@ -393,7 +415,6 @@ class PiHarness(AgentHarness):
         *,
         cwd: Optional[str] = None,
         timeout: Optional[float] = None,
-        model: Optional[str] = None,
         system_prompt: Optional[str] = None,
         allow_edits: bool = False,
         log_path: Optional[Union[str, Path]] = None,
@@ -402,6 +423,7 @@ class PiHarness(AgentHarness):
     ) -> HarnessResult:
         # Pi accepts provider/id format natively via --model; no translation needed.
         # Pass canonical model string through unchanged.
+        model = self._model
 
         # Let pi use its default thinking level — the model/provider decides.
         # Our parsers already filter thinking blocks from logs (_extract_text_pi_live)
@@ -559,6 +581,13 @@ class _NameResolver:
         self._default_harness = default_harness
         self._default_model = default_model
 
+    def _get_persona(self, persona_name: str):
+        """Look up persona_name, raising if it names a persona not in the registry."""
+        persona = self._personas.get(persona_name)
+        if persona is None:
+            raise ValueError(f"unknown persona {persona_name!r}")
+        return persona
+
     def resolve(
         self,
         *,
@@ -570,8 +599,8 @@ class _NameResolver:
         if task_harness:
             return task_harness
         if persona_name:
-            persona = self._personas.get(persona_name)
-            if persona is not None and getattr(persona, "harness", None):
+            persona = self._get_persona(persona_name)
+            if getattr(persona, "harness", None):
                 return persona.harness
         return self._default_harness
 
@@ -580,6 +609,13 @@ class _NameResolver:
         return self.resolve(
             task_harness=getattr(task, "harness", None),
             persona_name=getattr(task, "assignee", None),
+        )
+
+    def resolve_for_worker(self, worker) -> str:
+        """Extract harness and persona from a LoopEngine Worker."""
+        return self.resolve(
+            task_harness=getattr(worker, "harness", None),
+            persona_name=getattr(worker, "persona", None),
         )
 
     def resolve_model(
@@ -599,8 +635,8 @@ class _NameResolver:
         if task_model:
             return task_model
         if persona_name:
-            persona = self._personas.get(persona_name)
-            if persona is not None and persona.model:
+            persona = self._get_persona(persona_name)
+            if persona.model:
                 return persona.model
         return self._default_model
 
@@ -623,22 +659,67 @@ class HarnessFactory:
         default_model: Optional[str] = None,
         backend: Optional[JobLogBackend] = None,
     ) -> None:
+        self._personas = personas or {}
         self._resolver = _NameResolver(
-            personas or {},
+            self._personas,
             default_harness=default_harness,
             default_model=default_model,
         )
         self._backend = backend or JsonlLogBackend()
 
-    def from_task(self, task) -> AgentHarness:
-        """Resolve + instantiate the harness for a Task."""
-        name = self._resolver.resolve_for_task(task)
-        cls = _BUILDERS[name]
-        return cls(backend=self._backend)
+    def resolve_prompt_for_worker(self, worker) -> Optional[str]:
+        """Resolve a Worker's system prompt: persona | prompt | prompt_file | None.
 
-    def resolve_model(self, task) -> Optional[str]:
-        """Resolve the model string for *task* using the resolution chain.
-
-        Order: task.model → persona.model → factory default_model → None.
+        Raises ValueError if worker.persona names a persona not in the registry.
         """
-        return self._resolver.resolve_model_for_task(task)
+        if worker.persona:
+            persona = self._personas.get(worker.persona)
+            if persona is None:
+                raise ValueError(f"unknown persona {worker.persona!r}")
+            return persona.system_prompt
+        if worker.prompt:
+            return worker.prompt
+        if worker.prompt_file:
+            return Path(worker.prompt_file).read_text()
+        return None
+
+    def resolve_prompt_for_task(self, task) -> Optional[str]:
+        """Resolve a Task's system prompt: persona.system_prompt (via assignee), else None.
+
+        Raises ValueError if task.assignee names a persona not in the registry.
+        """
+        assignee = getattr(task, "assignee", None)
+        if not assignee:
+            return None
+        persona = self._personas.get(assignee)
+        if persona is None:
+            raise ValueError(f"unknown persona {assignee!r}")
+        return persona.system_prompt
+
+    def _instantiate(self, name: str, model: Optional[str] = None) -> AgentHarness:
+        """Look up, availability-check, and instantiate the harness registered under *name*."""
+        if name not in _BUILDERS:
+            raise ValueError(f"Unknown harness: {name!r}")
+        if shutil.which(name) is None:
+            raise HarnessNotFoundError(name)
+        return _BUILDERS[name](backend=self._backend, model=model)
+
+    def for_task(self, task) -> AgentHarness:
+        """Resolve + instantiate the harness for a Task, with its model baked in.
+
+        Order: task.harness/model → persona.harness/model → factory default → None.
+        """
+        name = self._resolver.resolve_for_task(task)
+        model = self._resolver.resolve_model_for_task(task)
+        return self._instantiate(name, model)
+
+    def for_worker(self, worker) -> AgentHarness:
+        """Resolve + instantiate the harness for a LoopEngine Worker, with its model baked in.
+
+        Order: worker.harness/model → persona.harness/model → factory default → None.
+        """
+        name = self._resolver.resolve_for_worker(worker)
+        model = self._resolver.resolve_model(
+            task_model=worker.model, persona_name=worker.persona
+        )
+        return self._instantiate(name, model)

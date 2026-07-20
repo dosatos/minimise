@@ -218,6 +218,48 @@ def test_loopspec_from_yaml(tmp_path):
     assert spec.loop.evaluate.dimensions[1].prompt.startswith("You are")
 
 
+def test_loopspec_from_yaml_parses_worker_harness_and_model(tmp_path):
+    from minimise.models import LoopSpec
+    yaml_text = """\
+version: "0.0.1"
+name: "sample loop"
+goal: "make it good"
+loop:
+  plan:
+    prompt: "Plan the change."
+    harness: pi
+    model: opus
+  implement:
+    persona: coder
+  evaluate:
+    max_concurrent: 2
+    dimensions:
+      - name: coverage
+        prompt: "Check coverage."
+        rubric: "cover the edge cases"
+        harness: claude
+        model: sonnet
+max_iterations: 10
+"""
+    p = tmp_path / "loop.yaml"
+    p.write_text(yaml_text)
+    spec = LoopSpec.from_yaml(p)
+    assert spec.loop.plan.harness == "pi"
+    assert spec.loop.plan.model == "opus"
+    assert spec.loop.implement.harness is None
+    assert spec.loop.implement.model is None
+    assert spec.loop.evaluate.dimensions[0].harness == "claude"
+    assert spec.loop.evaluate.dimensions[0].model == "sonnet"
+
+
+def test_worker_rejects_persona_with_harness_or_model():
+    from minimise.models import Worker
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        Worker(persona="planner", harness="pi")
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        Worker(persona="planner", model="opus")
+
+
 def test_dimension_rejects_two_workers():
     from minimise.models import Dimension
     with pytest.raises(ValueError):

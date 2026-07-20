@@ -11,7 +11,7 @@ from rich.table import Table
 from rich.text import Text
 
 import minimise.interfaces.cli as _cli  # patchable constants; read at call time
-from minimise.agents.harness import HARNESS_CLAUDE, HARNESS_PI
+from minimise.agents.harness import HARNESS_CLAUDE, HARNESS_PI, HarnessNotFoundError
 from minimise.models import JobStatus, TaskStatus, Plan
 from minimise.interfaces.terminal_ui import get_status_color, render_execution_table_with_gantt, humanize_duration
 from minimise.interfaces.cli._shared import (
@@ -23,6 +23,7 @@ from minimise.interfaces.cli._shared import (
     _format_datetime,
     _filter_tasks_by_id,
     _get_and_validate_job,
+    print_harness_not_found,
     task_narration,
 )
 from minimise.interfaces.cli.results import job_results
@@ -136,6 +137,9 @@ def job_start(job_id: str, harness: str | None, model: str | None):
         console.print(f"[bold]Job ID:[/bold] {job_id}")
         console.print(f"[dim]Check status with: mini job status {job_id[:8]}[/dim]")
 
+    except HarnessNotFoundError as e:
+        print_harness_not_found(e)
+        raise SystemExit(1)
     except Exception as e:
         console.print(f"[red]Error: {str(e)}[/red]")
         raise SystemExit(1)

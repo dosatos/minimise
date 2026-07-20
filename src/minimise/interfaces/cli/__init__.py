@@ -30,6 +30,7 @@ from minimise.interfaces.cli._shared import (  # noqa: E402  (constants must pre
     _filter_tasks_by_id,
     _get_and_validate_job,
 )
+from minimise.interfaces.cli.doctor import doctor  # noqa: E402
 from minimise.interfaces.cli.job import job  # noqa: E402
 from minimise.interfaces.cli.loop import loop  # noqa: E402
 from minimise.interfaces.cli.persona import persona  # noqa: E402
@@ -42,6 +43,7 @@ def mini():
     pass
 
 
+mini.add_command(doctor)
 mini.add_command(job)
 mini.add_command(loop)
 mini.add_command(persona)

@@ -3,20 +3,21 @@
 No LLM, no network: the StubHarness returns canned control lines keyed by
 (step_type, iteration, dimension) — read off the engine's own log_fields — so
 every branch of the plan→implement→evaluate orchestrator is exercised
-deterministically. Mirrors the shipped `loop_engine.demo()` but as pytest,
-plus resume + external-stop scenarios the demo doesn't cover.
+deterministically.
 """
 
 import importlib
 import tempfile
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
-from minimise.agents.harness import AgentHarness, HarnessResult
-from minimise.models import JobStatus, LoopSpec
+from minimise.agents.harness import AgentHarness, HarnessFactory, HarnessResult
+from minimise.models import JobStatus, LoopSpec, Worker
 from minimise.orchestration import loop_journal as journal
 from minimise.orchestration.loop_engine import LoopEngine
+from minimise.personas import Persona
 from minimise.storage.database import Database
 from minimise.storage.loop_store import LoopStore
 
@@ -61,6 +62,18 @@ class StubHarness(AgentHarness):
         return HarnessResult(success=True, output=outs[i])
 
 
+class _FixedHarnessFactory(HarnessFactory):
+    """Route every step to one pre-built harness, while still resolving models
+    and system prompts through the real worker > persona > default chain."""
+
+    def __init__(self, harness: AgentHarness, personas: dict):
+        super().__init__(personas=personas)
+        self._fixed = harness
+
+    def _instantiate(self, name: str, model=None) -> AgentHarness:
+        return self._fixed
+
+
 def _build(tmp_path, spec=SPEC):
     db = Database(tmp_path / "t.db")
     db.init_db()
@@ -69,9 +82,13 @@ def _build(tmp_path, spec=SPEC):
     return db, store, loop.loop_id
 
 
+def _fixed(harness, personas=None):
+    return _FixedHarnessFactory(harness, personas or {})
+
+
 def _run(tmp_path, harness, spec=SPEC):
     db, store, lid = _build(tmp_path, spec)
-    status = LoopEngine(harness=harness, store=store, db=db).run(lid)
+    status = LoopEngine(factory=_fixed(harness), store=store, db=db).run(lid)
     return status, db, store, lid
 
 
@@ -121,6 +138,21 @@ def test_implement_fail_reruns_plan_skips_evaluate(tmp_path):
     assert h.calls.count(("implement", 1, None)) == 1
 
 
+# --- 3b) implement always fails, planner always continues -> MAX_REPLANS cap ----
+
+def test_replan_cap_exhausted_failed(tmp_path):
+    """Without MAX_REPLANS this would spin forever: iteration never advances."""
+    h = StubHarness({
+        ("plan", 1, None): ['{"control":"continue"}'],           # always continue
+        ("implement", 1, None): ['{"control":"failed","handover":"stuck"}'],  # always fail
+    })
+    status, db, store, lid = _run(tmp_path, h)
+    assert status == JobStatus.FAILED
+    # never reached evaluate/commit — the failing pass never converges
+    assert journal.last_committed_iteration(store.journal_path(lid)) == 0
+    assert h.calls.count(("implement", 1, None)) == LoopEngine.MAX_REPLANS + 1
+
+
 # --- 4a) malformed control -> gate re-runs the step -> succeeds within retries --
 
 def test_malformed_control_retried_then_succeeds(tmp_path):
@@ -162,7 +194,7 @@ def test_resume_reruns_only_missing_dimension(tmp_path):
         ("evaluate", 2, "b"): ['{"control":"done","findings":"f"}'],
         ("plan", 3, None): ['{"control":"done"}'],  # iter 3 planner stops -> COMPLETED
     })
-    status = LoopEngine(harness=h, store=store, db=db).run(lid)
+    status = LoopEngine(factory=_fixed(h), store=store, db=db).run(lid)
     assert status == JobStatus.COMPLETED
     # Only the missing dimension re-ran; plan/implement/dim-a were NOT re-invoked.
     assert ("evaluate", 2, "b") in h.calls
@@ -184,7 +216,7 @@ def test_external_stop_halts_and_stays_stopped(tmp_path):
             db.update_loop_status(lid, status=JobStatus.STOPPED)
 
     h = StubHarness({("plan", 1, None): ['{"control":"continue"}']}, on_call=flip)
-    status = LoopEngine(harness=h, store=store, db=db).run(lid)
+    status = LoopEngine(factory=_fixed(h), store=store, db=db).run(lid)
     assert status == JobStatus.STOPPED
     assert db.get_loop(lid).status == JobStatus.STOPPED
     # Halted before implement — the in-flight plan step was the last agent call.
@@ -245,7 +277,7 @@ def test_mid_run_patch_adds_dimension_and_stamps_plan_version(tmp_path):
         ("plan", 3, None): ['{"control":"done"}'],
     }, on_call=add_dimension_and_bump)
 
-    status = LoopEngine(harness=h, store=store, db=db).run(lid)
+    status = LoopEngine(factory=_fixed(h), store=store, db=db).run(lid)
     assert status == JobStatus.COMPLETED
 
     # The added dimension ran on the very next iteration.
@@ -256,6 +288,122 @@ def test_mid_run_patch_adds_dimension_and_stamps_plan_version(tmp_path):
     iter2 = [r for r in recs if r.get("iteration") == 2]
     assert iter1 and all(r.get("plan_version") == 1 for r in iter1)
     assert iter2 and all(r.get("plan_version") == 2 for r in iter2)
+
+
+# --- HarnessFactory-driven per-step harness/model resolution -------------------
+
+class RecordingHarness(AgentHarness):
+    """Records the model it was constructed with and how many times run() fired."""
+
+    def __init__(self, tag, model=None):
+        self.tag = tag
+        self.model = model
+        self.calls = 0
+
+    def run(self, prompt, **kw):
+        self.calls += 1
+        return HarnessResult(success=True, output='{"control":"done"}')
+
+
+class WrappingHarness(RecordingHarness):
+    """Like RecordingHarness, but exercises a real wrap_prompt override so callers
+    that skip it are caught (mirrors ClaudeCodeHarness's guard-rail injection)."""
+
+    def wrap_prompt(self, prompt):
+        return "WRAPPED:" + prompt
+
+    def run(self, prompt, **kw):
+        self.last_prompt = prompt
+        return super().run(prompt, **kw)
+
+
+def test_run_step_wraps_prompt_via_harness(tmp_path):
+    """_run_step must call harness.wrap_prompt() before run(), same as TaskExecutor."""
+    built = {}
+
+    class TrackingFactory(HarnessFactory):
+        def _instantiate(self, name, model=None):
+            h = built.setdefault(name, WrappingHarness(name, model))
+            return h
+
+    factory = TrackingFactory(personas={}, default_harness="claude")
+    db, store, lid = _build(tmp_path)
+    worker = Worker()
+    eng = LoopEngine(store=store, db=db, factory=factory)
+
+    eng._run_step(lid, store.load_spec(lid), store.journal_path(lid), "plan", worker, 1)
+
+    assert built["claude"].last_prompt.startswith("WRAPPED:")
+
+
+def test_run_step_resolves_harness_per_worker_from_factory(tmp_path):
+    """_run_step asks the factory for a fresh harness per worker instead of the fixed one."""
+    built = {}
+
+    class TrackingFactory(HarnessFactory):
+        def _instantiate(self, name, model=None):
+            h = RecordingHarness(name, model)
+            built[name] = h
+            return h
+
+    factory = TrackingFactory(personas={}, default_harness="claude")
+    db, store, lid = _build(tmp_path)
+    worker = Worker(harness="pi")
+    eng = LoopEngine(store=store, db=db, factory=factory)
+
+    control = eng._run_step(lid, store.load_spec(lid), store.journal_path(lid), "plan", worker, 1)
+
+    assert control == "done"
+    assert "pi" in built
+    assert built["pi"].calls == 1
+    assert built["pi"].model is None
+
+
+def test_worker_persona_and_model_are_mutually_exclusive():
+    """A persona already carries its own harness/model; combining them is ambiguous."""
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        Worker(persona="p", model="step-override-model")
+
+
+def test_run_step_uses_persona_model(tmp_path):
+    """A step assigned a persona runs with that persona's model."""
+    built = {}
+
+    class TrackingFactory(HarnessFactory):
+        def _instantiate(self, name, model=None):
+            h = built.setdefault(name, RecordingHarness(name, model))
+            return h
+
+    persona = Persona(name="p", system_prompt="x", model="persona-model")
+    factory = TrackingFactory(personas={"p": persona}, default_harness="claude")
+    db, store, lid = _build(tmp_path)
+    worker = Worker(persona="p")
+    eng = LoopEngine(store=store, db=db, factory=factory)
+
+    eng._run_step(lid, store.load_spec(lid), store.journal_path(lid), "plan", worker, 1)
+
+    assert built["claude"].model == "persona-model"
+    assert built["claude"].calls == 1
+
+
+def test_harness_and_model_resolution_chain_worker_beats_persona_beats_default():
+    class TrackingFactory(HarnessFactory):
+        def _instantiate(self, name, model=None):
+            return RecordingHarness(name, model)
+
+    persona = Persona(name="p", harness="pi", model="persona-model", system_prompt="x")
+    factory = TrackingFactory(
+        personas={"p": persona}, default_harness="claude", default_model="default-model"
+    )
+
+    harness = factory.for_worker(Worker(harness="pi", model="worker-model"))
+    assert harness.tag == "pi" and harness.model == "worker-model"    # worker wins both
+
+    harness = factory.for_worker(Worker(persona="p"))
+    assert harness.tag == "pi" and harness.model == "persona-model"   # persona wins over default
+
+    harness = factory.for_worker(Worker())
+    assert harness.tag == "claude" and harness.model == "default-model"  # settings default
 
 
 # --- mini smoke (dogfood): `loop new`/`list` against examples/example-loop.yaml -

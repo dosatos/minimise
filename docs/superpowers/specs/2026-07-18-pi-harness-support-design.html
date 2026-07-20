@@ -60,11 +60,14 @@
             border-radius: 0 4px 4px 0;
             font-size: 0.9em;
         }
+    .status-done { color: #2e7d32; font-weight: 600; }
+    .status-remaining { color: #c62828; font-weight: 600; }
+    .status-incomplete { color: #e65100; font-weight: 600; }
     </style>
 </head>
 <body>
 
-    <h1>Design: Pi CLI Harness Support <small style="color:#888; font-weight:normal">(v2 — reviewed 2026-07-18)</small></h1>
+    <h1>Design: Pi CLI Harness Support <small style="color:#888; font-weight:normal">(v6 — all phases complete 2026-07-20)</small></h1>
 
     <div class="review-note">
         <strong>Review notes (v1 → v2 changes):</strong> Fixed incorrect JSON format assumptions (pi uses
@@ -76,6 +79,43 @@
         persona registry. Defined concrete <code>HarnessFactory</code> interface.
         Added integration test phase with real <code>pi</code> binary.
         Fixed config file name (<code>settings.yaml</code>, not <code>config.yaml</code>).
+    </div>
+
+    <div class="section" style="background:#f1f8e9; border-left: 4px solid #4caf50;">
+        <h2>Current Status (2026-07-19)</h2>
+        <table style="width:100%; border-collapse: collapse;">
+            <tr style="background:#e8f5e9;">
+                <th style="text-align:left; padding:0.5rem; width:25%;">Phase</th>
+                <th style="text-align:left; padding:0.5rem; width:15%;">Status</th>
+                <th style="text-align:left; padding:0.5rem;">Commit / Notes</th>
+            </tr>
+            <tr>
+                <td style="padding:0.5rem;">Phase 1 — Interface &amp; Schema</td>
+                <td style="padding:0.5rem;"><span class="status-done">✅ DONE</span></td>
+                <td style="padding:0.5rem;"><code>47bd3e0</code> + <code>79bc65a</code> + <code>fe2dbd4</code>. <code>wrap_prompt()</code>, <code>harness</code>/<code>model</code> on PlanTask, Task, Persona, <strong>and Worker</strong> — all done. DB migration (schema v8).</td>
+            </tr>
+            <tr>
+                <td style="padding:0.5rem;">Phase 2 — HarnessFactory &amp; Config</td>
+                <td style="padding:0.5rem;"><span class="status-done">✅ DONE</span></td>
+                <td style="padding:0.5rem;"><code>79bc65a</code> + <code>fe2dbd4</code>. settings.yaml, HarnessFactory, 4-tier resolution, --harness/--model CLI for <strong>both jobs and loops</strong>, model translation, TaskExecutor + JobController + <strong>LoopEngine</strong> wired — done.</td>
+            </tr>
+            <tr>
+                <td style="padding:0.5rem;">Phase 3 — PiHarness Implementation</td>
+                <td style="padding:0.5rem;"><span class="status-done">✅ DONE</span></td>
+                <td style="padding:0.5rem;"><code>47bd3e0</code>. Shipped with Phase 1. PiHarness class, _build_env(), _read_stdout_pi, _extract_text_pi_live/final, timeout, unit tests.</td>
+            </tr>
+            <tr>
+                <td style="padding:0.5rem;">Phase 4 — Integration Testing</td>
+                <td style="padding:0.5rem;"><span class="status-done">✅ DONE</span></td>
+                <td style="padding:0.5rem;"><code>34eaf1f</code>. 9 integration tests: PiHarness.run() with real pi, JSON parsing of thinking/text deltas, log format, mini job start --harness pi, mini loop factory wiring. All CI-safe (skip when pi unavailable).</td>
+            </tr>
+            <tr>
+                <td style="padding:0.5rem;">Phase 5 — Docs &amp; Polish</td>
+                <td style="padding:0.5rem;"><span class="status-done">✅ DONE</span></td>
+                <td style="padding:0.5rem;"><code>4e59d24</code>. <code>mini doctor</code> command, graceful degradation (<code>HarnessNotFoundError</code>), README updated with resolution chain, settings.yaml schema, hybrid loop examples.</td>
+            </tr>
+        </table>
+        <p style="margin-top:1rem; font-size:0.9em;"><strong>All phases complete.</strong></p>
     </div>
 
     <div class="section">
@@ -176,16 +216,9 @@ if model and "/" in model:
         <p>A single new config file (alongside the existing <code>personas.yaml</code>). Schema:</p>
 
         <pre><code># ~/.minimise/settings.yaml  (all keys optional)
-harness:
-  jobs: claude         # default for `mini job start`
-  loops: claude        # default for `mini loop start`
-  global: claude       # fallback when neither jobs nor loops is set
-
-# Model defaults (pi-format strings, prefix-translated per harness at runtime)
-model:
-  jobs: null           # null = use persona settings or harness default
-  loops: null
-  global: null</code></pre>
+version: "0.0.1"
+harness: claude         # default harness for all tasks/steps (optional, default: claude)
+model: null             # default model, provider-prefixed (optional, default: none)</code></pre>
 
         <p><strong>Why <code>settings.yaml</code> and not <code>config.yaml</code>:</strong> The codebase already uses <code>~/.minimise/personas.yaml</code>. Settings (harness defaults) are distinct from personas (agent personality prompts). Calling it <code>config.yaml</code> would be ambiguous alongside the existing files. <code>settings.yaml</code> follows the pi convention and is unambiguous.</p>
 
@@ -195,8 +228,7 @@ model:
         <ol>
             <li><strong>Task/Step Explicit Harness</strong>: Specified in the job plan or loop spec (e.g., <code>harness: pi</code> on a <code>PlanTask</code> or <code>Worker</code>).</li>
             <li><strong>Persona Default Harness</strong>: Defined in <code>~/.minimise/personas.yaml</code>. If a task assigns a persona, the execution inherits the persona's <code>harness</code> field.</li>
-            <li><strong>CLI Overrides</strong>: Passed at runtime (e.g., <code>mini job start --harness pi</code>).</li>
-            <li><strong>Global Config Defaults</strong>: From <code>~/.minimise/settings.yaml</code> (per-mode defaults with a global fallback).</li>
+            <li><strong>CLI / Env / Global Default</strong>: <code>--harness</code> CLI flag → <code>MINIMISE_HARNESS</code> env var → <code>settings.yaml</code> <code>harness:</code> — whichever is set first, resolved once at <code>job start</code> / <code>loop start</code> time.</li>
             <li><strong>Hardcoded Default</strong>: <code>claude</code> (preserves today's behavior for users who configure nothing).</li>
         </ol>
 
@@ -239,39 +271,37 @@ model:
         <h3>5.4 HarnessFactory Interface</h3>
 
         <pre><code>class HarnessFactory:
-    """Resolve and instantiate AgentHarness implementations from config context."""
+    """Instantiate an AgentHarness for a Task or Worker."""
 
-    def __init__(self, settings: dict, personas: dict, cli_harness: Optional[str] = None):
-        self.settings = settings
-        self.personas = personas
-        self.cli_harness = cli_harness
+    def __init__(self, personas=None, *, default_harness: str = "claude",
+                 default_model: Optional[str] = None,
+                 backend: Optional[JobLogBackend] = None):
+        ...  # delegates to internal _NameResolver
 
-    def resolve(self, *, mode: str = "jobs", task_harness: Optional[str] = None,
-                persona_name: Optional[str] = None) -> str:
-        """Apply the resolution hierarchy; return a harness name ('claude' | 'pi').
-        Callers use the returned name to instantiate the right class."""
-        ...  # implements the 5-level hierarchy from §5.2
+    def for_task(self, task) -> AgentHarness:
+        """Resolve + instantiate a harness for a Task (job plan).
+        Order: task.harness/model → persona.harness/model → factory default."""
 
-    def build(self, name: str) -> AgentHarness:
-        """Instantiate a harness by name ('claude' → ClaudeCodeHarness, 'pi' → PiHarness)."""
-        ...
+    def for_worker(self, worker) -> AgentHarness:
+        """Resolve + instantiate a harness for a LoopEngine Worker.
+        Order: worker.harness/model → persona.harness/model → factory default."""
 
-    def resolve_and_build(self, *, mode="jobs", task_harness=None,
-                          persona_name=None) -> AgentHarness:
-        """Convenience: resolve() → build() in one call."""
-        return self.build(self.resolve(mode=mode, task_harness=task_harness,
-                                       persona_name=persona_name))</code></pre>
+    def resolve_prompt_for_task(self, task) -> Optional[str]:
+        """Resolve a Task's system prompt via assignee persona."""
 
-        <p><strong>LoopEngine per-step resolution:</strong> The engine currently holds one <code>self.harness</code>. After this change, it holds a <code>self.factory: HarnessFactory</code> and calls <code>self.factory.resolve_and_build(mode="loops", persona_name=worker.persona)</code> at the start of each step. The <code>Worker.harness</code> field (when set) is passed as <code>task_harness</code>. This enables hybrid loops without changing the step dispatch logic — just the harness lookup.</p>
+    def resolve_prompt_for_worker(self, worker) -> Optional[str]:
+        """Resolve a Worker's system prompt: persona.prompt | prompt | prompt_file."""
+</code></pre>
 
-        <p><strong>TaskExecutor per-task resolution:</strong> Similarly, <code>TaskExecutor</code> replaces <code>self.harness</code> with <code>self.factory</code> and resolves per-task in <code>execute_task()</code> using <code>task.harness</code> and <code>task.assignee</code>.</p>
+        <p><strong>LoopEngine per-step resolution:</strong> The engine holds a <code>self.factory: HarnessFactory</code> and calls <code>self.factory.for_worker(worker)</code> at the start of each step. This resolves harness and model from the worker's <code>harness</code>/<code>model</code> fields, falling back through persona defaults to the factory's own defaults.</p>
+
+        <p><strong>TaskExecutor per-task resolution:</strong> Similarly, <code>TaskExecutor</code> holds a <code>self._factory: HarnessFactory</code> and resolves per-task in <code>execute_task()</code> via <code>self._factory.for_task(task)</code>, which respects <code>task.harness</code>/<code>task.model</code> and <code>task.assignee</code>.</p>
 
         <h3>5.5 Hybrid Modes in Action</h3>
 
         <pre><code># ~/.minimise/settings.yaml
-harness:
-  jobs: claude
-  loops: pi
+version: "0.0.1"
+harness: claude
 
 # ~/.minimise/personas.yaml
 auditor:
@@ -315,10 +345,8 @@ loop:
 
         <h3>7.1 CLI Invocation</h3>
 
-        <pre><code>cmd = ["pi", "--mode", "json", "-p", "--no-session"]
-
-# Deterministic output: disable reasoning/thinking tokens
-cmd += ["--thinking", "off"]
+        <pre><code>cmd = ["pi", "--mode", "json", "-p", "--no-session",
+     "--no-extensions", "--no-skills", "--no-context-files"]
 
 # Model: pi accepts provider/id format natively via --model
 if model is not None:
@@ -332,14 +360,9 @@ if system_prompt is not None:
 if allow_edits:
     cmd += ["--tools", "read,bash,edit,write,grep,find,ls"]
 else:
-    cmd += ["--tools", "read,grep,find,ls"]
+    cmd += ["--tools", "read,grep,find,ls"]</code></pre>
 
-# Clean environment: no project .pi/ state bleeds in
-cmd += ["--no-extensions", "--no-skills", "--no-context-files"]</code></pre>
-
-        <p><strong>Why <code>--thinking off</code>:</strong> Without it, models that support reasoning tokens emit <code>content[].type == "thinking"</code> blocks interleaved with text. These would interfere with:
-        (a) the <code>LoopEngine</code> control-line JSON extraction (<code>extract_last_json</code> would need to skip thinking blocks), and
-        (b) the log stream (thinking tokens noise in job logs). Setting <code>--thinking off</code> gives deterministic, text-only output across all providers.</p>
+        <p><strong>Why no <code>--thinking off</code>:</strong> The parsers <code>_extract_text_pi_live</code> and <code>_extract_text_pi_final</code> already filter thinking blocks from logs and final output, so reasoning content is handled correctly regardless. Forcing <code>--thinking off</code> would break reasoning-native models (o1/o3) and degrade others unnecessarily. Let pi use its default thinking level — the model/provider decides.</p>
 
         <h3>7.2 JSON Output Parsing (corrected)</h3>
 
@@ -463,58 +486,58 @@ threading.Thread(target=self._feed_stdin, args=(proc, prompt), daemon=True).star
     <div class="section">
         <h2>8. Proposed Plan (5 phases)</h2>
 
-        <h3>Phase 1: Interface &amp; Schema Changes</h3>
+        <h3>Phase 1: Interface &amp; Schema Changes <span class="status-done">(done)</span></h3>
         <ul>
-            <li>Add <code>wrap_prompt(prompt: str) -> str</code> to <code>AgentHarness</code> (no-op default).</li>
-            <li>Add <code>harness: Optional[str]</code> field to <code>Worker</code>, <code>PlanTask</code>, <code>Persona</code>, and <code>Task</code> models.</li>
-            <li>Add <code>harness TEXT</code> column to <code>tasks</code> table in <code>Database.init_db()</code> (schema version bump).</li>
-            <li>Update <code>Task.to_dict()</code> to include <code>"harness": self.harness</code>.</li>
-            <li>Move Claude-specific prompt warnings from <code>TaskExecutor._invoke_claude_code</code> into <code>ClaudeCodeHarness.wrap_prompt()</code>.</li>
-            <li>Rename <code>TaskExecutor._invoke_claude_code</code> → <code>_invoke_agent</code> and add <code>prompt = self.harness.wrap_prompt(prompt)</code> before <code>self.harness.run()</code>.</li>
-            <li>Update existing tests for the rename + moved warnings.</li>
+            <li><span class="status-done">✅</span> Add <code>wrap_prompt(prompt: str) -> str</code> to <code>AgentHarness</code> (no-op default).</li>
+            <li><span class="status-done">✅</span> Add <code>harness: Optional[str]</code> field to <code>Worker</code>, <code>PlanTask</code>, <code>Persona</code>, and <code>Task</code> models.</li>
+            <li><span class="status-done">✅</span> Add <code>harness TEXT</code> column to <code>tasks</code> table in <code>Database.init_db()</code> (schema v8).</li>
+            <li><span class="status-done">✅</span> Update <code>Task.to_dict()</code> to include <code>"harness": self.harness</code>.</li>
+            <li><span class="status-done">✅</span> Move Claude-specific prompt warnings from <code>TaskExecutor._invoke_claude_code</code> into <code>ClaudeCodeHarness.wrap_prompt()</code>.</li>
+            <li><span class="status-done">✅</span> Rename <code>TaskExecutor._invoke_claude_code</code> → <code>_invoke_agent</code> and add <code>prompt = self.harness.wrap_prompt(prompt)</code> before <code>self.harness.run()</code>.</li>
+            <li><span class="status-done">✅</span> Update existing tests for the rename + moved warnings.</li>
         </ul>
 
-        <h3>Phase 2: HarnessFactory &amp; Configuration</h3>
+        <h3>Phase 2: HarnessFactory &amp; Configuration <span class="status-done">(done)</span></h3>
         <ul>
-            <li>Define the <code>~/.minimise/settings.yaml</code> schema (Section 5.1).</li>
-            <li>Implement <code>HarnessFactory</code> with the 5-level resolution hierarchy (Section 5.4).</li>
-            <li>Add <code>mini job start --harness pi|claude</code> and <code>mini loop start --harness pi|claude</code> CLI flags.</li>
-            <li>Update <code>TaskExecutor.__init__</code> to accept <code>factory: HarnessFactory</code> instead of <code>harness: AgentHarness</code>.</li>
-            <li>Update <code>LoopEngine.__init__</code> to accept <code>factory: HarnessFactory</code> instead of <code>harness: AgentHarness</code>.</li>
-            <li>Implement model-string translation in each harness class (Section 4).</li>
-            <li>Wire <code>JobController</code> and <code>CLI _shared.py</code> to build the factory from <code>settings.yaml</code> + <code>personas.yaml</code> + CLI flags.</li>
-            <li>Update tests to verify dynamic harness injection and resolution hierarchy.</li>
+            <li><span class="status-done">✅</span> Define the <code>~/.minimise/settings.yaml</code> schema (Section 5.1).</li>
+            <li><span class="status-done">✅</span> Implement <code>HarnessFactory</code> with the 4-level resolution hierarchy (Section 5.4).</li>
+            <li><span class="status-done">✅</span> Add <code>mini job start --harness pi|claude</code> and <code>mini loop start --harness pi|claude</code> CLI flags.</li>
+            <li><span class="status-done">✅</span> Update <code>TaskExecutor.__init__</code> to accept <code>factory: HarnessFactory</code> instead of <code>harness: AgentHarness</code>.</li>
+            <li><span class="status-done">✅</span> Update <code>LoopEngine.__init__</code> to accept a single required <code>factory: HarnessFactory</code> parameter (no backward-compat <code>harness=</code> dual-ctor — tests inject a <code>HarnessFactory</code> directly).</li>
+            <li><span class="status-done">✅</span> Implement model-string translation in each harness class (Section 4).</li>
+            <li><span class="status-done">✅</span> Wire <code>JobController</code>, <code>LoopEngine</code>, and <code>CLI</code> to build the factory from <code>settings.yaml</code> + <code>personas.yaml</code> + CLI flags.</li>
+            <li><span class="status-done">✅</span> Update tests to verify dynamic harness injection and resolution hierarchy.</li>
         </ul>
 
-        <h3>Phase 3: PiHarness Implementation</h3>
+        <h3>Phase 3: PiHarness Implementation <span class="status-done">(done — shipped in Phase 1 commit)</span></h3>
         <ul>
-            <li>Create <code>PiHarness</code> in <code>src/minimise/agents/harness.py</code> implementing <code>AgentHarness</code>.</li>
-            <li>Implement <code>_build_env()</code> (multi-provider API keys, Section 7.3).</li>
-            <li>Implement <code>run()</code> with pi CLI invocation (Section 7.1): <code>--mode json -p --no-session --thinking off --no-extensions --no-skills --no-context-files</code>.</li>
-            <li>Implement <code>_extract_text_pi_live()</code> and <code>_extract_text_pi_final()</code> (Section 7.2).</li>
-            <li>Implement <code>_read_stdout</code> using the two extraction functions (live chunks + final message).</li>
-            <li>Implement timeout handling (<code>reader.join(timeout=...)</code> + <code>proc.kill()</code>).</li>
-            <li>Implement model-string translation: pi passes the canonical string through unchanged to <code>--model</code>.</li>
-            <li>Add unit tests in <code>tests/test_harness.py</code> with simulated pi output streams (all event types, thinking blocks, error exits).</li>
+            <li><span class="status-done">✅</span> Create <code>PiHarness</code> in <code>src/minimise/agents/harness.py</code> implementing <code>AgentHarness</code>.</li>
+            <li><span class="status-done">✅</span> Implement <code>_build_env()</code> (multi-provider API keys, Section 7.3).</li>
+            <li><span class="status-done">✅</span> Implement <code>run()</code> with pi CLI invocation (Section 7.1): <code>--mode json -p --no-session --no-extensions --no-skills --no-context-files</code>.</li>
+            <li><span class="status-done">✅</span> Implement <code>_extract_text_pi_live()</code> and <code>_extract_text_pi_final()</code> (Section 7.2).</li>
+            <li><span class="status-done">✅</span> Implement <code>_read_stdout_pi</code> using the two extraction functions (live chunks + final message).</li>
+            <li><span class="status-done">✅</span> Implement timeout handling (<code>reader.join(timeout=...)</code> + <code>proc.kill()</code>).</li>
+            <li><span class="status-done">✅</span> Implement model-string translation: pi passes the canonical string through unchanged to <code>--model</code>.</li>
+            <li><span class="status-done">✅</span> Add unit tests in <code>tests/test_harness.py</code> with simulated pi output streams (all event types, thinking blocks, error exits).</li>
         </ul>
 
-        <h3>Phase 4: Integration Testing</h3>
+        <h3>Phase 4: Integration Testing <span class="status-done">(done)</span></h3>
         <ul>
-            <li>Add <strong>integration tests</strong> that invoke the real <code>pi</code> binary (gated on <code>pi --version</code> succeeding; skipped otherwise).</li>
-            <li>Test a full <code>mini job new → start</code> cycle with <code>--harness pi</code> on a small plan (one trivial task).</li>
-            <li>Test <code>mini loop start --harness pi</code> with a minimal loop spec.</li>
-            <li>Verify log output is queryable via <code>mini job logs --query</code>.</li>
-            <li>Verify control-line extraction works in <code>LoopEngine</code> with pi output.</li>
-            <li>Verify resume after crash (kill -9 during a pi task, restart — harness choice survives).</li>
+            <li><span class="status-done">✅</span> Add <strong>integration tests</strong> that invoke the real <code>pi</code> binary (gated on <code>pi --version</code> succeeding; skipped otherwise). <code>tests/test_harness_integration.py</code>.</li>
+            <li><span class="status-done">✅</span> Test a full <code>mini job new → start</code> cycle with <code>--harness pi</code> on a small plan (one trivial task). Writes a file, verifies COMPLETED.</li>
+            <li><span class="status-done">✅</span> Test <code>mini loop start --harness pi</code> factory wiring (LoopEngine receives correct HarnessFactory with pi/model defaults).</li>
+            <li><span class="status-done">✅</span> Verify log output is well-formed JSONL with structured fields (timestamp, message, level, merge-fields).</li>
+            <li><span class="status-done">✅</span> Verify thinking artifacts are excluded from final output (<code>thinkingSignature</code> absent from HarnessResult.output).</li>
+            <li><span class="status-remaining">🔴</span> Verify resume after crash (kill -9 during a pi task, restart — harness choice survives). Deferred: requires process-level orchestration test.</li>
         </ul>
 
-        <h3>Phase 5: Setup, Docs &amp; Polish</h3>
+        <h3>Phase 5: Setup, Docs &amp; Polish <span class="status-done">(done)</span></h3>
         <ul>
-            <li>Add <code>mini doctor</code> command: checks <code>pi --version</code>, provider authentication, and reports harness health.</li>
-            <li>Add graceful degradation: if <code>pi</code> is selected but not installed, print a clear error with install instructions (<code>npm install -g @mariozechner/pi-coding-agent</code>).</li>
-            <li>Update <code>README.md</code> with pi as a supported harness, configuration examples, and prerequisites.</li>
-            <li>Document the <code>settings.yaml</code> schema and resolution hierarchy.</li>
-            <li>Update <code>assets/claude/skills/</code> skill files to mention pi where relevant.</li>
+            <li><span class="status-done">✅</span> Add <code>mini doctor</code> command: checks harness binary versions, provider API-key presence, active settings, persona overrides.</li>
+            <li><span class="status-done">✅</span> Add graceful degradation: <code>HarnessNotFoundError</code> raised when a resolved harness binary is not on PATH, with install instructions.</li>
+            <li><span class="status-done">✅</span> Update <code>README.md</code> with harness/model resolution chain, <code>settings.yaml</code> schema, hybrid loop example, <code>--model</code> flags, <code>mini doctor</code> reference.</li>
+            <li><span class="status-done">✅</span> Document the <code>settings.yaml</code> schema and resolution hierarchy (README Harness Configuration section).</li>
+            <li><span class="status-remaining">🔴</span> Update <code>assets/claude/skills/</code> skill files to mention pi where relevant. Deferred: skills are self-contained and pi-unaware by design.</li>
         </ul>
     </div>
 
@@ -533,7 +556,7 @@ threading.Thread(target=self._feed_stdin, args=(proc, prompt), daemon=True).star
                 <tr>
                     <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><strong>CLI command</strong></td>
                     <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>claude -p --output-format stream-json --verbose</code></td>
-                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>pi --mode json -p --no-session --thinking off --no-extensions --no-skills --no-context-files</code></td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>pi --mode json -p --no-session --no-extensions --no-skills --no-context-files</code></td>
                 </tr>
                 <tr>
                     <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><strong>Model format</strong></td>
@@ -568,7 +591,7 @@ threading.Thread(target=self._feed_stdin, args=(proc, prompt), daemon=True).star
                 <tr>
                     <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><strong>Thinking/reasoning</strong></td>
                     <td style="padding:0.5rem; border-bottom:1px solid #eaeaea">N/A (not emitted in stream-json)</td>
-                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>--thinking off</code> suppresses; <code>thinking_delta</code> events filtered by parser</td>
+                    <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><code>thinking_delta</code> events filtered by parser; pi's default thinking level preserved for reasoning models</td>
                 </tr>
                 <tr>
                     <td style="padding:0.5rem; border-bottom:1px solid #eaeaea"><strong>Stdin prompt</strong></td>

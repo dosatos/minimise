@@ -101,6 +101,11 @@ def _error_job_not_found(job_id: str):
     raise SystemExit(1)
 
 
+def print_harness_not_found(e: Exception) -> None:
+    """Render a HarnessNotFoundError without a traceback (job.py / loop.py share this)."""
+    console.print(f"[red]{e}[/red]")
+
+
 def _format_datetime(dt, default: str = "N/A") -> str:
     """Format a datetime as 'YYYY-MM-DD HH:MM:SS', or return default if None."""
     return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else default

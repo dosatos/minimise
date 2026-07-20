@@ -193,10 +193,13 @@ class PlanTask(BaseModel):
 
     @model_validator(mode="after")
     def _validate_hooks(self):
-        if self.harness is not None and self.assignee is not None:
-            raise ValueError(
-                f"task '{self.id}': 'harness' and 'assignee' are mutually exclusive"
-            )
+        if self.assignee is not None:
+            for field in ("harness", "model"):
+                if getattr(self, field) is not None:
+                    raise ValueError(
+                        f"task '{self.id}': '{field}' and 'assignee' are mutually exclusive "
+                        "(the persona already carries its own harness/model)"
+                    )
         _validate_hook_list(self.pre_hooks, f"task '{self.id}' pre_hooks")
         _validate_hook_list(self.post_hooks, f"task '{self.id}' post_hooks")
         return _validate_timeout(self)
@@ -228,10 +231,15 @@ class Plan(BaseModel):
 
 class Worker(BaseModel):
     """A step's worker: exactly one of persona|prompt|prompt_file, or none
-    (= the built-in default). More than one set is an error."""
+    (= the built-in default). More than one set is an error.
+
+    harness/model may accompany prompt or prompt_file, but not persona
+    (the persona already carries its own harness/model)."""
     persona: Optional[str] = None
     prompt: Optional[str] = None
     prompt_file: Optional[str] = None
+    harness: Optional[str] = None
+    model: Optional[str] = None
 
     @model_validator(mode="after")
     def _exactly_one_or_none(self):
@@ -241,6 +249,13 @@ class Worker(BaseModel):
             raise ValueError(
                 f"worker must set at most one of persona|prompt|prompt_file, got {set_fields}"
             )
+        if self.persona is not None:
+            for field in ("harness", "model"):
+                if getattr(self, field) is not None:
+                    raise ValueError(
+                        f"worker: '{field}' and 'persona' are mutually exclusive "
+                        "(the persona already carries its own harness/model)"
+                    )
         return self
 
 

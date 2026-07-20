@@ -25,7 +25,6 @@ class TaskExecutor:
         self.store = store
         self.git_tracker = git_tracker
         self._factory = factory or HarnessFactory(personas or {})
-        self.personas = personas or {}
 
     def execute_task(
         self,
@@ -85,9 +84,7 @@ class TaskExecutor:
                 job_id=job_id, task_id=task.id, attempt=attempt, execution_type="task"
             )
             handoff_path = self.store.handoff_path(job_id, task.id, attempt)
-            harness = self._factory.from_task(task)
-            model = self._factory.resolve_model(task)
-            persona = self.personas.get(task.assignee) if task.assignee else None
+            harness = self._factory.for_task(task)
             success, output, exit_reason = self._invoke_agent(harness, {
                 "handover": context,
                 "task_name": task.name,
@@ -95,8 +92,7 @@ class TaskExecutor:
                 "task_goal": task.goal,
                 "timeout_min": task.timeout_min,
                 "handoff_path": str(handoff_path),
-                "system_prompt": persona.system_prompt if persona else None,
-                "model": model,
+                "system_prompt": self._factory.resolve_prompt_for_task(task),
                 "log_path": str(job_log_path),
                 "log_fields": {
                     "execution_id": ex.execution_id,
@@ -208,7 +204,6 @@ class TaskExecutor:
         handover = context.get("handover", "")
         handoff_path = context.get("handoff_path", "")
         system_prompt = context.get("system_prompt")
-        model = context.get("model")
         log_path = context.get("log_path")
         log_fields = context.get("log_fields")
 
@@ -242,7 +237,7 @@ Execute this task by modifying the codebase as needed. When done, write a summar
         prompt = harness.wrap_prompt(prompt)
         result = harness.run(
             prompt, cwd=repo_root, allow_edits=True,
-            model=model, system_prompt=system_prompt,
+            system_prompt=system_prompt,
             log_path=log_path, log_fields=log_fields,
             timeout=timeout,
         )
