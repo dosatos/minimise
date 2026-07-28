@@ -2,26 +2,53 @@
 
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A CLI tool that **guarantees deterministic, high-quality implementation** of multi-agent plans with fresh context per task, built-in quality guardrails, and centralized orchestration of multiple concurrent jobs.
+**Deterministic control flow around non-deterministic workers.**
+
+Minimise is a CLI that runs your coding agent unattended. You describe the work as a
+file in your repo; minimise executes it step by step, each step in a fresh session,
+with hooks that can block or retry. It brings no agent of its own — it shells out to
+an agent CLI you already have ([Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+by default, or [pi](https://github.com/mariozechner/pi-coding-agent)).
+
+There are two ways to leave an agent alone: give it a plan, or give it a rubric.
+
+## Two modes
+
+|                | **Job**                                | **Loop**                                    |
+| -------------- | --------------------------------------- | -------------------------------------------- |
+| You know       | the steps                               | what "good" looks like                       |
+| You supply     | a plan (ordered tasks)                  | a goal + evaluation rubrics                  |
+| It prevents    | drift, skipped steps, premature "done"  | wandering, stopping early, no standard       |
+| It ends when   | the last task commits                   | the planner judges the goal met              |
+| Think of it as | a CI pipeline                           | eval-driven search                           |
+
+**Know the steps? Use a Job. Only know what good looks like? Use a Loop.**
 
 ## The Problem
 
-When delegating complex implementation tasks to AI agents (via Claude Code or similar harnesses), you face three key challenges:
+When delegating complex implementation tasks to AI agents, you face three key challenges:
 
-1. **❌ Non-deterministic execution** — No guarantee that implementation plans will be completed 100% as specified. Context bloat in long sessions degrades quality.
+1. **Non-deterministic execution** — No guarantee that implementation plans will be completed 100% as specified. Context bloat in long sessions degrades quality.
 
-2. **❌ Context rot** — Long-running sessions accumulate context junk (previous trials, irrelevant history, noise). This degrades agent performance over time.
+2. **Context rot** — Long-running sessions accumulate context junk (previous trials, irrelevant history, noise). This degrades agent performance over time.
 
-3. **❌ Scattered job visibility** — Running multiple jobs across terminals makes it impossible to see status, monitor progress, or estimate completion. The human stays in the loop manually babysitting.
+3. **Scattered job visibility** — Running multiple jobs across terminals makes it impossible to see status, monitor progress, or estimate completion. The human stays in the loop manually babysitting.
 
-## The Solution
+## What It Actually Guarantees
 
-Minimise solves this by:
+Not identical output — these are language models, and nothing makes them
+deterministic. The guarantee is **procedural**:
 
-- **Fresh context per task** — Each task runs in an isolated session with only relevant context passed via structured handover
-- **Quality guardrails** — Add verification steps (previous result validation, quality gates) to ensure high-quality output
-- **Centralized orchestration** — Delegate multiple jobs and monitor them from one place
-- **Deterministic execution** — Structured task sequencing with retry logic guarantees plans complete as written
+- Every task in the plan runs, in the order written.
+- Each task starts from a clean session and receives only structured handover
+  from the previous one — its diff and completion report.
+- Gates you define run when you say they run, and a failing gate blocks or
+  retries rather than being talked past.
+- The pipeline is a file in your repo. You diff it, review it, and roll it back
+  like code, instead of it evaporating in a chat transcript.
+
+The plan executes as written, every time. What the model writes inside a step is
+still the model's business — which is what the hooks are for.
 
 ## When to Use It
 
@@ -82,7 +109,7 @@ kick off a job for you.
 Everything in this README works without the plugin — the hooks just need *some* command that
 reads the plan on stdin and exits nonzero to block.
 
-## Quick Start
+## Quick Start — Job
 
 A **plan** is a YAML file describing the tasks to implement; a **job** is a single run of a plan. You author a plan once, then create and run jobs from it.
 
@@ -194,6 +221,50 @@ mini job results diff a1b2c3d4 --task-id task-2
 # Show full prompt with handover context for a task
 mini job show a1b2c3d4 --task-id task-2
 ```
+
+## Quick Start — Loop
+
+A job runs a fixed list once. A **loop** refines one artifact over repeated
+iterations until it's good enough, or until `max_iterations`. Each iteration
+runs three steps against a shared journal:
+
+1. **plan** — decides the next concrete step, or stops the loop if the goal is met.
+2. **implement** — carries out that step by editing the working tree.
+3. **evaluate** — scores the result across named dimensions (fanned out in parallel,
+   capped by `max_concurrent`); findings feed forward into the next iteration's plan.
+
+Termination is the planner's call — it reads the evaluator findings and chooses to
+continue or stop. The loop is defined by a spec file:
+
+```yaml
+version: "1"
+name: Example Refinement Loop
+goal: Improve the README until it clearly explains setup, usage, and testing.
+max_iterations: 3
+loop:
+  plan:
+    prompt: You are the PLANNER. Decide the next step — or stop if the goal is met.
+  implement:
+    prompt: You are the IMPLEMENTER. Carry out the current plan by editing the tree.
+  evaluate:
+    max_concurrent: 2
+    dimensions:
+      - name: clarity
+        rubric: Is the README easy to follow for a first-time reader?
+      - name: completeness
+        rubric: Does it cover setup, usage, and testing without gaps?
+```
+
+See [`examples/example-loop.yaml`](examples/example-loop.yaml). Register and run:
+
+```bash
+mini loop new --plan examples/example-loop.yaml   # → Loop ID
+mini loop start <ID>                              # runs to convergence or max_iterations
+mini loop status <ID>                             # per-iteration progress
+```
+
+Like `mini job start`, `mini loop start` is idempotent — re-running resumes from the
+journal anchor and backs off a live loop.
 
 ## Harness Configuration
 
@@ -526,50 +597,6 @@ tasks:
         on_failure: retry   # failing review re-runs the task with findings; capped by retries
         shell: "claude -p '/minimise:review-implementation' --dangerously-skip-permissions | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
 ```
-
-## Refinement Loops
-
-A **job** runs a fixed task list once. A **loop** refines a single artifact over
-repeated iterations until it's good enough (or a max-iteration cap is hit). Each
-iteration runs three steps against a shared journal:
-
-1. **plan** — decides the next concrete step, or stops the loop if the goal is met.
-2. **implement** — carries out that step by editing the working tree.
-3. **evaluate** — scores the result across named dimensions (fanned out in parallel,
-   capped by `max_concurrent`); findings feed forward into the next iteration's plan.
-
-Termination is the planner's call — it reads the evaluator findings and chooses to
-continue or stop. The loop is defined by a spec file:
-
-```yaml
-version: "1"
-name: Example Refinement Loop
-goal: Improve the README until it clearly explains setup, usage, and testing.
-max_iterations: 3
-loop:
-  plan:
-    prompt: You are the PLANNER. Decide the next step — or stop if the goal is met.
-  implement:
-    prompt: You are the IMPLEMENTER. Carry out the current plan by editing the tree.
-  evaluate:
-    max_concurrent: 2
-    dimensions:
-      - name: clarity
-        rubric: Is the README easy to follow for a first-time reader?
-      - name: completeness
-        rubric: Does it cover setup, usage, and testing without gaps?
-```
-
-See [`examples/example-loop.yaml`](examples/example-loop.yaml). Register and run:
-
-```bash
-mini loop new --plan examples/example-loop.yaml   # → Loop ID
-mini loop start <ID>                              # runs to convergence or max_iterations
-mini loop status <ID>                             # per-iteration progress
-```
-
-Like `mini job start`, `mini loop start` is idempotent — re-running resumes from the
-journal anchor and backs off a live loop.
 
 ## Development
 
