@@ -29,7 +29,12 @@ Put in front of them:
 2. **The evaluation dimensions** — 2–4 named dimensions with a rubric each. These are what the
    loop scores itself on every iteration, so they are the actual definition of "good enough";
    get them right with the user, not alone.
-3. **`max_iterations`** — the ceiling on cost. Suggest 3 unless the work argues otherwise.
+3. **`max_iterations`** — the ceiling on cost. Suggest **at least 5** unless the work argues
+   otherwise. The built-in planner prompt already treats a failing evaluate dimension as a
+   default reason to `continue` (it only stops early if its summary states why the failure is
+   acceptable) — a low ceiling defeats that by cutting the loop off before it can actually
+   converge. Only go lower than 5 for a deliberately bounded pattern like a one-shot verification
+   loop (see the `max_iterations: 2` note below), where the goal isn't convergence at all.
 4. **The ask** — "Want me to run this as a mini loop, or keep iterating here?"
 
 If the user says no, iterate inline and drop it.
@@ -43,7 +48,7 @@ never the repo root). This is the whole schema; there are no other fields:
 version: "1"
 name: Refine the README
 goal: Improve the README until a first-time reader can set up, use, and test the project unaided.
-max_iterations: 3
+max_iterations: 5
 loop:
   plan:
     prompt: >
@@ -88,3 +93,10 @@ two endings mean very different things and the user needs to know which one they
 passed.** Always surface the verdict table (or journal verdicts) alongside a "completed" report;
 a planner can stop with failing dimensions if it judged that acceptable, or if its prompt (e.g. a
 one-shot verification loop) never conditions stopping on verdicts at all.
+
+**A "one-shot" review loop still needs `max_iterations: 2`, not 1.** `plan` runs *before*
+`evaluate` each iteration, so iteration 1 produces the single evaluate pass and iteration 2's
+`plan` step is the earliest point the planner can see it in the journal and emit `stop`.
+`max_iterations: 1` hits the ceiling before that happens — the loop reports `FAILED`, not
+`completed`, even though the review itself ran fine. See `examples/example-verify-loop.yaml`
+for a working spec to copy rather than reconstructing this pattern from scratch.

@@ -1,0 +1,40 @@
+version: "1"
+name: Example Verification Loop
+goal: >
+  One-shot blind multi-persona review of README.md. No edits — gather all
+  dimension verdicts, then stop.
+# One-shot review needs 2, not 1: plan runs BEFORE evaluate each iteration, so
+# iteration 1 produces the evaluate pass and iteration 2's plan step is the
+# earliest point the planner can see it in the journal and emit stop.
+# max_iterations: 1 hits the ceiling before that happens -> FAILED, not
+# completed, even though the review itself ran fine.
+max_iterations: 2
+loop:
+  plan:
+    prompt: >
+      You are the PLANNER. This loop verifies a document; it is NOT an edit
+      cycle. On iteration 1, emit 'continue' with a plan telling the
+      implementer to confirm the target document is present and make no
+      changes. Once the journal shows one full evaluate pass has completed,
+      emit 'stop' -- the goal is met once the evaluators have reported.
+  implement:
+    prompt: >
+      You are the IMPLEMENTER. This loop is verification-only: do NOT edit
+      README.md or any other file. Confirm the document exists and is
+      readable, then emit control 'done' with "changed": [].
+  evaluate:
+    max_concurrent: 3
+    dimensions:
+      - name: clarity
+        persona: mini:doc-review:clarity
+        rubric: Review README.md for structural clarity.
+      - name: completeness
+        persona: mini:doc-review:completeness
+        rubric: >
+          Review README.md for design completeness -- open questions,
+          missing failure modes, unresolved decisions.
+      - name: consistency
+        persona: mini:doc-review:consistency
+        rubric: >
+          Review README.md for internal consistency -- contradictions,
+          mismatched terminology, claims that don't square with each other.

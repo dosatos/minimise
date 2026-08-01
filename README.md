@@ -234,18 +234,23 @@ runs three steps against a shared journal:
    capped by `max_concurrent`); findings feed forward into the next iteration's plan.
 
 Termination is the planner's call — it reads the evaluator findings and chooses to
-continue or stop. **`Status: completed` means the planner decided to stop, not
-that every dimension passed** — check `mini loop status`'s verdict table (or
-`mini loop journal`) for the actual pass/fail breakdown; a loop can complete
-with failing dimensions if the planner judged that acceptable (or if its prompt,
-like a one-shot verification loop, never conditions stopping on verdicts at
-all). The loop is defined by a spec file:
+continue or stop. The built-in planner prompt treats a failing evaluate dimension
+as a default reason to `continue`; it only stops early if its summary states why
+that failure is acceptable. **`Status: completed` means the planner decided to
+stop, not that every dimension passed** — check `mini loop status`'s verdict
+table (or `mini loop journal`) for the actual pass/fail breakdown; a loop can
+still complete with failing dimensions if the planner judged that acceptable, or
+if its prompt overrides the default and never conditions stopping on verdicts at
+all (e.g. a one-shot verification loop). Budget `max_iterations` generously
+(**5 or more**) for a loop meant to actually converge — a low ceiling cuts the
+planner off before the "keep going on failure" default has room to work. The
+loop is defined by a spec file:
 
 ```yaml
 version: "1"
 name: Example Refinement Loop
 goal: Improve the README until it clearly explains setup, usage, and testing.
-max_iterations: 3
+max_iterations: 5
 loop:
   plan:
     prompt: You are the PLANNER. Decide the next step — or stop if the goal is met.
@@ -416,9 +421,15 @@ evaluate:
 Give `implement` a prompt that explicitly forbids edits (e.g. "verification-only,
 do not edit the document, emit done with changed: []") and have `plan` stop after
 one evaluate pass — this runs the personas as a one-shot review rather than an
-edit cycle. See [Refinement Loops](#quick-start--loop) for the full loop shape,
-and note the completion-semantics callout there: a `completed` loop can still
-have failing dimensions.
+edit cycle. **Use `max_iterations: 2`, not 1** — `plan` runs *before* `evaluate`
+each iteration, so iteration 1 produces the one evaluate pass and iteration 2's
+`plan` step is the earliest point the planner can see it in the journal and
+actually emit `stop`. `max_iterations: 1` hits the ceiling before that ever
+happens, and the loop reports `FAILED`, not `completed`, even though the review
+itself ran fine. See [`examples/example-verify-loop.yaml`](examples/example-verify-loop.yaml)
+for a working one-shot verification loop, and [Refinement Loops](#quick-start--loop)
+for the full loop shape — note the completion-semantics callout there: a
+`completed` loop can still have failing dimensions.
 
 ### User-defined personas
 
