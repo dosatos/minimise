@@ -59,7 +59,7 @@ __pycache__/
 .agent-native/
 examples/*.yaml
 !examples/example-loop.yaml
-!examples/example-verify-loop.yaml
+!examples/example-improve-loop.yaml
 
 # Local working plan docs (generated each run; not part of the package)
 docs/plans/*.md

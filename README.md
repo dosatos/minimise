@@ -241,7 +241,7 @@ stop, not that every dimension passed** — check `mini loop status`'s verdict
 table (or `mini loop journal`) for the actual pass/fail breakdown; a loop can
 still complete with failing dimensions if the planner judged that acceptable, or
 if its prompt overrides the default and never conditions stopping on verdicts at
-all (e.g. a one-shot verification loop). Budget `max_iterations` generously
+all. Budget `max_iterations` generously
 (**5 or more**) for a loop meant to actually converge — a low ceiling cuts the
 planner off before the "keep going on failure" default has room to work. The
 loop is defined by a spec file:
@@ -257,7 +257,7 @@ loop:
   implement:
     prompt: You are the IMPLEMENTER. Carry out the current plan by editing the tree.
   evaluate:
-    max_concurrent: 2
+    max_concurrent: 8
     dimensions:
       - name: clarity
         rubric: Is the README easy to follow for a first-time reader?
@@ -405,7 +405,7 @@ this run cares about):
 
 ```yaml
 evaluate:
-  max_concurrent: 3
+  max_concurrent: 8
   dimensions:
     - name: clarity
       persona: mini:doc-review:clarity
@@ -418,18 +418,18 @@ evaluate:
       rubric: Review the design in docs/my-design.md for failure-mode coverage.
 ```
 
-Give `implement` a prompt that explicitly forbids edits (e.g. "verification-only,
-do not edit the document, emit done with changed: []") and have `plan` stop after
-one evaluate pass — this runs the personas as a one-shot review rather than an
-edit cycle. **Use `max_iterations: 2`, not 1** — `plan` runs *before* `evaluate`
-each iteration, so iteration 1 produces the one evaluate pass and iteration 2's
-`plan` step is the earliest point the planner can see it in the journal and
-actually emit `stop`. `max_iterations: 1` hits the ceiling before that ever
-happens, and the loop reports `FAILED`, not `completed`, even though the review
-itself ran fine. See [`examples/example-verify-loop.yaml`](examples/example-verify-loop.yaml)
-for a working one-shot verification loop, and [Refinement Loops](#quick-start--loop)
-for the full loop shape — note the completion-semantics callout there: a
-`completed` loop can still have failing dimensions.
+**Default: let the loop actually improve the document.** Leave `plan` and
+`implement` unset (`plan: {}`, `implement: {}`) — the built-in prompts already
+read the evaluators' findings each iteration and fix what they flag, converging
+over `max_iterations: 5` (or more) like any other refinement loop. This is what
+you want any time the goal is "make the document better," not just "tell me
+what's wrong with it." See
+[`examples/example-improve-loop.yaml`](examples/example-improve-loop.yaml) for a
+working spec.
+
+See [Refinement Loops](#quick-start--loop) for the full loop shape — note the
+completion-semantics callout there: a `completed` loop can still have failing
+dimensions.
 
 ### User-defined personas
 

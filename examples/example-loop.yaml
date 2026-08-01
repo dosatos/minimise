@@ -12,7 +12,7 @@ loop:
       You are the IMPLEMENTER. Carry out the current plan by editing the working
       tree, then report what you changed.
   evaluate:
-    max_concurrent: 2
+    max_concurrent: 8
     dimensions:
       - name: clarity
         rubric: Is the README easy to follow for a first-time reader?

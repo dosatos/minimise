@@ -1,0 +1,25 @@
+version: "1"
+name: Example Improve Loop
+goal: >
+  Improve README.md until it holds up on clarity, completeness, consistency,
+  density, and rigor — address each evaluator's findings, not just report them.
+max_iterations: 5
+loop:
+  plan: {}
+  implement: {}
+  evaluate:
+    max_concurrent: 8
+    dimensions:
+      - name: clarity
+        persona: mini:doc-review:clarity
+        rubric: Review README.md for structural clarity.
+      - name: completeness
+        persona: mini:doc-review:completeness
+        rubric: >
+          Review README.md for design completeness -- open questions,
+          missing failure modes, unresolved decisions.
+      - name: consistency
+        persona: mini:doc-review:consistency
+        rubric: >
+          Review README.md for internal consistency -- contradictions,
+          mismatched terminology, claims that don't square with each other.

@@ -33,9 +33,11 @@ Put in front of them:
    otherwise. The built-in planner prompt already treats a failing evaluate dimension as a
    default reason to `continue` (it only stops early if its summary states why the failure is
    acceptable) — a low ceiling defeats that by cutting the loop off before it can actually
-   converge. Only go lower than 5 for a deliberately bounded pattern like a one-shot verification
-   loop (see the `max_iterations: 2` note below), where the goal isn't convergence at all.
-4. **The ask** — "Want me to run this as a mini loop, or keep iterating here?"
+   converge.
+4. **`evaluate.max_concurrent`** — suggest **at least 8** so dimensions fan out fully in one
+   round instead of queuing behind a low cap; only lower it if the dimension count is small or
+   the work argues for staggering.
+5. **The ask** — "Want me to run this as a mini loop, or keep iterating here?"
 
 If the user says no, iterate inline and drop it.
 
@@ -59,7 +61,7 @@ loop:
       You are the IMPLEMENTER. Carry out the current plan by editing the working tree,
       then report what you changed.
   evaluate:
-    max_concurrent: 2          # dimensions fan out in parallel, capped by this (default 4)
+    max_concurrent: 8          # dimensions fan out in parallel, capped by this (code default 4)
     dimensions:
       - name: clarity          # names must be unique
         rubric: Is the README easy to follow for a first-time reader?
@@ -73,9 +75,10 @@ two is a validation error. `persona:` accepts either a user-defined name from
 `~/.minimise/personas.yaml`, or one of `mini`'s built-in reviewer personas (`mini persona list`
 to see them — reserved `mini:` namespace, no config needed). For a document-review loop, pointing
 `evaluate.dimensions` at the built-in `mini:doc-review:*` / `mini:software-design:*` personas
-gives a blind, multi-lens review in one pass; each dimension still needs its own `rubric:` naming
-the document and what this run cares about — the persona supplies the reviewer's general
-judgment style, the rubric supplies the specifics.
+gives a blind, multi-lens review; each dimension still needs its own `rubric:` naming the document
+and what this run cares about — the persona supplies the reviewer's general judgment style, the
+rubric supplies the specifics. Leave `plan`/`implement` unset: the planner reads what the personas
+flagged and the implementer fixes it, same as any other loop.
 
 Show the user the spec, then run it:
 
@@ -91,12 +94,4 @@ said, and whether it stopped because the goal was met or because it ran out of i
 two endings mean very different things and the user needs to know which one they got.
 **`Status: completed` only means the planner chose to stop — it does not mean every dimension
 passed.** Always surface the verdict table (or journal verdicts) alongside a "completed" report;
-a planner can stop with failing dimensions if it judged that acceptable, or if its prompt (e.g. a
-one-shot verification loop) never conditions stopping on verdicts at all.
-
-**A "one-shot" review loop still needs `max_iterations: 2`, not 1.** `plan` runs *before*
-`evaluate` each iteration, so iteration 1 produces the single evaluate pass and iteration 2's
-`plan` step is the earliest point the planner can see it in the journal and emit `stop`.
-`max_iterations: 1` hits the ceiling before that happens — the loop reports `FAILED`, not
-`completed`, even though the review itself ran fine. See `examples/example-verify-loop.yaml`
-for a working spec to copy rather than reconstructing this pattern from scratch.
+a planner can stop with failing dimensions if it judged that acceptable.
