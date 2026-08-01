@@ -39,14 +39,14 @@ def test_list_shows_user_persona_tagged(runner, mock_config_dir):
 def test_show_bare_name(runner, mock_config_dir):
     result = runner.invoke(mini, ["persona", "show", "mini:doc-review:rigor"])
     assert result.exit_code == 0
-    assert "ANALYTICAL RIGOR" in result.output
+    assert "Analytical Rigor Reviewer" in result.output
 
 
 def test_show_pinned_version(runner, mock_config_dir):
     bare = runner.invoke(mini, ["persona", "show", "mini:doc-review:rigor"])
     pinned = runner.invoke(mini, ["persona", "show", "mini:doc-review:rigor@v1"])
     assert pinned.exit_code == 0
-    assert "ANALYTICAL RIGOR" in pinned.output
+    assert "Analytical Rigor Reviewer" in pinned.output
     assert pinned.output == bare.output
 
 

@@ -25,12 +25,12 @@ def test_builtin_doc_review_resolves_with_zero_config(tmp_path):
         assert personas[f"mini:doc-review:{p}"].system_prompt == \
             personas[f"mini:doc-review:{p}@v1"].system_prompt
         assert personas[f"mini:doc-review:{p}"].model is None
-    assert "ANALYTICAL RIGOR" in personas["mini:doc-review:rigor"].system_prompt
+    assert "Analytical Rigor Reviewer" in personas["mini:doc-review:rigor"].system_prompt
 
 
 def test_versioned_key_resolves(tmp_path):
     personas = load_personas(tmp_path)
-    assert "STRUCTURAL CLARITY" in personas["mini:doc-review:clarity@v1"].system_prompt
+    assert "Structural Clarity Reviewer" in personas["mini:doc-review:clarity@v1"].system_prompt
 
 
 def test_version_key_natural_sort():
