@@ -234,7 +234,12 @@ runs three steps against a shared journal:
    capped by `max_concurrent`); findings feed forward into the next iteration's plan.
 
 Termination is the planner's call — it reads the evaluator findings and chooses to
-continue or stop. The loop is defined by a spec file:
+continue or stop. **`Status: completed` means the planner decided to stop, not
+that every dimension passed** — check `mini loop status`'s verdict table (or
+`mini loop journal`) for the actual pass/fail breakdown; a loop can complete
+with failing dimensions if the planner judged that acceptable (or if its prompt,
+like a one-shot verification loop, never conditions stopping on verdicts at
+all). The loop is defined by a spec file:
 
 ```yaml
 version: "1"
@@ -362,8 +367,62 @@ This separation ensures agents understand *what* is needed before tackling *how*
 ## Personas
 
 Personas let you pin a specific system prompt (and optionally model) to a task.
-They are defined in `~/.minimise/personas.yaml` (optional — no file means no
-personas). Each top-level key is a persona name mapping to:
+Two sources, merged: **built-ins** shipped with `mini` (reserved `mini:` namespace,
+zero config) and **user-defined** ones in `~/.minimise/personas.yaml` (optional —
+no file means no user personas).
+
+### Built-in personas
+
+`mini` ships versioned reviewer personas for document/design review — no config
+needed. List them with `mini persona list`, print one with `mini persona show
+<name>`. Names follow `mini:<category>:<persona>`, optionally pinned to a version
+with `@vN` (bare name = latest):
+
+```
+mini:doc-review:clarity          mini:software-design:api-design
+mini:doc-review:completeness     mini:software-design:app-sec
+mini:doc-review:consistency      mini:software-design:resilience
+mini:doc-review:rigor            mini:software-design:runbook
+mini:doc-review:simplicity
+```
+
+`doc-review` personas judge any document (structure, completeness, internal
+consistency, rigor, unnecessary complexity); `software-design` personas are
+scoped to software design docs specifically (API contracts, threat surface,
+failure modes, runbooks) — pick the ones relevant to what's being reviewed, not
+the whole set.
+
+A common pattern: point a `mini loop`'s `evaluate.dimensions` at built-in
+personas to get a blind, multi-lens document review in one pass. Each
+dimension still needs its own `rubric:` (the persona supplies the reviewer's
+general judgment style; the rubric says what document to look at and what
+this run cares about):
+
+```yaml
+evaluate:
+  max_concurrent: 3
+  dimensions:
+    - name: clarity
+      persona: mini:doc-review:clarity
+      rubric: Review docs/my-design.md for structural clarity.
+    - name: rigor
+      persona: mini:doc-review:rigor
+      rubric: Review docs/my-design.md for unsupported claims or logic gaps.
+    - name: resilience
+      persona: mini:software-design:resilience
+      rubric: Review the design in docs/my-design.md for failure-mode coverage.
+```
+
+Give `implement` a prompt that explicitly forbids edits (e.g. "verification-only,
+do not edit the document, emit done with changed: []") and have `plan` stop after
+one evaluate pass — this runs the personas as a one-shot review rather than an
+edit cycle. See [Refinement Loops](#quick-start--loop) for the full loop shape,
+and note the completion-semantics callout there: a `completed` loop can still
+have failing dimensions.
+
+### User-defined personas
+
+Each top-level key in `~/.minimise/personas.yaml` is a persona name mapping to:
 
 - `model:` — *optional*, pins the model for tasks assigned this persona.
 - exactly **one** of `prompt:` (inline text) or `prompt_file:` (a path resolved
@@ -465,6 +524,13 @@ mini loop status <ID> --format json           # JSON output for scripting
 mini loop journal <ID>                        # Control journal (plan/implement/evaluate + commit markers)
 mini loop journal <ID> --iteration N          # Only records from iteration N
 mini loop logs <ID> [-f] [--query '...']      # Agent narration (same query grammar as job logs)
+```
+
+### Personas
+
+```bash
+mini persona list                             # List every persona (built-ins first)
+mini persona show <NAME>                      # Print the full system prompt (bare name or NAME@vN)
 ```
 
 ### UI & Server

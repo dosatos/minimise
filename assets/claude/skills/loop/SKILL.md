@@ -63,8 +63,14 @@ loop:
 ```
 
 Each of `plan`, `implement`, and every dimension is a *worker*: it may set **at most one** of
-`prompt:`, `prompt_file:`, or `persona:` (a name from `~/.minimise/personas.yaml`). Setting none
-uses the built-in default; setting two is a validation error.
+`prompt:`, `prompt_file:`, or `persona:`. Setting none uses the built-in step default; setting
+two is a validation error. `persona:` accepts either a user-defined name from
+`~/.minimise/personas.yaml`, or one of `mini`'s built-in reviewer personas (`mini persona list`
+to see them — reserved `mini:` namespace, no config needed). For a document-review loop, pointing
+`evaluate.dimensions` at the built-in `mini:doc-review:*` / `mini:software-design:*` personas
+gives a blind, multi-lens review in one pass; each dimension still needs its own `rubric:` naming
+the document and what this run cares about — the persona supplies the reviewer's general
+judgment style, the rubric supplies the specifics.
 
 Show the user the spec, then run it:
 
@@ -78,3 +84,7 @@ mini loop journal <id>         # the loop's memory: plan/implement/evaluate line
 Report back from `mini loop status` and `mini loop journal` — what changed, what the evaluators
 said, and whether it stopped because the goal was met or because it ran out of iterations. Those
 two endings mean very different things and the user needs to know which one they got.
+**`Status: completed` only means the planner chose to stop — it does not mean every dimension
+passed.** Always surface the verdict table (or journal verdicts) alongside a "completed" report;
+a planner can stop with failing dimensions if it judged that acceptable, or if its prompt (e.g. a
+one-shot verification loop) never conditions stopping on verdicts at all.
