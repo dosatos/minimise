@@ -1,7 +1,6 @@
 ---
 name: loop
 description: Run open-ended iteration on one artifact as a minimise refinement loop — plan → implement → evaluate, repeating until the goal is met or max_iterations is hit.
-disable-model-invocation: true
 ---
 
 # Refining an artifact with a minimise loop

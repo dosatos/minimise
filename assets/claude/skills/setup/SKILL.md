@@ -1,7 +1,6 @@
 ---
 name: setup
 description: Verify and install the prerequisites for minimise — the `mini` CLI, the `claude` CLI, and a git repo.
-disable-model-invocation: true
 ---
 
 # Setting up minimise

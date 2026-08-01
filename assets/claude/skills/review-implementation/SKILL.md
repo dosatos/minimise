@@ -1,7 +1,6 @@
 ---
 name: review-implementation
 disallowed-tools: Write Edit NotebookEdit
-disable-model-invocation: true
 description: Reviews what a minimise job actually IMPLEMENTED against its plan — a NON-BLOCKING advisory reviewer that reads the plan (YAML) from stdin, inspects the job's git diff, and reports findings without ever aborting the job. Use when invoked as `/minimise:review-implementation`, or when a minimise `post_plan` hook runs `claude -p '/minimise:review-implementation'` to critique the finished work. Always exits reporting; it never fails the job. Checks correctness, completeness vs. the plan's goals, obvious bugs, missing tests, and over-engineering — mirroring ralphex's post-implementation review, trimmed to the essentials.
 ---
 

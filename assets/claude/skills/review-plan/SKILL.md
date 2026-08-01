@@ -2,7 +2,6 @@
 name: review-plan
 description: Reviews a minimise job plan or loop spec as a pragmatic BLOCKING quality gate, reading it (YAML) from stdin and printing a machine-readable REVIEW: PASS / REVIEW: FAIL verdict. Use when invoked as `/minimise:review-plan`, or when a minimise `pre_plan` hook runs `claude -p '/minimise:review-plan'` to gate a job before implementation. Reports ONLY severe issues (correctness bugs, data-loss/destructive risk, missing steps that make a task unimplementable, internal contradictions, factually wrong claims about the codebase, a loop goal with no stopping condition) and ignores style, wording, and nice-to-haves.
 disallowed-tools: Write Edit NotebookEdit
-disable-model-invocation: true
 ---
 
 # Reviewing a minimise plan

@@ -8,8 +8,8 @@
     {
       "name": "minimise",
       "source": "./",
-      "version": "0.2.0",
-      "description": "Six explicit-only skills for minimise (`mini`), the multi-agent plan runner: brainstorm, job, loop, review-plan, review-implementation, and setup. You type the command; nothing fires on its own."
+      "version": "0.3.0",
+      "description": "Six skills for minimise (`mini`), the multi-agent plan runner: brainstorm, job, loop, review-plan, review-implementation, and setup."
     }
   ]
 }

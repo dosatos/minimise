@@ -1,7 +1,6 @@
 ---
 name: brainstorm
 description: Author a mini job or loop plan under control — triage loop-vs-job, run a retrieval-aware interview pre-filled from existing personas and recent runs, then preview the exact YAML behind an approve/edit/reject gate before handing off to the unchanged `mini job new` / `mini loop new`. Use when starting a new job or loop from a one-liner and you want to review the plan before anything runs.
-disable-model-invocation: true
 ---
 
 # Authoring a minimise plan under control

@@ -1,7 +1,6 @@
 ---
 name: job
 description: Run multi-step work as a background minimise job — authors a plan YAML, wires the review gates, runs it, and reports what landed.
-disable-model-invocation: true
 ---
 
 # Running work as a minimise job
