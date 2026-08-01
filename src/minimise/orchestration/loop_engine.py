@@ -40,7 +40,9 @@ DEFAULT_PROMPTS = {
         "history (prior plans, findings, and handovers). Decide the next approach "
         "for the implementer, or decide the loop is finished. Emit control 'stop' "
         "or 'done' when the goal is met or no useful progress remains; otherwise "
-        "'continue' with the plan for the implementer to execute. In your control line "
+        "'continue' with the plan for the implementer to execute. A failing dimension "
+        "in the latest evaluate verdicts is a default reason to continue — stop anyway "
+        "only if your summary states why that failure is acceptable. In your control line "
         'include a "summary": one concise sentence naming the decision or the next step '
         "for the implementer."
     ),
@@ -73,7 +75,9 @@ DEFAULT_PROMPTS = {
 # The worker's prompt says WHAT to do; this says WHAT SHAPE to emit.
 OUTPUT_CONTRACT = (
     "\n\n---\nOUTPUT CONTRACT: End your response with a SINGLE LINE that is one JSON "
-    'object. Required key "control" — one of: continue, stop, done, failed. When '
+    "object, on its own line — put a newline before the opening brace; do NOT append "
+    "it directly onto your last sentence. "
+    'Required key "control" — one of: continue, stop, done, failed. When '
     'control is "failed" you MUST also include a non-empty "handover" string for the '
     "next planner. Beyond control/handover, include the payload key(s) for your role "
     'so the journal stays queryable: PLANNER -> "summary" (one concise sentence on the '
@@ -276,7 +280,9 @@ class LoopEngine:
             except ValueError as e:
                 feedback = (
                     f"\n\nYour previous response was REJECTED: {e}. End your reply with a "
-                    'single JSON line carrying a valid "control" (and "handover" if failed).'
+                    'single JSON line carrying a valid "control" (and "handover" if failed) — '
+                    "put it on its own line, with a newline before the opening brace, not "
+                    "appended directly onto your last sentence."
                 )
                 if attempt < self.MAX_RETRIES:
                     with self._db_lock:
