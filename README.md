@@ -169,7 +169,8 @@ mini job show a1b2c3d4
 
 ```bash
 mini job start a1b2c3d4
-# Runs in the foreground; execution begins
+# Starts in the background and returns immediately; use `mini job status`
+# or `mini job logs --follow` to watch progress
 ```
 
 #### Monitor progress
@@ -525,7 +526,7 @@ mini job logs <ID> --query 'fields @timestamp, message | filter type = "task" | 
 
 ```bash
 mini loop new --plan FILE                     # Register a loop from a spec (does not execute)
-mini loop start <ID>                          # Start/resume a loop in the foreground (idempotent)
+mini loop start <ID>                          # Start/resume a loop in the background (idempotent); returns immediately
 mini loop start <ID> --harness pi             # Run with pi instead of claude (default: claude)
 mini loop start <ID> --model claude-opus-4-8  # Override the default model for this loop
 mini loop stop <ID>                           # Stop a running loop

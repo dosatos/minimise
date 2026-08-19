@@ -6,6 +6,9 @@ lives in journal.jsonl and narration in job.log — hence the extra `journal` ve
 
 import json
 import os
+import signal
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -35,6 +38,7 @@ from minimise.interfaces.cli._shared import (
     _format_datetime,
 )
 from minimise.storage.loop_store import LoopStore
+from minimise.storage.job_store import _pid_alive
 from minimise.orchestration.loop_engine import LoopEngine
 from minimise.personas import load_personas
 from minimise.settings import load_settings
@@ -180,6 +184,57 @@ def loop_patch(loop_id: str, plan: Optional[str]):
               default=None, help="Agent harness to use (default: settings or claude)")
 @click.option("--model", default=None, help="Default model for agent invocations (overrides settings.model)")
 def loop_start(loop_id: str, harness: str | None, model: str | None):
+    """Start or resume a loop in the background (idempotent).
+
+    A live RUNNING loop is left alone; a COMPLETED loop is a no-op.
+    """
+    try:
+        loop_id = resolve_loop_id(loop_id)
+        db = get_db()
+        loop_obj = _get_store(db).load(loop_id)
+
+        if loop_obj is None:
+            console.print(f"[red]Error: Loop {loop_id} not found[/red]")
+            raise SystemExit(1)
+        if loop_obj.status == JobStatus.RUNNING:
+            console.print(f"[yellow]Loop already running (pid {loop_obj.pid})[/yellow]")
+            return
+        if loop_obj.status == JobStatus.COMPLETED:
+            console.print(f"[green]Loop already complete[/green]")
+            return
+
+        cmd = [sys.argv[0], "loop", "_run", loop_id]
+        if harness:
+            cmd += ["--harness", harness]
+        if model:
+            cmd += ["--model", model]
+
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+        console.print(f"[green]Loop started in background (pid {proc.pid})[/green]")
+        console.print(f"[bold]Loop ID:[/bold] {loop_id}")
+        console.print(f"[dim]Check status with: mini loop status {loop_id[:8]}[/dim]")
+        console.print(f"[dim]View logs with: mini loop logs {loop_id[:8]} -f[/dim]")
+
+    except SystemExit:
+        raise
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
+        raise SystemExit(1)
+
+
+@loop.command(name="_run", hidden=True)
+@click.argument("loop_id")
+@click.option("--harness", type=click.Choice([HARNESS_CLAUDE, HARNESS_PI]),
+              default=None, help="Agent harness to use (default: settings or claude)")
+@click.option("--model", default=None, help="Default model for agent invocations (overrides settings.model)")
+def loop_run(loop_id: str, harness: str | None, model: str | None):
     """Start or resume a loop in the foreground (idempotent).
 
     The engine sets status RUNNING + pid, resumes from the journal anchor, and
@@ -395,6 +450,13 @@ def loop_stop(loop_id: str):
             raise SystemExit(1)
 
         db.update_loop_status(loop_id, status=JobStatus.STOPPED)
+
+        if _pid_alive(loop_obj.pid):
+            try:
+                os.kill(loop_obj.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+
         console.print(f"[green]Loop {loop_id} stopped[/green]")
 
     except SystemExit:

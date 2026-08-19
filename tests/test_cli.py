@@ -3,6 +3,8 @@
 import pytest
 import tempfile
 import json
+import signal
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -522,9 +524,12 @@ def _make_start_job(mock_config_dir, status, pid=None):
 def test_start_live_running_job_backs_off(runner, mock_config_dir, monkeypatch):
     """A live RUNNING job backs off (exit 0) and is never executed."""
     import os
+    import subprocess
     from minimise.orchestration.job_executor import JobExecutor
     called = []
     monkeypatch.setattr(JobExecutor, "execute", lambda self, j, p: called.append(1) or True)
+    popen_called = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: popen_called.append(1))
 
     _, job = _make_start_job(mock_config_dir, JobStatus.RUNNING, pid=os.getpid())
     result = runner.invoke(mini, ["job", "start", job.id])
@@ -532,13 +537,17 @@ def test_start_live_running_job_backs_off(runner, mock_config_dir, monkeypatch):
     assert result.exit_code == 0
     assert "already running" in result.output
     assert not called  # executor never ran
+    assert not popen_called  # short-circuited before spawn
 
 
 def test_start_completed_job_noops(runner, mock_config_dir, monkeypatch):
     """A COMPLETED job is a no-op (exit 0, not executed)."""
+    import subprocess
     from minimise.orchestration.job_executor import JobExecutor
     called = []
     monkeypatch.setattr(JobExecutor, "execute", lambda self, j, p: called.append(1) or True)
+    popen_called = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: popen_called.append(1))
 
     _, job = _make_start_job(mock_config_dir, JobStatus.COMPLETED)
     result = runner.invoke(mini, ["job", "start", job.id])
@@ -546,6 +555,7 @@ def test_start_completed_job_noops(runner, mock_config_dir, monkeypatch):
     assert result.exit_code == 0
     assert "already complete" in result.output
     assert not called
+    assert not popen_called  # short-circuited before spawn
 
 
 def test_start_failed_job_resumes(runner, mock_config_dir, monkeypatch):
@@ -555,7 +565,7 @@ def test_start_failed_job_resumes(runner, mock_config_dir, monkeypatch):
     monkeypatch.setattr(JobExecutor, "execute", lambda self, j, p: called.append(1) or True)
 
     _, job = _make_start_job(mock_config_dir, JobStatus.FAILED)
-    result = runner.invoke(mini, ["job", "start", job.id])
+    result = runner.invoke(mini, ["job", "_run", job.id])
 
     assert result.exit_code == 0
     assert "completed successfully" in result.output
@@ -587,7 +597,7 @@ def test_start_with_harness_flag_passes_through(runner, mock_config_dir, monkeyp
     monkeypatch.setattr(JobController, "start_job", fake_start_job)
 
     _, job = _make_start_job(mock_config_dir, JobStatus.PENDING)
-    result = runner.invoke(mini, ["job", "start", job.id, "--harness", HARNESS_PI])
+    result = runner.invoke(mini, ["job", "_run", job.id, "--harness", HARNESS_PI])
 
     assert result.exit_code == 0
     assert captured["cli_harness"] == HARNESS_PI
@@ -602,20 +612,113 @@ def test_start_dead_running_job_resumes(runner, mock_config_dir, monkeypatch):
 
     # pid 999999 is (essentially) never a live process → reconcile downgrades it.
     _, job = _make_start_job(mock_config_dir, JobStatus.RUNNING, pid=999999)
-    result = runner.invoke(mini, ["job", "start", job.id])
+    result = runner.invoke(mini, ["job", "_run", job.id])
 
     assert result.exit_code == 0
     assert "completed successfully" in result.output
     assert called  # dead → reconciled to FAILED → resumed
 
 
-def test_start_nonexistent_job_fails(runner, mock_config_dir):
+def test_start_nonexistent_job_fails(runner, mock_config_dir, monkeypatch):
     """Test that starting a nonexistent job returns error."""
+    import subprocess
+    popen_called = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: popen_called.append(1))
+
     result = runner.invoke(mini, ["job", "start", "nonexistent-job-id"])
 
     # Should fail with error message
     assert result.exit_code == 1
     assert "Error" in result.output or "not found" in result.output
+    assert not popen_called  # short-circuited before spawn
+
+
+class _FakeProc:
+    def __init__(self, pid):
+        self.pid = pid
+
+
+def test_start_pending_job_spawns_subprocess(runner, mock_config_dir, monkeypatch):
+    """`job start` on a PENDING job spawns `job _run` in the background and
+    returns immediately without changing job status itself."""
+    import subprocess
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeProc(pid=4242)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    db, job = _make_start_job(mock_config_dir, JobStatus.PENDING)
+    result = runner.invoke(mini, ["job", "start", job.id])
+
+    assert result.exit_code == 0
+    assert "started in background" in result.output
+    assert "4242" in result.output
+    assert "cmd" in captured
+    cmd = captured["cmd"]
+    assert "job" in cmd and "_run" in cmd and job.id in cmd
+    # no status change happens in this process — the child does that
+    assert db.get_job(job.id).status == JobStatus.PENDING
+
+
+def test_start_job_passes_harness_and_model_to_subprocess(runner, mock_config_dir, monkeypatch):
+    """`job start --harness pi --model foo` forwards both flags to the spawned `_run` argv."""
+    import subprocess
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeProc(pid=4243)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    db, job = _make_start_job(mock_config_dir, JobStatus.PENDING)
+    result = runner.invoke(mini, ["job", "start", job.id, "--harness", "pi", "--model", "openai/gpt-4o"])
+
+    assert result.exit_code == 0
+    cmd = captured["cmd"]
+    assert "--harness" in cmd and "pi" in cmd
+    assert "--model" in cmd and "openai/gpt-4o" in cmd
+
+
+def test_loop_start_pending_spawns_subprocess(runner, mock_config_dir, monkeypatch):
+    """`loop start` on a fresh loop spawns `loop _run` in the background and
+    returns immediately without changing loop status itself."""
+    import subprocess
+    from minimise.models import LoopSpec
+    from minimise.storage.database import Database
+    from minimise.storage.loop_store import LoopStore
+
+    spec = {
+        "version": "1", "name": "Demo", "goal": "make it better", "max_iterations": 3,
+        "loop": {
+            "plan": {"prompt": "plan it"}, "implement": {"prompt": "do it"},
+            "evaluate": {"max_concurrent": 1, "dimensions": [{"name": "a", "rubric": "ra"}]},
+        },
+    }
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+    store = LoopStore(db, mock_config_dir / "jobs")
+    loop_obj = store.create(LoopSpec.model_validate(spec), "example.yaml")
+
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeProc(pid=5252)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    result = runner.invoke(mini, ["loop", "start", loop_obj.loop_id])
+
+    assert result.exit_code == 0
+    assert "started in background" in result.output
+    assert "5252" in result.output
+    cmd = captured["cmd"]
+    assert "loop" in cmd and "_run" in cmd and loop_obj.loop_id in cmd
+    assert store.load(loop_obj.loop_id).status == JobStatus.PENDING
 
 
 # ============================================================================
@@ -2446,7 +2549,7 @@ def test_loop_start_with_harness_and_model_builds_factory(runner, mock_config_di
 
     monkeypatch.setattr(loop_module, "LoopEngine", FakeEngine)
 
-    result = runner.invoke(mini, ["loop", "start", loop_obj.loop_id,
+    result = runner.invoke(mini, ["loop", "_run", loop_obj.loop_id,
                                    "--harness", HARNESS_PI, "--model", "openai/gpt-4o"])
 
     assert result.exit_code == 0
@@ -2455,6 +2558,76 @@ def test_loop_start_with_harness_and_model_builds_factory(runner, mock_config_di
     harness = factory.for_worker(Worker())
     assert isinstance(harness, PiHarness)
     assert harness._model == "openai/gpt-4o"
+
+
+def test_loop_stop_sends_sigterm_to_live_pid(runner, mock_config_dir, monkeypatch):
+    """`mini loop stop` on a RUNNING loop with a live pid sends SIGTERM to it."""
+    from minimise.models import LoopSpec, JobStatus
+    from minimise.storage.database import Database
+    from minimise.storage.loop_store import LoopStore
+
+    spec = {
+        "version": "1", "name": "Demo", "goal": "make it better", "max_iterations": 3,
+        "loop": {
+            "plan": {"prompt": "plan it"}, "implement": {"prompt": "do it"},
+            "evaluate": {"max_concurrent": 1, "dimensions": [{"name": "a", "rubric": "ra"}]},
+        },
+    }
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+    store = LoopStore(db, mock_config_dir / "jobs")
+    loop_obj = store.create(LoopSpec.model_validate(spec), "example.yaml")
+    db.update_loop_status(loop_obj.loop_id, status=JobStatus.RUNNING, pid=12345)
+
+    loop_module = sys.modules["minimise.interfaces.cli.loop"]
+    loop_store_module = sys.modules["minimise.storage.loop_store"]
+    # load()'s reconcile step also checks liveness (against the same pid), so it
+    # must agree with the guard's check to keep the loop RUNNING through to stop.
+    monkeypatch.setattr(loop_store_module, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(loop_module, "_pid_alive", lambda pid: True)
+    killed = []
+    monkeypatch.setattr(loop_module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+
+    result = runner.invoke(mini, ["loop", "stop", loop_obj.loop_id])
+
+    assert result.exit_code == 0
+    assert killed == [(12345, signal.SIGTERM)]
+
+
+def test_loop_stop_dead_pid_skips_kill(runner, mock_config_dir, monkeypatch):
+    """`mini loop stop` on a RUNNING loop with a dead/None pid does not call os.kill."""
+    from minimise.models import LoopSpec, JobStatus
+    from minimise.storage.database import Database
+    from minimise.storage.loop_store import LoopStore
+
+    spec = {
+        "version": "1", "name": "Demo", "goal": "make it better", "max_iterations": 3,
+        "loop": {
+            "plan": {"prompt": "plan it"}, "implement": {"prompt": "do it"},
+            "evaluate": {"max_concurrent": 1, "dimensions": [{"name": "a", "rubric": "ra"}]},
+        },
+    }
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+    store = LoopStore(db, mock_config_dir / "jobs")
+    loop_obj = store.create(LoopSpec.model_validate(spec), "example.yaml")
+    db.update_loop_status(loop_obj.loop_id, status=JobStatus.RUNNING, pid=12345)
+
+    loop_module = sys.modules["minimise.interfaces.cli.loop"]
+    loop_store_module = sys.modules["minimise.storage.loop_store"]
+    # Keep load()'s reconcile from downgrading the loop (pid was alive then),
+    # but simulate the pid having died by the time stop's own guard checks it.
+    monkeypatch.setattr(loop_store_module, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(loop_module, "_pid_alive", lambda pid: False)
+
+    def fail_kill(pid, sig):
+        raise AssertionError("os.kill should not be called for a dead/None pid")
+
+    monkeypatch.setattr(loop_module.os, "kill", fail_kill)
+
+    result = runner.invoke(mini, ["loop", "stop", loop_obj.loop_id])
+
+    assert result.exit_code == 0
 
 
 # --- mini job start --harness pi (dogfood, real pi binary, real API call) -------
@@ -2498,7 +2671,7 @@ def test_mini_job_start_with_pi_harness_completes(runner, mock_config_dir, isola
     db = Database(mock_config_dir / "minimise.db")
     job_id = db.list_jobs(limit=1)[0].id
 
-    start = runner.invoke(mini, ["job", "start", job_id, "--harness", "pi"])
+    start = runner.invoke(mini, ["job", "_run", job_id, "--harness", "pi"])
     assert start.exit_code == 0, start.output
 
     status = runner.invoke(mini, ["job", "status", job_id, "--format", "json"])
@@ -2516,7 +2689,7 @@ def test_mini_job_start_with_pi_harness_and_model_completes(runner, mock_config_
     db = Database(mock_config_dir / "minimise.db")
     job_id = db.list_jobs(limit=1)[0].id
 
-    start = runner.invoke(mini, ["job", "start", job_id,
+    start = runner.invoke(mini, ["job", "_run", job_id,
                                   "--harness", "pi", "--model", "deepseek/deepseek-v4-pro"])
     assert start.exit_code == 0, start.output
 
@@ -2536,7 +2709,7 @@ def test_mini_job_start_with_missing_pi_binary_prints_clear_error(
     job_id = db.list_jobs(limit=1)[0].id
 
     monkeypatch.setattr("shutil.which", lambda name: None)
-    start = runner.invoke(mini, ["job", "start", job_id, "--harness", "pi"])
+    start = runner.invoke(mini, ["job", "_run", job_id, "--harness", "pi"])
 
     assert start.exit_code == 1
     assert "not installed" in start.output

@@ -48,7 +48,7 @@ Then wait. If the user says no, do the work inline without further mention of mi
 
 ```bash
 mini job new --plan <file>     # → Job ID; validates the plan, creates it PENDING
-mini job start <id>            # runs in the foreground until done
+mini job start <id>            # starts in the background and returns immediately
 ```
 
 5. **Monitor** with `mini job status <id>` (add `--format json` to poll from a script) and

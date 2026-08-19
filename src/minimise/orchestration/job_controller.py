@@ -6,13 +6,15 @@ itself lives on JobExecutor; per-task work lives in TaskExecutor; persistence
 lives in JobStore.
 """
 
+import os
+import signal
 from pathlib import Path
 from typing import Optional
 
 from minimise.models import Job, JobStatus, TaskStatus, Plan
 from minimise.storage.database import Database
 from minimise.storage.git_tracker import GitTracker
-from minimise.storage.job_store import JobStore
+from minimise.storage.job_store import JobStore, _pid_alive
 from minimise.orchestration.task_executor import TaskExecutor
 from minimise.orchestration.hook_executor import HookExecutor
 from minimise.orchestration.job_executor import JobExecutor
@@ -123,9 +125,16 @@ class JobController:
             print(f"Job {job_id} not found")
             return False
 
+        was_running = job.status == JobStatus.RUNNING
         self.store.mark_job_stopped(job_id)
         for task in self.db.list_tasks_for_job(job_id):
             if task.status in (TaskStatus.RUNNING, TaskStatus.PENDING):
                 self.store.mark_task_stopped(task)
+
+        if was_running and _pid_alive(job.pid):
+            try:
+                os.kill(job.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
 
         return True

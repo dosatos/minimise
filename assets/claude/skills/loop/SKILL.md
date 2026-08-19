@@ -83,7 +83,7 @@ Show the user the spec, then run it:
 
 ```bash
 mini loop new --plan <file>    # → Loop ID; validates the spec and every persona
-mini loop start <id>           # runs to convergence or max_iterations (foreground, idempotent)
+mini loop start <id>           # starts in the background, idempotent; returns immediately
 mini loop status <id>          # iteration progress, stage timing, per-dimension verdicts
 mini loop journal <id>         # the loop's memory: plan/implement/evaluate lines + commits
 ```

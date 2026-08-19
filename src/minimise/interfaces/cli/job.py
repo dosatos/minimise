@@ -1,6 +1,8 @@
 """`mini job` subgroup: create, run, inspect, and manage jobs."""
 
 import json
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -112,6 +114,51 @@ def job_new(plan: str):
               default=None, help="Agent harness to use (default: settings or claude)")
 @click.option("--model", default=None, help="Default model for agent invocations (overrides settings.model)")
 def job_start(job_id: str, harness: str | None, model: str | None):
+    """Start or resume a job in the background (idempotent).
+
+    A PENDING job runs; a crashed FAILED/STOPPED job resumes from its first
+    incomplete task; a live RUNNING job is left alone; a COMPLETED job is a no-op.
+    """
+    try:
+        job_id, db, job_obj = _get_and_validate_job(job_id)
+
+        if job_obj.status == JobStatus.RUNNING:
+            console.print(f"[yellow]Job already running (pid {job_obj.pid})[/yellow]")
+            return
+        if job_obj.status == JobStatus.COMPLETED:
+            console.print(f"[green]Job already complete[/green]")
+            return
+
+        cmd = [sys.argv[0], "job", "_run", job_id]
+        if harness:
+            cmd += ["--harness", harness]
+        if model:
+            cmd += ["--model", model]
+
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+        console.print(f"[green]Job started in background (pid {proc.pid})[/green]")
+        console.print(f"[bold]Job ID:[/bold] {job_id}")
+        console.print(f"[dim]Check status with: mini job status {job_id[:8]}[/dim]")
+        console.print(f"[dim]View logs with: mini job logs {job_id[:8]} -f[/dim]")
+
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
+        raise SystemExit(1)
+
+
+@job.command(name="_run", hidden=True)
+@click.argument("job_id")
+@click.option("--harness", type=click.Choice([HARNESS_CLAUDE, HARNESS_PI]),
+              default=None, help="Agent harness to use (default: settings or claude)")
+@click.option("--model", default=None, help="Default model for agent invocations (overrides settings.model)")
+def job_run(job_id: str, harness: str | None, model: str | None):
     """Start or resume a job in the foreground (idempotent).
 
     A PENDING job runs; a crashed FAILED/STOPPED job resumes from its first

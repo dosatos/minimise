@@ -225,6 +225,45 @@ def test_cancel_job_basic(job_controller, plan_file):
             assert task.status == TaskStatus.STOPPED
 
 
+def test_stop_job_sends_sigterm_to_live_pid(job_controller, plan_file, monkeypatch):
+    """Stopping a RUNNING job with a live pid sends SIGTERM to that pid."""
+    created_job = job_controller.create_job(plan_file)
+    job_id = created_job.id
+
+    job_controller.db.update_job_status(
+        job_id, JobStatus.RUNNING, started_at=datetime.utcnow(), pid=12345
+    )
+
+    monkeypatch.setattr("minimise.orchestration.job_controller._pid_alive", lambda pid: True)
+    killed = []
+    monkeypatch.setattr("minimise.orchestration.job_controller.os.kill", lambda pid, sig: killed.append((pid, sig)))
+
+    result = job_controller.stop_job(job_id)
+    assert result is True
+
+    import signal
+    assert killed == [(12345, signal.SIGTERM)]
+
+
+def test_stop_job_dead_pid_skips_kill(job_controller, plan_file, monkeypatch):
+    """Stopping a RUNNING job with a dead/None pid does not call os.kill and does not raise."""
+    created_job = job_controller.create_job(plan_file)
+    job_id = created_job.id
+
+    job_controller.db.update_job_status(
+        job_id, JobStatus.RUNNING, started_at=datetime.utcnow(), pid=None
+    )
+
+    def fail_kill(pid, sig):
+        raise AssertionError("os.kill should not be called for a dead/None pid")
+
+    monkeypatch.setattr("minimise.orchestration.job_controller.os.kill", fail_kill)
+
+    result = job_controller.stop_job(job_id)
+    assert result is True
+    assert job_controller.get_job_status(job_id).status == JobStatus.STOPPED
+
+
 def test_run_job_basic(job_controller, plan_file):
     """Test running a job with mocked task execution."""
     # Create job
