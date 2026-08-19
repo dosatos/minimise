@@ -349,6 +349,21 @@ def test_json_serialization_with_datetime(api_server, db):
         assert "T" in jobs_data[0]["created_at"]  # ISO format
 
 
+def test_get_jobs_attaches_task_list(db, api_server):
+    """GET /jobs must attach each job's tasks (store.load_many omits them by default)."""
+    job_id = str(uuid.uuid4())
+    db.create_job(Job(id=job_id, name="Test Job", status=JobStatus.COMPLETED, created_at=datetime.utcnow()))
+    db.create_task(Task(
+        id=str(uuid.uuid4()), job_id=job_id, name="t1", description="d",
+        estimated_duration_min=5, status=TaskStatus.COMPLETED,
+    ))
+
+    with api_server.app.test_client() as client:
+        response = client.get("/jobs")
+        jobs_data = response.get_json()
+        assert len(jobs_data[0]["tasks"]) == 1
+
+
 def test_cors_enabled(api_server):
     """Test that CORS is enabled on the server."""
     with api_server.app.test_client() as client:

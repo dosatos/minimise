@@ -40,13 +40,20 @@ class APIServer:
         """Fetch a job and attach its task list, or None if it doesn't exist."""
         return self.job_controller.store.load(job_id)
 
+    def _load_many_with_tasks(self) -> list[Job]:
+        """List jobs with each one's task list attached (store.load_many omits tasks)."""
+        jobs = self.job_controller.store.load_many()
+        for job in jobs:
+            job.tasks = self.db.list_tasks_for_job(job.id)
+        return jobs
+
     def _register_routes(self):
         """Register all REST API routes."""
 
         @self.app.route("/", methods=["GET"])
         def job_list_page():
             """Server-rendered job list page, polled client-side via /jobs."""
-            jobs = self.job_controller.store.load_many()
+            jobs = self._load_many_with_tasks()
             return render_template("list.html", jobs=jobs)
 
         @self.app.route("/jobs/<job_id>/view", methods=["GET"])
@@ -58,9 +65,9 @@ class APIServer:
 
         @self.app.route("/jobs", methods=["GET"])
         def get_jobs():
-            """Get all jobs."""
+            """Get all jobs, each with its task list attached."""
             try:
-                jobs = self.job_controller.store.load_many()
+                jobs = self._load_many_with_tasks()
                 return jsonify([job.to_dict() for job in jobs]), 200
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
