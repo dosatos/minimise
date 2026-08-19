@@ -37,3 +37,22 @@ def test_job_list_page_renders_job_row(client, mock_job_controller):
     assert resp.status_code == 200
     assert job.id.encode() in resp.data
     assert b"demo-plan" in resp.data
+
+
+def test_job_detail_page_renders(client, mock_job_controller):
+    from minimise.models import Plan, PlanTask
+
+    plan = Plan(name="demo-plan", tasks=[
+        PlanTask(id="t1", name="T1", description="d", goal="g", estimated_duration_min=5)
+    ])
+    job = mock_job_controller.store.create(plan, base_commit="abc123", plan_path="/tmp/plan.yaml")
+
+    resp = client.get(f"/jobs/{job.id}/view")
+    assert resp.status_code == 200
+    assert job.id.encode() in resp.data
+    assert b"demo-plan" in resp.data
+
+
+def test_job_detail_page_404_for_unknown_job(client):
+    resp = client.get("/jobs/nonexistent/view")
+    assert resp.status_code == 404

@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}{{ job.id }} — minimise{% endblock %}
+{% block content %}
+<h2>{{ job.id }} <span id="job-status" class="status status-{{ job.status.value }}">{{ job.status.value }}</span></h2>
+<p>{{ job.name }} — created {{ job.created_at.isoformat() }}</p>
+
+<h3>Tasks</h3>
+<table>
+    <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>Retries</th></tr></thead>
+    <tbody id="task-rows">
+        {% for task in job.tasks %}
+        <tr>
+            <td>{{ task.id }}</td><td>{{ task.name }}</td>
+            <td><span class="status status-{{ task.status.value }}">{{ task.status.value }}</span></td>
+            <td>{{ task.retries }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="empty">No tasks</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<h3>Plan: {{ job.name }} <button class="toggle-btn" onclick="togglePlanView()">Toggle raw YAML</button></h3>
+<div id="plan-structured">
+    <ul id="plan-tasks"></ul>
+</div>
+<pre id="plan-raw" style="display:none;"></pre>
+{% endblock %}
+{% block scripts %}
+<script>
+    startJobDetailPolling("{{ job.id }}", 3000);
+    loadPlan("{{ job.id }}");
+</script>
+{% endblock %}

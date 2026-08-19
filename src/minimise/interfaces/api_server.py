@@ -51,8 +51,10 @@ class APIServer:
 
         @self.app.route("/jobs/<job_id>/view", methods=["GET"])
         def job_detail_page(job_id: str):
-            # Placeholder — replaced by the job-detail-page task.
-            return "placeholder", 200
+            job = self._load_job_with_tasks(job_id)
+            if job is None:
+                return "Job not found", 404
+            return render_template("detail.html", job=job)
 
         @self.app.route("/jobs", methods=["GET"])
         def get_jobs():

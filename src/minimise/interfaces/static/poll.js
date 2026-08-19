@@ -28,3 +28,46 @@ function startJobListPolling(intervalMs) {
     refresh();
     setInterval(refresh, intervalMs);
 }
+
+function startJobDetailPolling(jobId, intervalMs) {
+    async function refresh() {
+        const resp = await fetch(`/jobs/${jobId}`);
+        if (!resp.ok) return;
+        const job = await resp.json();
+        const statusEl = document.getElementById("job-status");
+        if (statusEl) {
+            statusEl.textContent = job.status;
+            statusEl.className = statusClass(job.status);
+        }
+        const tbody = document.getElementById("task-rows");
+        if (tbody) {
+            tbody.innerHTML = (job.tasks || []).map(t => `<tr>
+                <td>${t.id}</td><td>${t.name}</td>
+                <td><span class="${statusClass(t.status)}">${t.status}</span></td>
+                <td>${t.retries}</td>
+            </tr>`).join("") || '<tr><td colspan="4" class="empty">No tasks</td></tr>';
+        }
+    }
+    refresh();
+    setInterval(refresh, intervalMs);
+}
+
+function togglePlanView() {
+    const structured = document.getElementById("plan-structured");
+    const raw = document.getElementById("plan-raw");
+    const isRaw = raw.style.display !== "none";
+    raw.style.display = isRaw ? "none" : "block";
+    structured.style.display = isRaw ? "block" : "none";
+}
+
+async function loadPlan(jobId) {
+    const resp = await fetch(`/jobs/${jobId}/plan`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    document.getElementById("plan-raw").textContent = data.raw_yaml;
+    const list = document.getElementById("plan-tasks");
+    list.innerHTML = data.plan.tasks.map(t => {
+        const worker = t.assignee ? `persona: ${t.assignee}` : (t.harness ? `${t.harness}/${t.model || "default"}` : "default");
+        return `<li><strong>${t.id}</strong> — ${t.name} (${worker})</li>`;
+    }).join("");
+}
