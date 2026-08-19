@@ -789,7 +789,9 @@ def test_execute_task_passes_execution_log_fields_to_harness(temp_db_dir, db, gi
     expected_id = Execution(
         job_id=job_id, task_id=task.id, attempt=0, execution_type="task"
     ).execution_id
-    assert log_fields == {"execution_id": expected_id, "type": "task", "step": task.name}
+    assert log_fields == {
+        "execution_id": expected_id, "type": "task", "step": task.name, "task_id": task.id,
+    }
 
 
 def test_execute_task_step_is_task_name_on_first_attempt(temp_db_dir, db, git_repo):

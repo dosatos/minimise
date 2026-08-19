@@ -169,9 +169,11 @@ mini view start --port 5050    # Custom port
 ```
 
 Read-only, no build step: `GET /` lists jobs (status, task progress); `GET /jobs/<id>/view` shows
-a job's tasks and its plan (rendered from the cached `plan.yaml`, or `GET /jobs/<id>/plan` for
-the raw JSON/YAML). Polls every 3s. No job creation/start/cancel controls, no log streaming, no
-auth — use the CLI for those.
+a job's tasks (including hook executions — pre_plan/post_plan/post_task, not just task attempts)
+and its plan (rendered from the cached `plan.yaml`, or `GET /jobs/<id>/plan` for the raw
+JSON/YAML). A Logs section tails the job's log (`GET /jobs/<id>/logs`, defaults to the last 100
+lines), filterable by task or hook via a Tasks/Hooks-grouped dropdown. Polls every 3s while the
+job is RUNNING. No job creation/start/cancel controls, no auth — use the CLI for those.
 
 ## Claude Code plugin (optional)
 

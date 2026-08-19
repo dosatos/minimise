@@ -48,7 +48,7 @@ class HookExecutor:
         if self.store:
             self.store.save_execution(ex)
         if self.log_path and self.backend:
-            fields = {"execution_id": ex.execution_id, "type": execution_type, "step": hook.name}
+            fields = {"execution_id": ex.execution_id, "type": execution_type, "step": hook.name, "task_id": ex.task_id}
             level = "error" if not success else "info"
             self.backend.record(
                 self.log_path, fields,

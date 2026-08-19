@@ -98,6 +98,7 @@ class TaskExecutor:
                     "execution_id": ex.execution_id,
                     "type": ex.execution_type,
                     "step": task.name + (f"  · try {attempt + 1}" if attempt > 0 else ""),
+                    "task_id": ex.task_id,
                 },
             })
             agent_end = datetime.utcnow()  # honest end of the attempt's work, before gating hook

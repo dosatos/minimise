@@ -1,6 +1,8 @@
 """REST API server exposing read-only job/task state over HTTP."""
 
+import json
 import threading
+from collections import deque
 from typing import Optional
 
 from flask import Flask, jsonify, request, render_template
@@ -98,7 +100,19 @@ class APIServer:
                 if job is None:
                     return jsonify({"error": "Job not found"}), 404
 
-                return jsonify(job.to_dict()), 200
+                executions = self.db.list_executions_for_job(job_id)
+                hooks = [
+                    {
+                        "hook_name": ex.hook_name or "",
+                        "execution_type": ex.execution_type,
+                        "status": ex.status.value,
+                        "started_at": ex.started_at.isoformat() if ex.started_at else None,
+                    }
+                    for ex in executions if ex.execution_type != "task"
+                ]
+                job_dict = job.to_dict()
+                job_dict["hooks"] = hooks
+                return jsonify(job_dict), 200
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
 
@@ -131,6 +145,60 @@ class APIServer:
                     "plan": plan.model_dump(mode="json"),
                     "raw_yaml": plan_yaml_path.read_text(),
                 }), 200
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+
+        @self.app.route("/jobs/<job_id>/logs", methods=["GET"])
+        def get_job_logs(job_id: str):
+            """Tail the job's log file, optionally filtered by task_id."""
+            try:
+                job = self._load_job_with_tasks(job_id)
+                if job is None:
+                    return jsonify({"error": "Job not found"}), 404
+
+                log_path = self.job_controller.store.jobs_dir / job_id / "job.log"
+                if not log_path.exists():
+                    return jsonify({"records": []}), 200
+
+                limit = request.args.get("limit", default=100, type=int)
+                if limit <= 0:
+                    limit = 100
+                task_filter = request.args.get("task_id")  # None, "all", or a real task id
+                hook_filter = request.args.get("hook_name")  # None, "all", or a real hook name
+
+                tail_lines = deque(maxlen=limit)
+                with open(log_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            tail_lines.append(line)
+
+                records = []
+                for line in tail_lines:
+                    try:
+                        rec = json.loads(line)
+                        if not isinstance(rec, dict):
+                            rec = {"message": line}
+                    except json.JSONDecodeError:
+                        rec = {"message": line}
+                    hook_name = None if rec.get("type") == "task" else rec.get("step")
+                    records.append({
+                        "timestamp": rec.get("timestamp", ""),
+                        "task_id": rec.get("task_id"),
+                        "level": rec.get("level", ""),
+                        "message": rec.get("message", ""),
+                        "hook_name": hook_name,
+                    })
+
+                hook_names = sorted({r["hook_name"] for r in records if r["hook_name"]})
+
+                if task_filter and task_filter != "all":
+                    records = [r for r in records if r["task_id"] == task_filter]
+
+                if hook_filter and hook_filter != "all":
+                    records = [r for r in records if r["hook_name"] == hook_filter]
+
+                return jsonify({"records": records, "hook_names": hook_names}), 200
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
 

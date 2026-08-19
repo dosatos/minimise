@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "minimise"
-version = "0.3.1"
+version = "0.4.0"
 description = "Plan orchestrator for multi-agent execution"
 requires-python = ">=3.9"
 dependencies = [

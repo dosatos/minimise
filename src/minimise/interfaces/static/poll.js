@@ -47,13 +47,32 @@ function startJobDetailPolling(jobId, intervalMs) {
         }
         const tbody = document.getElementById("task-rows");
         if (tbody) {
-            tbody.innerHTML = (job.tasks || []).map(t => `<tr>
+            const taskRows = (job.tasks || []).map(t => ({
+                started_at: t.started_at,
+                html: `<tr>
                 <td>${t.id}</td><td>${t.name}</td>
                 <td>${t.goal || ""}</td>
                 <td>${workerLabel(t)}</td>
                 <td><span class="${statusClass(t.status)}">${t.status}</span></td>
                 <td>${t.retries}</td>
-            </tr>`).join("") || '<tr><td colspan="6" class="empty">No tasks</td></tr>';
+                <td>task</td>
+            </tr>`,
+            }));
+            const hookRows = (job.hooks || []).map(h => ({
+                started_at: h.started_at,
+                html: `<tr>
+                <td>—</td><td>${h.hook_name}</td><td>${h.execution_type}</td>
+                <td>—</td><td><span class="${statusClass(h.status)}">${h.status}</span></td>
+                <td>—</td><td>hook</td>
+            </tr>`,
+            }));
+            const rows = taskRows.concat(hookRows).sort((a, b) => {
+                if (!a.started_at && !b.started_at) return 0;
+                if (!a.started_at) return 1;
+                if (!b.started_at) return -1;
+                return a.started_at < b.started_at ? -1 : a.started_at > b.started_at ? 1 : 0;
+            });
+            tbody.innerHTML = rows.map(r => r.html).join("") || '<tr><td colspan="7" class="empty">No tasks</td></tr>';
         }
     }
     refresh();
@@ -73,4 +92,76 @@ async function loadPlan(jobId) {
     if (!resp.ok) return;
     const data = await resp.json();
     document.getElementById("plan-raw").textContent = data.raw_yaml;
+}
+
+function escapeHtml(s) {
+    const d = document.createElement("div");
+    d.textContent = s ?? "";
+    return d.innerHTML;
+}
+
+function logColumnClass(col) {
+    return "log-col-" + col;
+}
+
+function applyLogColumnVisibility() {
+    document.querySelectorAll(".log-col-toggle").forEach(cb => {
+        const cells = document.querySelectorAll("." + logColumnClass(cb.dataset.col));
+        cells.forEach(cell => cell.classList.toggle("col-hidden", !cb.checked));
+    });
+}
+
+function syncHookOptions(hookNames) {
+    const optgroup = document.getElementById("log-hook-optgroup");
+    if (!optgroup || !hookNames) return;
+    const existing = new Set(Array.from(optgroup.children).map(o => o.value));
+    hookNames.forEach(name => {
+        if (existing.has(name)) return;
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.dataset.kind = "hook";
+        opt.textContent = name;
+        optgroup.appendChild(opt);
+    });
+}
+
+async function refreshLogs(jobId) {
+    const select = document.getElementById("log-task-filter");
+    const opt = select?.selectedOptions[0];
+    const filter = opt?.value || "all";
+    const kind = opt?.dataset.kind;
+    let url = `/jobs/${jobId}/logs?limit=100`;
+    if (filter !== "all") {
+        url += kind === "hook"
+            ? `&hook_name=${encodeURIComponent(filter)}`
+            : `&task_id=${encodeURIComponent(filter)}`;
+    }
+    const resp = await fetch(url);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const tbody = document.getElementById("log-rows");
+    if (!tbody) return;
+    const records = data.records || [];
+    tbody.innerHTML = records.map(r => `<tr>
+        <td>${r.timestamp}</td><td class="log-col-task_id">${r.task_id ?? ""}</td>
+        <td class="log-col-level">${r.level}</td>
+        <td class="log-col-message">${escapeHtml(r.message)}</td>
+    </tr>`).join("") || '<tr><td colspan="4" class="empty">No logs yet</td></tr>';
+    applyLogColumnVisibility();
+    syncHookOptions(data.hook_names);
+}
+
+function startLogPolling(jobId, intervalMs) {
+    refreshLogs(jobId);
+    setInterval(() => {
+        const statusEl = document.getElementById("job-status");
+        if (statusEl && statusEl.className.includes("status-running")) {
+            refreshLogs(jobId);
+        }
+    }, intervalMs);
+}
+
+function refreshLogsNow() {
+    const jobId = document.querySelector("[data-job-id]")?.dataset.jobId;
+    if (jobId) refreshLogs(jobId);
 }

@@ -78,6 +78,15 @@ def test_hook_log_records_carry_step(tmp_path):
     assert recs and all(r["step"] == "lint" for r in recs)
 
 
+def test_hook_log_records_carry_null_task_id(tmp_path):
+    log = tmp_path / "job.log"
+    HookExecutor(job_id="j1", log_path=log, backend=JsonlLogBackend()).run(
+        Hook(name="lint", shell="exit 0", estimated_duration_min=1),
+        "pre_plan", task_id=None)
+    recs = [json.loads(l) for l in log.read_text().splitlines()]
+    assert recs and all(r["task_id"] is None for r in recs)
+
+
 def test_failing_hook_multiline_output_makes_one_record_per_line(tmp_path):
     log = tmp_path / "job.log"
     HookExecutor(job_id="j1", log_path=log, backend=JsonlLogBackend()).run(

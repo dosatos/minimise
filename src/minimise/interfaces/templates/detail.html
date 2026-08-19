@@ -6,7 +6,7 @@
 
 <h3>Tasks</h3>
 <table>
-    <thead><tr><th>ID</th><th>Name</th><th>Goal</th><th>Worker</th><th>Status</th><th>Retries</th></tr></thead>
+    <thead><tr><th>ID</th><th>Name</th><th>Goal</th><th>Worker</th><th>Status</th><th>Retries</th><th>Type</th></tr></thead>
     <tbody id="task-rows">
         {% for task in job.tasks %}
         <tr>
@@ -15,19 +15,54 @@
             <td>{{ task.assignee or (task.harness ~ "/" ~ (task.model or "default") if task.harness else "default") }}</td>
             <td><span class="status status-{{ task.status.value }}">{{ task.status.value }}</span></td>
             <td>{{ task.retries }}</td>
+            <td>task</td>
         </tr>
         {% else %}
-        <tr><td colspan="6" class="empty">No tasks</td></tr>
+        <tr><td colspan="7" class="empty">No tasks</td></tr>
         {% endfor %}
     </tbody>
 </table>
 
 <button id="plan-toggle-btn" class="toggle-btn" onclick="togglePlanView()">Show raw plan YAML</button>
 <pre id="plan-raw" style="display:none;"></pre>
+
+<h3 data-job-id="{{ job.id }}">Logs</h3>
+<div class="log-controls">
+    <label>Task:
+        <select id="log-task-filter" onchange="refreshLogsNow()">
+            <option value="all">All</option>
+            <optgroup label="Tasks">
+                {% for task in job.tasks %}
+                <option value="{{ task.id }}" data-kind="task">{{ task.id }} — {{ task.name }}</option>
+                {% endfor %}
+            </optgroup>
+            <optgroup label="Hooks" id="log-hook-optgroup"></optgroup>
+        </select>
+    </label>
+    <label><input type="checkbox" class="log-col-toggle" data-col="task_id" checked> Task ID</label>
+    <label><input type="checkbox" class="log-col-toggle" data-col="level" checked> Level</label>
+</div>
+<table id="log-table">
+    <thead>
+        <tr>
+            <th>Timestamp</th>
+            <th class="log-col-task_id">Task ID</th>
+            <th class="log-col-level">Level</th>
+            <th class="log-col-message">Message</th>
+        </tr>
+    </thead>
+    <tbody id="log-rows">
+        <tr><td colspan="4" class="empty">No logs yet</td></tr>
+    </tbody>
+</table>
 {% endblock %}
 {% block scripts %}
 <script>
     startJobDetailPolling("{{ job.id }}", 3000);
     loadPlan("{{ job.id }}");
+    startLogPolling("{{ job.id }}", 3000);
+    document.querySelectorAll(".log-col-toggle").forEach(cb => {
+        cb.addEventListener("change", applyLogColumnVisibility);
+    });
 </script>
 {% endblock %}

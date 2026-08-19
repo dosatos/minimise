@@ -23,3 +23,5 @@ pre { background: #161616; padding: 1rem; overflow-x: auto; border: 1px solid #2
 .toggle-btn { background: #1a1a1a; color: #e6e6e6; border: 1px solid #333; padding: 0.4rem 0.8rem; font-family: inherit; cursor: pointer; }
 .toggle-btn:hover { background: #222; }
 .empty { color: #666; padding: 2rem 0; }
+.log-controls { margin: 0.5em 0; display: flex; gap: 1rem; align-items: center; }
+.col-hidden { display: none; }
