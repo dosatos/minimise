@@ -43,6 +43,7 @@ def test_task_to_dict():
         "assignee": None,
         "harness": None,
         "model": None,
+        "goal": None,
     }
 
 

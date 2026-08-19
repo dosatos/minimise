@@ -56,6 +56,7 @@ class Task:
             "assignee": self.assignee,
             "harness": self.harness,
             "model": self.model,
+            "goal": self.goal,
         }
 
 @dataclass

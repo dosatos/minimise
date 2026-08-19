@@ -2,6 +2,12 @@ function statusClass(status) {
     return "status status-" + status;
 }
 
+function workerLabel(t) {
+    if (t.assignee) return t.assignee;
+    if (t.harness) return `${t.harness}/${t.model || "default"}`;
+    return "default";
+}
+
 function startJobListPolling(intervalMs) {
     async function refresh() {
         const resp = await fetch("/jobs");
@@ -43,9 +49,11 @@ function startJobDetailPolling(jobId, intervalMs) {
         if (tbody) {
             tbody.innerHTML = (job.tasks || []).map(t => `<tr>
                 <td>${t.id}</td><td>${t.name}</td>
+                <td>${t.goal || ""}</td>
+                <td>${workerLabel(t)}</td>
                 <td><span class="${statusClass(t.status)}">${t.status}</span></td>
                 <td>${t.retries}</td>
-            </tr>`).join("") || '<tr><td colspan="4" class="empty">No tasks</td></tr>';
+            </tr>`).join("") || '<tr><td colspan="6" class="empty">No tasks</td></tr>';
         }
     }
     refresh();
@@ -53,11 +61,11 @@ function startJobDetailPolling(jobId, intervalMs) {
 }
 
 function togglePlanView() {
-    const structured = document.getElementById("plan-structured");
     const raw = document.getElementById("plan-raw");
-    const isRaw = raw.style.display !== "none";
-    raw.style.display = isRaw ? "none" : "block";
-    structured.style.display = isRaw ? "block" : "none";
+    const btn = document.getElementById("plan-toggle-btn");
+    const showing = raw.style.display !== "none";
+    raw.style.display = showing ? "none" : "block";
+    btn.textContent = showing ? "Show raw plan YAML" : "Hide raw plan YAML";
 }
 
 async function loadPlan(jobId) {
@@ -65,9 +73,4 @@ async function loadPlan(jobId) {
     if (!resp.ok) return;
     const data = await resp.json();
     document.getElementById("plan-raw").textContent = data.raw_yaml;
-    const list = document.getElementById("plan-tasks");
-    list.innerHTML = data.plan.tasks.map(t => {
-        const worker = t.assignee ? `persona: ${t.assignee}` : (t.harness ? `${t.harness}/${t.model || "default"}` : "default");
-        return `<li><strong>${t.id}</strong> — ${t.name} (${worker})</li>`;
-    }).join("");
 }
