@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ persona.name }} — minimise{% endblock %}
+{% block content %}
+<h2>{{ persona.name }}</h2>
+<p>
+    {% if persona.model %}Model: {{ persona.model }}{% endif %}
+    {% if persona.harness %}{% if persona.model %} — {% endif %}Harness: {{ persona.harness }}{% endif %}
+</p>
+<div class="markdown-body">{{ prompt_html | safe }}</div>
+{% endblock %}

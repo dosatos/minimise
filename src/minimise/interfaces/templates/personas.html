@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Personas — minimise{% endblock %}
+{% block content %}
+<div class="log-controls">
+    <button type="button" class="toggle-btn" id="copy-selected">Copy</button>
+    <button type="button" class="toggle-btn" id="select-all-toggle">Select all</button>
+    <input type="text" id="persona-filter" placeholder="Filter by name…">
+</div>
+<table>
+    <thead>
+        <tr><th></th><th>Name</th><th>Prompt</th></tr>
+    </thead>
+    <tbody>
+        {% for tag, group in groups %}
+        {% if group %}
+        <tr class="group-row"><td colspan="3"><strong>{{ tag }}</strong></td></tr>
+        {% for name, summary in group %}
+        <tr class="persona-row" data-name="{{ name|lower }}">
+            <td><input type="checkbox" value="{{ name }}"></td>
+            <td><a href="{{ url_for('persona_detail_page', name=name) }}">{{ name }}</a></td>
+            <td>{{ summary }}</td>
+        </tr>
+        {% endfor %}
+        {% endif %}
+        {% endfor %}
+        {% if not (groups[0][1] or groups[1][1]) %}
+        <tr><td colspan="3" class="empty">No personas yet</td></tr>
+        {% endif %}
+    </tbody>
+</table>
+{% endblock %}
+{% block scripts %}
+<script>
+    document.getElementById('copy-selected').addEventListener('click', (e) => {
+        const btn = e.currentTarget;
+        const names = Array.from(document.querySelectorAll('tbody input[type=checkbox]:checked')).map(cb => cb.value);
+        const label = names.length ? 'Copied!' : 'Nothing selected';
+        if (names.length) navigator.clipboard.writeText(names.join('\n'));
+        const original = btn.textContent;
+        btn.textContent = label;
+        setTimeout(() => { btn.textContent = original; }, 1200);
+    });
+
+    function visibleCheckboxes() {
+        return Array.from(document.querySelectorAll('.persona-row:not(.col-hidden) input[type=checkbox]'));
+    }
+
+    function refreshSelectAllLabel() {
+        const boxes = visibleCheckboxes();
+        const allChecked = boxes.length > 0 && boxes.every(cb => cb.checked);
+        document.getElementById('select-all-toggle').textContent = allChecked ? 'Deselect all' : 'Select all';
+    }
+
+    document.getElementById('select-all-toggle').addEventListener('click', () => {
+        const boxes = visibleCheckboxes();
+        const allChecked = boxes.length > 0 && boxes.every(cb => cb.checked);
+        boxes.forEach(cb => { cb.checked = !allChecked; });
+        refreshSelectAllLabel();
+    });
+
+    document.getElementById('persona-filter').addEventListener('input', (e) => {
+        const query = e.target.value.trim().toLowerCase();
+        let groupRow = null;
+        let groupHasMatch = false;
+        document.querySelectorAll('tbody tr').forEach((row) => {
+            if (row.classList.contains('group-row')) {
+                if (groupRow) groupRow.classList.toggle('col-hidden', !groupHasMatch);
+                groupRow = row;
+                groupHasMatch = false;
+                return;
+            }
+            if (!row.classList.contains('persona-row')) return;
+            const match = row.dataset.name.includes(query);
+            row.classList.toggle('col-hidden', !match);
+            if (match) groupHasMatch = true;
+        });
+        if (groupRow) groupRow.classList.toggle('col-hidden', !groupHasMatch);
+        refreshSelectAllLabel();
+    });
+</script>
+{% endblock %}

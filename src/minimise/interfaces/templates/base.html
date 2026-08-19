@@ -11,6 +11,11 @@
 <body>
     <div class="page-header">
         <h1><a href="{{ url_for('job_list_page') }}" style="border:none;">minimise</a></h1>
+        <nav class="nav-bar">
+            {% for label, endpoint in nav_links %}
+            <a href="{{ url_for(endpoint) }}" class="{{ 'active' if request.endpoint == endpoint else '' }}">{{ label }}</a>
+            {% endfor %}
+        </nav>
         <button type="button" class="toggle-btn" id="theme-toggle">theme</button>
     </div>
     {% block content %}{% endblock %}

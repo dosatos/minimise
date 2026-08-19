@@ -47,7 +47,10 @@ body {
     padding: 2rem;
 }
 h1 { font-weight: normal; letter-spacing: 0.05em; text-transform: uppercase; font-size: 1.1rem; }
-.page-header { display: flex; align-items: center; justify-content: space-between; }
+.page-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.nav-bar { display: flex; gap: 1rem; margin-right: auto; margin-left: 1rem; }
+.nav-bar a { color: var(--fg); opacity: 0.6; }
+.nav-bar a.active { opacity: 1; border-bottom: 1px solid var(--fg); }
 table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
 th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); }
 th { color: var(--th-color); font-weight: normal; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; }
@@ -66,3 +69,10 @@ pre { background: var(--pre-bg); padding: 1rem; overflow-x: auto; border: 1px so
 .empty { color: var(--empty-color); padding: 2rem 0; }
 .log-controls { margin: 0.5em 0; display: flex; gap: 1rem; align-items: center; }
 .col-hidden { display: none; }
+
+.markdown-body { line-height: 1.6; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3 { border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+.markdown-body code { background: var(--pre-bg); padding: 0.1rem 0.3rem; border: 1px solid var(--border); }
+.markdown-body pre code { padding: 0; border: none; }
+.markdown-body pre { background: var(--pre-bg); padding: 1rem; overflow-x: auto; border: 1px solid var(--border); }
+.markdown-body blockquote { border-left: 3px solid var(--border); margin-left: 0; padding-left: 1rem; opacity: 0.8; }

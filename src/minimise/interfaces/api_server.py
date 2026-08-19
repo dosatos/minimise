@@ -5,12 +5,22 @@ import threading
 from collections import deque
 from typing import Optional
 
+import markdown
 from flask import Flask, jsonify, request, render_template
 from flask_cors import CORS
 
 from minimise.models import Job
 from minimise.storage.database import Database
 from minimise.orchestration.job_controller import JobController
+from minimise.personas import load_personas
+
+NAV_LINKS = [("Jobs", "job_list_page"), ("Personas", "personas_page")]
+
+
+def _persona_summary(system_prompt: str, width: int = 70) -> str:
+    """First non-empty line of the prompt, truncated to width (mirrors cli/persona.py)."""
+    line = next((ln.strip() for ln in system_prompt.splitlines() if ln.strip()), "")
+    return line if len(line) <= width else line[: width - 1] + "…"
 
 
 class APIServer:
@@ -52,6 +62,10 @@ class APIServer:
     def _register_routes(self):
         """Register all REST API routes."""
 
+        @self.app.context_processor
+        def inject_nav_links():
+            return {"nav_links": NAV_LINKS}
+
         @self.app.route("/", methods=["GET"])
         def job_list_page():
             """Server-rendered job list page, polled client-side via /jobs."""
@@ -64,6 +78,35 @@ class APIServer:
             if job is None:
                 return "Job not found", 404
             return render_template("detail.html", job=job)
+
+        @self.app.route("/personas", methods=["GET"])
+        def personas_page():
+            """Server-rendered persona list page, grouped BUILTIN vs USER."""
+            import minimise.interfaces.cli as _cli  # lazy: avoids circular import (cli.view imports us)
+
+            personas = load_personas(_cli.CONFIG_DIR)
+            # Bare `latest` names only — skip the per-version @vN aliases.
+            names = [n for n in personas if "@" not in n]
+            groups = [
+                ("BUILTIN", sorted(n for n in names if n.startswith("mini:"))),
+                ("USER", sorted(n for n in names if not n.startswith("mini:"))),
+            ]
+            groups = [
+                (tag, [(n, _persona_summary(personas[n].system_prompt)) for n in group])
+                for tag, group in groups
+            ]
+            return render_template("personas.html", groups=groups)
+
+        @self.app.route("/personas/<name>", methods=["GET"])
+        def persona_detail_page(name: str):
+            import minimise.interfaces.cli as _cli  # lazy: avoids circular import (cli.view imports us)
+
+            personas = load_personas(_cli.CONFIG_DIR)
+            p = personas.get(name)
+            if p is None:
+                return "Persona not found", 404
+            prompt_html = markdown.markdown(p.system_prompt)
+            return render_template("persona_detail.html", persona=p, prompt_html=prompt_html)
 
         @self.app.route("/jobs", methods=["GET"])
         def get_jobs():
