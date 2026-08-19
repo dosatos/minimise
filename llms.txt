@@ -27,7 +27,7 @@ that repo is what the tasks edit and commit to.
 
 ```bash
 mini job new --plan plan.yaml        # → Job ID; validates the plan. Does not run it.
-mini job start <id>                  # runs in the foreground; idempotent
+mini job start <id>                  # starts in the background, returns immediately; idempotent
 mini job status <id>                 # task progress (--format json for scripting)
 mini job list                        # all jobs
 mini job stop <id>                   # SIGTERM the orchestrator
@@ -152,7 +152,7 @@ loop:
 
 ```bash
 mini loop new --plan examples/example-loop.yaml   # → Loop ID
-mini loop start <id>                              # foreground, idempotent, resumes from journal
+mini loop start <id>                              # background, idempotent, resumes from journal, returns immediately
 mini loop status <id>                             # per-iteration progress
 mini loop journal <id>                            # the loop's memory: plan/implement/evaluate + commits
 mini loop logs <id> [-f] [--query …]
@@ -160,6 +160,18 @@ mini loop logs <id> [-f] [--query …]
 
 A loop that stopped because the goal was met and one that ran out of iterations are very
 different outcomes — `mini loop status` tells you which.
+
+## Web UI
+
+```bash
+mini view start                # Launch web UI on :5000 (Ctrl+C to stop)
+mini view start --port 5050    # Custom port
+```
+
+Read-only, no build step: `GET /` lists jobs (status, task progress); `GET /jobs/<id>/view` shows
+a job's tasks and its plan (rendered from the cached `plan.yaml`, or `GET /jobs/<id>/plan` for
+the raw JSON/YAML). Polls every 3s. No job creation/start/cancel controls, no log streaming, no
+auth — use the CLI for those.
 
 ## Claude Code plugin (optional)
 
