@@ -94,9 +94,9 @@ class JobStore:
         return job
 
     @_reconciled
-    def load_many(self, limit=None) -> list[Job]:
+    def load_many(self, limit=None, offset=0) -> list[Job]:
         """List jobs (no tasks attached — matches db.list_jobs) with liveness reconciled."""
-        return self.db.list_jobs(limit=limit)
+        return self.db.list_jobs(limit=limit, offset=offset)
 
     def _reconcile(self, result):
         """Downgrade any dead RUNNING job(s) in result to FAILED, in-place. Idempotent."""

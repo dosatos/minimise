@@ -9,8 +9,9 @@ function workerLabel(t) {
 }
 
 function startJobListPolling(intervalMs) {
+    const page = new URLSearchParams(location.search).get("page") || 1;
     async function refresh() {
-        const resp = await fetch("/jobs");
+        const resp = await fetch(`/jobs?page=${page}`);
         if (!resp.ok) return;
         const jobs = await resp.json();
         const tbody = document.getElementById("job-rows");

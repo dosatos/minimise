@@ -15,6 +15,7 @@ from minimise.orchestration.job_controller import JobController
 from minimise.personas import load_personas
 
 NAV_LINKS = [("Jobs", "job_list_page"), ("Personas", "personas_page")]
+JOBS_PAGE_SIZE = 50
 
 
 def _persona_summary(system_prompt: str, width: int = 70) -> str:
@@ -52,12 +53,15 @@ class APIServer:
         """Fetch a job and attach its task list, or None if it doesn't exist."""
         return self.job_controller.store.load(job_id)
 
-    def _load_many_with_tasks(self) -> list[Job]:
-        """List jobs with each one's task list attached (store.load_many omits tasks)."""
-        jobs = self.job_controller.store.load_many()
+    def _load_page_with_tasks(self, page: int) -> tuple[list[Job], bool]:
+        """List one page (1-indexed) of jobs with tasks attached; returns (jobs, has_next)."""
+        offset = (page - 1) * JOBS_PAGE_SIZE
+        jobs = self.job_controller.store.load_many(limit=JOBS_PAGE_SIZE + 1, offset=offset)
+        has_next = len(jobs) > JOBS_PAGE_SIZE
+        jobs = jobs[:JOBS_PAGE_SIZE]
         for job in jobs:
             job.tasks = self.db.list_tasks_for_job(job.id)
-        return jobs
+        return jobs, has_next
 
     def _register_routes(self):
         """Register all REST API routes."""
@@ -69,8 +73,9 @@ class APIServer:
         @self.app.route("/", methods=["GET"])
         def job_list_page():
             """Server-rendered job list page, polled client-side via /jobs."""
-            jobs = self._load_many_with_tasks()
-            return render_template("list.html", jobs=jobs)
+            page = max(1, request.args.get("page", 1, type=int))
+            jobs, has_next = self._load_page_with_tasks(page)
+            return render_template("list.html", jobs=jobs, page=page, has_next=has_next)
 
         @self.app.route("/jobs/<job_id>/view", methods=["GET"])
         def job_detail_page(job_id: str):
@@ -110,10 +115,13 @@ class APIServer:
 
         @self.app.route("/jobs", methods=["GET"])
         def get_jobs():
-            """Get all jobs, each with its task list attached."""
+            """Get one page of jobs, each with its task list attached."""
             try:
-                jobs = self._load_many_with_tasks()
-                return jsonify([job.to_dict() for job in jobs]), 200
+                page = max(1, request.args.get("page", 1, type=int))
+                jobs, has_next = self._load_page_with_tasks(page)
+                resp = jsonify([job.to_dict() for job in jobs])
+                resp.headers["X-Has-Next"] = "true" if has_next else "false"
+                return resp, 200
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
 

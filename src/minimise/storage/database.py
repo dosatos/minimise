@@ -429,12 +429,15 @@ class Database:
         rows = self._query("SELECT * FROM jobs WHERE id = ?", (job_id,))
         return _row_to_job(rows[0]) if rows else None
 
-    def list_jobs(self, limit: Optional[int] = None) -> List[Job]:
-        """Fetch jobs with optional limit."""
+    def list_jobs(self, limit: Optional[int] = None, offset: int = 0) -> List[Job]:
+        """Fetch jobs with optional limit/offset."""
         if limit is not None:
-            rows = self._query("SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,))
+            rows = self._query(
+                "SELECT * FROM jobs ORDER BY created_at DESC, id LIMIT ? OFFSET ?",
+                (limit, offset),
+            )
         else:
-            rows = self._query("SELECT * FROM jobs ORDER BY created_at DESC")
+            rows = self._query("SELECT * FROM jobs ORDER BY created_at DESC, id")
         return [_row_to_job(row) for row in rows]
 
     def update_job_status(self, job_id: str, status: JobStatus, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, pid: Optional[int] = None, conn: Optional[sqlite3.Connection] = None) -> None:

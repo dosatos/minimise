@@ -76,3 +76,6 @@ pre { background: var(--pre-bg); padding: 1rem; overflow-x: auto; border: 1px so
 .markdown-body pre code { padding: 0; border: none; }
 .markdown-body pre { background: var(--pre-bg); padding: 1rem; overflow-x: auto; border: 1px solid var(--border); }
 .markdown-body blockquote { border-left: 3px solid var(--border); margin-left: 0; padding-left: 1rem; opacity: 0.8; }
+
+.pagination { margin-top: 1rem; display: flex; gap: 1rem; align-items: center; }
+.pagination .disabled { opacity: 0.4; }

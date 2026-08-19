@@ -20,6 +20,19 @@
         {% endfor %}
     </tbody>
 </table>
+<div class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('job_list_page', page=page - 1) }}">Prev</a>
+    {% else %}
+    <span class="disabled">Prev</span>
+    {% endif %}
+    <span>Page {{ page }}</span>
+    {% if has_next %}
+    <a href="{{ url_for('job_list_page', page=page + 1) }}">Next</a>
+    {% else %}
+    <span class="disabled">Next</span>
+    {% endif %}
+</div>
 {% endblock %}
 {% block scripts %}
 <script>startJobListPolling(3000);</script>
