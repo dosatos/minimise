@@ -5,7 +5,6 @@ vocabulary. Prefix-matching id resolution lives in the CLI, not here.
 """
 
 import os
-import yaml
 from pathlib import Path
 from typing import Optional
 
@@ -14,7 +13,7 @@ from datetime import datetime
 from minimise.models import Loop, LoopSpec, JobStatus
 from minimise.storage.database import Database
 from minimise.storage.job_store import _pid_alive
-from minimise.utils import ensure_directory, new_id
+from minimise.utils import dump_yaml_readable, ensure_directory, new_id
 
 
 class LoopStore:
@@ -36,7 +35,7 @@ class LoopStore:
 
         loop_dir = ensure_directory(self.jobs_dir / loop_id)
         with open(loop_dir / "plan.yaml", "w") as f:
-            yaml.dump(spec.model_dump(), f)
+            dump_yaml_readable(spec.model_dump(), f)
 
         return loop
 
@@ -67,7 +66,7 @@ class LoopStore:
         loop_dir = self.jobs_dir / loop_id
         tmp = loop_dir / "plan.yaml.tmp"
         with open(tmp, "w") as f:
-            yaml.dump(spec.model_dump(), f)
+            dump_yaml_readable(spec.model_dump(), f)
         os.replace(tmp, loop_dir / "plan.yaml")
 
         return current.plan_version, spec.plan_version

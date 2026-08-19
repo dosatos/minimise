@@ -7,11 +7,12 @@ Database or the filesystem directly.
 
 import functools
 import os
-import yaml
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+from minimise.utils import dump_yaml_readable
 
 from minimise.models import Job, Task, Execution, JobStatus, TaskStatus, Plan
 from minimise.storage.database import Database, _UNSET
@@ -79,7 +80,7 @@ class JobStore:
 
         job_dir = ensure_directory(self.jobs_dir / job_id)
         with open(job_dir / "plan.yaml", "w") as f:
-            yaml.dump(plan.model_dump(), f)
+            dump_yaml_readable(plan.model_dump(), f)
 
         return job
 

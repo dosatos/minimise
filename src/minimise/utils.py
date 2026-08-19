@@ -4,10 +4,30 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+import yaml
+
 
 def new_id(prefix: str) -> str:
     """Short prefixed id, e.g. new_id("job") -> "job-a1b2c3"."""
     return f"{prefix}-{uuid.uuid4().hex[:6]}"
+
+
+class ReadableDumper(yaml.Dumper):
+    """A yaml.Dumper that renders multi-line strings as literal blocks (`|`)
+    instead of PyYAML's default backslash-continued double-quoted flow style."""
+
+
+def _represent_str(dumper, data):
+    style = "|" if "\n" in data else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
+
+
+ReadableDumper.add_representer(str, _represent_str)
+
+
+def dump_yaml_readable(data, stream=None) -> Optional[str]:
+    """yaml.dump using ReadableDumper, with field order preserved (sort_keys=False)."""
+    return yaml.dump(data, stream, Dumper=ReadableDumper, sort_keys=False)
 
 
 def run_shell_command(command: str, cwd: Optional[Path] = None, timeout: Optional[int] = None,
