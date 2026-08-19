@@ -6,11 +6,23 @@ from pathlib import Path
 from datetime import datetime
 from unittest.mock import Mock, MagicMock
 
-from minimise.models import Job, Task, JobStatus, TaskStatus
+from minimise.models import Job, Task, JobStatus, TaskStatus, Plan, PlanTask
 from minimise.storage.database import Database
 from minimise.storage.job_store import JobStore
 from minimise.orchestration.job_controller import JobController
 from minimise.interfaces.api_server import APIServer
+
+
+def _make_plan_yaml(tmp_path):
+    return Plan(
+        name="test-plan",
+        tasks=[
+            PlanTask(
+                id="t1", name="Task One", description="desc", goal="goal",
+                estimated_duration_min=5,
+            )
+        ],
+    )
 
 
 @pytest.fixture
@@ -30,6 +42,45 @@ def api_server(db, mock_job_controller):
     # Cleanup
     if server.server_thread and server.server_thread.is_alive():
         server.stop()
+
+
+@pytest.fixture
+def client(api_server):
+    """Flask test client for the API server's app (no need to actually bind a port)."""
+    api_server.app.testing = True
+    return api_server.app.test_client()
+
+
+def test_get_job_plan_returns_structured_and_raw(client, mock_job_controller, temp_db_dir):
+    job = mock_job_controller.store.create(
+        _make_plan_yaml(temp_db_dir), base_commit="abc123",
+        plan_path=str(temp_db_dir / "original-plan.yaml"),
+    )
+
+    resp = client.get(f"/jobs/{job.id}/plan")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["plan"]["name"] == "test-plan"
+    assert data["plan"]["tasks"][0]["id"] == "t1"
+    assert "name: test-plan" in data["raw_yaml"]
+
+
+def test_get_job_plan_404_for_unknown_job(client):
+    resp = client.get("/jobs/nonexistent/plan")
+    assert resp.status_code == 404
+    assert resp.get_json()["error"]
+
+
+def test_get_job_plan_404_when_plan_file_missing(client, mock_job_controller, temp_db_dir):
+    job = mock_job_controller.store.create(
+        _make_plan_yaml(temp_db_dir), base_commit="abc123",
+        plan_path=str(temp_db_dir / "original-plan.yaml"),
+    )
+    (temp_db_dir / "jobs" / job.id / "plan.yaml").unlink()
+
+    resp = client.get(f"/jobs/{job.id}/plan")
+    assert resp.status_code == 404
 
 
 def test_api_server_initialization(db, mock_job_controller):

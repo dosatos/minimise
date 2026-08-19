@@ -94,6 +94,26 @@ class APIServer:
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
 
+        @self.app.route("/jobs/<job_id>/plan", methods=["GET"])
+        def get_job_plan(job_id: str):
+            """Get the job's plan, structured and as raw YAML."""
+            try:
+                job = self.job_controller.store.load(job_id)
+                if job is None:
+                    return jsonify({"error": "Job not found"}), 404
+
+                plan_yaml_path = self.job_controller.store.jobs_dir / job_id / "plan.yaml"
+                if not plan_yaml_path.exists():
+                    return jsonify({"error": "Plan file not found for this job"}), 404
+
+                plan = self.job_controller.store.load_plan(job_id)
+                return jsonify({
+                    "plan": plan.model_dump(mode="json"),
+                    "raw_yaml": plan_yaml_path.read_text(),
+                }), 200
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+
         @self.app.route("/jobs/<job_id>/cancel", methods=["POST"])
         def cancel_job(job_id: str):
             """Cancel a job."""
