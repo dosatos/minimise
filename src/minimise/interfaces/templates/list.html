@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Jobs — minimise{% endblock %}
+{% block content %}
+<table>
+    <thead>
+        <tr><th>ID</th><th>Name</th><th>Status</th><th>Tasks</th><th>Created</th></tr>
+    </thead>
+    <tbody id="job-rows">
+        {% if not jobs %}
+        <tr><td colspan="5" class="empty">No jobs yet</td></tr>
+        {% endif %}
+        {% for job in jobs %}
+        <tr>
+            <td><a href="{{ url_for('job_detail_page', job_id=job.id) }}">{{ job.id }}</a></td>
+            <td>{{ job.name }}</td>
+            <td><span class="status status-{{ job.status.value }}">{{ job.status.value }}</span></td>
+            <td>{{ job.tasks|selectattr('status.value', 'equalto', 'completed')|list|length }}/{{ job.tasks|length }}</td>
+            <td>{{ job.created_at.isoformat() }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}
+{% block scripts %}
+<script>startJobListPolling(3000);</script>
+{% endblock %}

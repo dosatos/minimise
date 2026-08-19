@@ -27,7 +27,11 @@ dev = [
 package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
-minimise = ["builtin_personas/**/*.md"]
+minimise = [
+    "builtin_personas/**/*.md",
+    "interfaces/templates/**/*.html",
+    "interfaces/static/**/*",
+]
 
 [project.scripts]
 mini = "minimise.interfaces.cli:main"

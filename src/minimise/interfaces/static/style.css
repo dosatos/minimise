@@ -1,0 +1,25 @@
+* { box-sizing: border-box; }
+body {
+    font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    background: #0d0d0d;
+    color: #e6e6e6;
+    margin: 0;
+    padding: 2rem;
+}
+h1 { font-weight: normal; letter-spacing: 0.05em; text-transform: uppercase; font-size: 1.1rem; }
+table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #2a2a2a; }
+th { color: #888; font-weight: normal; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; }
+tr:hover td { background: #161616; }
+a { color: #e6e6e6; text-decoration: none; border-bottom: 1px dotted #555; }
+a:hover { border-bottom-color: #e6e6e6; }
+.status { padding: 0.1rem 0.5rem; border-radius: 2px; font-size: 0.8rem; }
+.status-pending { color: #999; }
+.status-running { color: #4ea1ff; }
+.status-completed { color: #5ec98a; }
+.status-failed { color: #ff6b6b; }
+.status-stopped { color: #d9a441; }
+pre { background: #161616; padding: 1rem; overflow-x: auto; border: 1px solid #2a2a2a; }
+.toggle-btn { background: #1a1a1a; color: #e6e6e6; border: 1px solid #333; padding: 0.4rem 0.8rem; font-family: inherit; cursor: pointer; }
+.toggle-btn:hover { background: #222; }
+.empty { color: #666; padding: 2rem 0; }

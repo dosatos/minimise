@@ -3,7 +3,7 @@
 import threading
 from typing import Optional
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, render_template
 from flask_cors import CORS
 
 from minimise.models import Job
@@ -42,6 +42,17 @@ class APIServer:
 
     def _register_routes(self):
         """Register all REST API routes."""
+
+        @self.app.route("/", methods=["GET"])
+        def job_list_page():
+            """Server-rendered job list page, polled client-side via /jobs."""
+            jobs = self.job_controller.store.load_many()
+            return render_template("list.html", jobs=jobs)
+
+        @self.app.route("/jobs/<job_id>/view", methods=["GET"])
+        def job_detail_page(job_id: str):
+            # Placeholder — replaced by the job-detail-page task.
+            return "placeholder", 200
 
         @self.app.route("/jobs", methods=["GET"])
         def get_jobs():
