@@ -2,6 +2,10 @@ function statusClass(status) {
     return "status status-" + status;
 }
 
+function isTerminalStatus(status) {
+    return ["completed", "failed", "stopped"].includes(status);
+}
+
 function workerLabel(t) {
     if (t.assignee) return t.assignee;
     if (t.harness) return `${t.harness}/${t.model || "default"}`;
@@ -10,7 +14,14 @@ function workerLabel(t) {
 
 function startJobListPolling(intervalMs) {
     const page = new URLSearchParams(location.search).get("page") || 1;
+    let intervalId = null;
+    let stopped = false;
+    function stopPolling() {
+        stopped = true;
+        if (intervalId !== null) clearInterval(intervalId);
+    }
     async function refresh() {
+        if (document.hidden) return;
         const resp = await fetch(`/jobs?page=${page}`);
         if (!resp.ok) return;
         const jobs = await resp.json();
@@ -18,6 +29,7 @@ function startJobListPolling(intervalMs) {
         if (!tbody) return;
         if (jobs.length === 0) {
             tbody.innerHTML = '<tr><td colspan="5" class="empty">No jobs yet</td></tr>';
+            stopPolling();
             return;
         }
         tbody.innerHTML = jobs.map(job => {
@@ -31,13 +43,26 @@ function startJobListPolling(intervalMs) {
                 <td>${job.created_at || ""}</td>
             </tr>`;
         }).join("");
+        if (jobs.every(job => isTerminalStatus(job.status))) {
+            stopPolling();
+        }
     }
+    document.addEventListener("visibilitychange", () => {
+        if (!stopped && !document.hidden) refresh();
+    });
     refresh();
-    setInterval(refresh, intervalMs);
+    intervalId = setInterval(refresh, intervalMs);
 }
 
 function startJobDetailPolling(jobId, intervalMs) {
+    let intervalId = null;
+    let stopped = false;
+    function stopPolling() {
+        stopped = true;
+        if (intervalId !== null) clearInterval(intervalId);
+    }
     async function refresh() {
+        if (document.hidden) return;
         const resp = await fetch(`/jobs/${jobId}`);
         if (!resp.ok) return;
         const job = await resp.json();
@@ -75,9 +100,15 @@ function startJobDetailPolling(jobId, intervalMs) {
             });
             tbody.innerHTML = rows.map(r => r.html).join("") || '<tr><td colspan="7" class="empty">No tasks</td></tr>';
         }
+        if (isTerminalStatus(job.status)) {
+            stopPolling();
+        }
     }
+    document.addEventListener("visibilitychange", () => {
+        if (!stopped && !document.hidden) refresh();
+    });
     refresh();
-    setInterval(refresh, intervalMs);
+    intervalId = setInterval(refresh, intervalMs);
 }
 
 function togglePlanView() {
@@ -153,13 +184,30 @@ async function refreshLogs(jobId) {
 }
 
 function startLogPolling(jobId, intervalMs) {
-    refreshLogs(jobId);
-    setInterval(() => {
+    let intervalId = null;
+    let stopped = false;
+    function stopPolling() {
+        stopped = true;
+        if (intervalId !== null) clearInterval(intervalId);
+    }
+    function tick() {
+        if (document.hidden) return;
         const statusEl = document.getElementById("job-status");
-        if (statusEl && statusEl.className.includes("status-running")) {
+        if (!statusEl) return;
+        const status = statusEl.className.replace("status status-", "");
+        if (isTerminalStatus(status)) {
+            stopPolling();
+            return;
+        }
+        if (statusEl.className.includes("status-running")) {
             refreshLogs(jobId);
         }
-    }, intervalMs);
+    }
+    document.addEventListener("visibilitychange", () => {
+        if (!stopped && !document.hidden) tick();
+    });
+    refreshLogs(jobId);
+    intervalId = setInterval(tick, intervalMs);
 }
 
 function refreshLogsNow() {
