@@ -51,6 +51,7 @@ h1 { font-weight: normal; letter-spacing: 0.05em; text-transform: uppercase; fon
 .nav-bar { display: flex; gap: 1rem; margin-right: auto; margin-left: 1rem; }
 .nav-bar a { color: var(--fg); opacity: 0.6; }
 .nav-bar a.active { opacity: 1; border-bottom: 1px solid var(--fg); }
+.table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
 th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); }
 th { color: var(--th-color); font-weight: normal; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; }
@@ -66,8 +67,30 @@ a:hover { border-bottom-color: var(--link-border-hover); }
 pre { background: var(--pre-bg); padding: 1rem; overflow-x: auto; border: 1px solid var(--border); }
 .toggle-btn { background: var(--toggle-bg); color: var(--fg); border: 1px solid var(--toggle-border); padding: 0.4rem 0.8rem; font-family: inherit; cursor: pointer; }
 .toggle-btn:hover { background: var(--toggle-hover-bg); }
+select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-color: var(--toggle-bg);
+    background-image:
+        linear-gradient(45deg, transparent 50%, var(--fg) 50%),
+        linear-gradient(135deg, var(--fg) 50%, transparent 50%);
+    background-position: calc(100% - 16px) calc(50% + 1px), calc(100% - 11px) calc(50% + 1px);
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    color: var(--fg);
+    border: 1px solid var(--toggle-border);
+    border-radius: 2px;
+    padding: 0.4rem 2rem 0.4rem 0.6rem;
+    font-family: inherit;
+    font-size: 0.9rem;
+    cursor: pointer;
+}
+select:hover { background-color: var(--toggle-hover-bg); }
+select:focus { outline: 1px solid var(--fg); outline-offset: 1px; }
+select optgroup, select option { background-color: var(--bg); color: var(--fg); }
 .empty { color: var(--empty-color); padding: 2rem 0; }
 .log-controls { margin: 0.5em 0; display: flex; gap: 1rem; align-items: center; }
+.log-controls label { display: flex; align-items: center; gap: 0.4rem; }
 .col-hidden { display: none; }
 
 .markdown-body { line-height: 1.6; }
@@ -79,3 +102,59 @@ pre { background: var(--pre-bg); padding: 1rem; overflow-x: auto; border: 1px so
 
 .pagination { margin-top: 1rem; display: flex; gap: 1rem; align-items: center; }
 .pagination .disabled { opacity: 0.4; }
+
+@media (max-width: 640px) {
+    body { padding: 1rem; }
+    .page-header { flex-wrap: wrap; }
+    .nav-bar { margin-left: 0; }
+    .log-controls { flex-wrap: wrap; }
+    .log-controls select { max-width: 60vw; }
+
+    .table-wrap table thead {
+        position: absolute;
+        left: -9999px;
+        top: -9999px;
+    }
+    .table-wrap table, .table-wrap table tbody, .table-wrap table tr, .table-wrap table td {
+        display: block;
+        width: 100%;
+    }
+    .table-wrap table tr {
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        margin-bottom: 0.75rem;
+        padding: 0.5rem 0.75rem;
+    }
+    .table-wrap table tr:hover td { background: none; }
+    .table-wrap table td {
+        border-bottom: none;
+        padding: 0.35rem 0 0.35rem 5.5rem;
+        position: relative;
+    }
+    .table-wrap table td::before {
+        content: attr(data-label);
+        position: absolute;
+        left: 0;
+        top: 0.35rem;
+        width: 5rem;
+        color: var(--th-color);
+        text-transform: uppercase;
+        font-size: 0.75rem;
+        letter-spacing: 0.05em;
+    }
+    .table-wrap table td[colspan] {
+        padding: 0.5rem 0.75rem;
+    }
+    .table-wrap table td[colspan]::before {
+        content: none;
+    }
+    .table-wrap table td.col-hidden {
+        display: none;
+    }
+    #log-table td {
+        padding: 0.35rem 0.75rem;
+    }
+    #log-table td::before {
+        content: none;
+    }
+}

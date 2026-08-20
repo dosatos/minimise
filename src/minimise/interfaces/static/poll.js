@@ -36,11 +36,11 @@ function startJobListPolling(intervalMs) {
             const done = (job.tasks || []).filter(t => t.status === "completed").length;
             const total = (job.tasks || []).length;
             return `<tr>
-                <td><a href="/jobs/${job.id}/view">${job.id}</a></td>
-                <td>${job.name}</td>
-                <td><span class="${statusClass(job.status)}">${job.status}</span></td>
-                <td>${done}/${total}</td>
-                <td>${job.created_at || ""}</td>
+                <td data-label="ID"><a href="/jobs/${job.id}/view">${job.id}</a></td>
+                <td data-label="Name">${job.name}</td>
+                <td data-label="Status"><span class="${statusClass(job.status)}">${job.status}</span></td>
+                <td data-label="Tasks">${done}/${total}</td>
+                <td data-label="Created">${job.created_at || ""}</td>
             </tr>`;
         }).join("");
         if (jobs.every(job => isTerminalStatus(job.status))) {
@@ -76,20 +76,20 @@ function startJobDetailPolling(jobId, intervalMs) {
             const taskRows = (job.tasks || []).map(t => ({
                 started_at: t.started_at,
                 html: `<tr>
-                <td>${t.id}</td><td>${t.name}</td>
-                <td>${t.goal || ""}</td>
-                <td>${workerLabel(t)}</td>
-                <td><span class="${statusClass(t.status)}">${t.status}</span></td>
-                <td>${t.retries}</td>
-                <td>task</td>
+                <td data-label="ID">${t.id}</td><td data-label="Name">${t.name}</td>
+                <td data-label="Goal">${t.goal || ""}</td>
+                <td data-label="Worker">${workerLabel(t)}</td>
+                <td data-label="Status"><span class="${statusClass(t.status)}">${t.status}</span></td>
+                <td data-label="Retries">${t.retries}</td>
+                <td data-label="Type">task</td>
             </tr>`,
             }));
             const hookRows = (job.hooks || []).map(h => ({
                 started_at: h.started_at,
                 html: `<tr>
-                <td>—</td><td>${h.hook_name}</td><td>${h.execution_type}</td>
-                <td>—</td><td><span class="${statusClass(h.status)}">${h.status}</span></td>
-                <td>—</td><td>hook</td>
+                <td data-label="ID">—</td><td data-label="Name">${h.hook_name}</td><td data-label="Goal">${h.execution_type}</td>
+                <td data-label="Worker">—</td><td data-label="Status"><span class="${statusClass(h.status)}">${h.status}</span></td>
+                <td data-label="Retries">—</td><td data-label="Type">hook</td>
             </tr>`,
             }));
             const rows = taskRows.concat(hookRows).sort((a, b) => {
@@ -175,9 +175,9 @@ async function refreshLogs(jobId) {
     if (!tbody) return;
     const records = data.records || [];
     tbody.innerHTML = records.map(r => `<tr>
-        <td>${r.timestamp}</td><td class="log-col-task_id">${r.task_id ?? ""}</td>
-        <td class="log-col-level">${r.level}</td>
-        <td class="log-col-message">${escapeHtml(r.message)}</td>
+        <td class="log-col-timestamp" data-label="Timestamp">${r.timestamp}</td><td class="log-col-task_id" data-label="Task ID">${r.task_id ?? ""}</td>
+        <td class="log-col-level" data-label="Level">${r.level}</td>
+        <td class="log-col-message" data-label="Message">${escapeHtml(r.message)}</td>
     </tr>`).join("") || '<tr><td colspan="4" class="empty">No logs yet</td></tr>';
     applyLogColumnVisibility();
     syncHookOptions(data.hook_names);

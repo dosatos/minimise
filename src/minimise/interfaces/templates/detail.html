@@ -5,23 +5,25 @@
 <p>{{ job.name }} — created {{ job.created_at.isoformat() }}</p>
 
 <h3>Tasks</h3>
+<div class="table-wrap">
 <table>
     <thead><tr><th>ID</th><th>Name</th><th>Goal</th><th>Worker</th><th>Status</th><th>Retries</th><th>Type</th></tr></thead>
     <tbody id="task-rows">
         {% for task in job.tasks %}
         <tr>
-            <td>{{ task.id }}</td><td>{{ task.name }}</td>
-            <td>{{ task.goal or "" }}</td>
-            <td>{{ task.assignee or (task.harness ~ "/" ~ (task.model or "default") if task.harness else "default") }}</td>
-            <td><span class="status status-{{ task.status.value }}">{{ task.status.value }}</span></td>
-            <td>{{ task.retries }}</td>
-            <td>task</td>
+            <td data-label="ID">{{ task.id }}</td><td data-label="Name">{{ task.name }}</td>
+            <td data-label="Goal">{{ task.goal or "" }}</td>
+            <td data-label="Worker">{{ task.assignee or (task.harness ~ "/" ~ (task.model or "default") if task.harness else "default") }}</td>
+            <td data-label="Status"><span class="status status-{{ task.status.value }}">{{ task.status.value }}</span></td>
+            <td data-label="Retries">{{ task.retries }}</td>
+            <td data-label="Type">task</td>
         </tr>
         {% else %}
         <tr><td colspan="7" class="empty">No tasks</td></tr>
         {% endfor %}
     </tbody>
 </table>
+</div>
 
 <button id="plan-toggle-btn" class="toggle-btn" onclick="togglePlanView()">Show raw plan YAML</button>
 <pre id="plan-raw" style="display:none;"></pre>
@@ -39,13 +41,15 @@
             <optgroup label="Hooks" id="log-hook-optgroup"></optgroup>
         </select>
     </label>
+    <label><input type="checkbox" class="log-col-toggle" data-col="timestamp" checked> Timestamp</label>
     <label><input type="checkbox" class="log-col-toggle" data-col="task_id" checked> Task ID</label>
     <label><input type="checkbox" class="log-col-toggle" data-col="level" checked> Level</label>
 </div>
+<div class="table-wrap">
 <table id="log-table">
     <thead>
         <tr>
-            <th>Timestamp</th>
+            <th class="log-col-timestamp">Timestamp</th>
             <th class="log-col-task_id">Task ID</th>
             <th class="log-col-level">Level</th>
             <th class="log-col-message">Message</th>
@@ -55,6 +59,7 @@
         <tr><td colspan="4" class="empty">No logs yet</td></tr>
     </tbody>
 </table>
+</div>
 {% endblock %}
 {% block scripts %}
 <script>

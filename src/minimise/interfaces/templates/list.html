@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Jobs — minimise{% endblock %}
 {% block content %}
+<div class="table-wrap">
 <table>
     <thead>
         <tr><th>ID</th><th>Name</th><th>Status</th><th>Tasks</th><th>Created</th></tr>
@@ -11,15 +12,16 @@
         {% endif %}
         {% for job in jobs %}
         <tr>
-            <td><a href="{{ url_for('job_detail_page', job_id=job.id) }}">{{ job.id }}</a></td>
-            <td>{{ job.name }}</td>
-            <td><span class="status status-{{ job.status.value }}">{{ job.status.value }}</span></td>
-            <td>{{ job.tasks|selectattr('status.value', 'equalto', 'completed')|list|length }}/{{ job.tasks|length }}</td>
-            <td>{{ job.created_at.isoformat() }}</td>
+            <td data-label="ID"><a href="{{ url_for('job_detail_page', job_id=job.id) }}">{{ job.id }}</a></td>
+            <td data-label="Name">{{ job.name }}</td>
+            <td data-label="Status"><span class="status status-{{ job.status.value }}">{{ job.status.value }}</span></td>
+            <td data-label="Tasks">{{ job.tasks|selectattr('status.value', 'equalto', 'completed')|list|length }}/{{ job.tasks|length }}</td>
+            <td data-label="Created">{{ job.created_at.isoformat() }}</td>
         </tr>
         {% endfor %}
     </tbody>
 </table>
+</div>
 <div class="pagination">
     {% if page > 1 %}
     <a href="{{ url_for('job_list_page', page=page - 1) }}">Prev</a>

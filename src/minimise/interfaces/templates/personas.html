@@ -6,6 +6,7 @@
     <button type="button" class="toggle-btn" id="select-all-toggle">Select all</button>
     <input type="text" id="persona-filter" placeholder="Filter by name…">
 </div>
+<div class="table-wrap">
 <table>
     <thead>
         <tr><th></th><th>Name</th><th>Prompt</th></tr>
@@ -16,9 +17,9 @@
         <tr class="group-row"><td colspan="3"><strong>{{ tag }}</strong></td></tr>
         {% for name, summary in group %}
         <tr class="persona-row" data-name="{{ name|lower }}">
-            <td><input type="checkbox" value="{{ name }}"></td>
-            <td><a href="{{ url_for('persona_detail_page', name=name) }}">{{ name }}</a></td>
-            <td>{{ summary }}</td>
+            <td data-label=""><input type="checkbox" value="{{ name }}"></td>
+            <td data-label="Name"><a href="{{ url_for('persona_detail_page', name=name) }}">{{ name }}</a></td>
+            <td data-label="Prompt">{{ summary }}</td>
         </tr>
         {% endfor %}
         {% endif %}
@@ -28,6 +29,7 @@
         {% endif %}
     </tbody>
 </table>
+</div>
 {% endblock %}
 {% block scripts %}
 <script>
