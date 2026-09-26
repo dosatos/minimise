@@ -46,7 +46,7 @@
     </div>
 </section>
 
-<div class="detail-tabs" data-detail-tabs data-job-id="{{ job.id }}">
+<div class="detail-tabs" data-detail-tabs data-default-tab="details" data-job-id="{{ job.id }}">
     <div class="detail-tab-list" role="tablist" aria-label="Job detail views">
         <button
             type="button"
@@ -133,6 +133,12 @@
 
 {% block scripts %}
 <script>
+    document.querySelector("[data-detail-tabs]").addEventListener(
+        "detailtabchange",
+        event => {
+            if (event.detail.name === "logs") refreshLogsNow();
+        },
+    );
     initDetailTabs();
     startJobDetailPolling("{{ job.id }}", 3000);
     startLogPolling("{{ job.id }}", 3000);

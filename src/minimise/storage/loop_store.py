@@ -42,11 +42,26 @@ class LoopStore:
     def load(self, loop_id: str) -> Optional[Loop]:
         """Load a loop, reconciling a dead-pid RUNNING loop to FAILED (mirrors
         JobStore.load) so `loop start` can resume a crashed foreground run."""
-        loop = self.db.get_loop(loop_id)
-        if loop and loop.status == JobStatus.RUNNING and not _pid_alive(loop.pid):
-            self.db.update_loop_status(loop_id, status=JobStatus.FAILED, completed_at=datetime.utcnow())
-            loop.status = JobStatus.FAILED
-        return loop
+        return self._reconcile(self.db.get_loop(loop_id))
+
+    def load_many(self, limit=None, offset=0) -> list[Loop]:
+        """List loops with dead-process reconciliation, matching JobStore."""
+        return self._reconcile(self.db.list_loops(limit=limit, offset=offset))
+
+    def _reconcile(self, result):
+        """Downgrade dead RUNNING loop(s) to FAILED in-place."""
+        loops = result if isinstance(result, list) else [] if result is None else [result]
+        for loop in loops:
+            if loop.status == JobStatus.RUNNING and not _pid_alive(loop.pid):
+                completed_at = datetime.utcnow()
+                self.db.update_loop_status(
+                    loop.loop_id,
+                    status=JobStatus.FAILED,
+                    completed_at=completed_at,
+                )
+                loop.status = JobStatus.FAILED
+                loop.completed_at = completed_at
+        return result
 
     def load_spec(self, loop_id: str) -> LoopSpec:
         """Re-read the mirrored spec for a loop."""

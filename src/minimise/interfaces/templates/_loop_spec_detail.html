@@ -1,0 +1,126 @@
+{% macro render_worker(worker) %}
+<div class="loop-worker">
+    <div class="loop-worker-pills">
+        {% if worker.persona %}
+        <span class="loop-pill">Persona: {{ worker.persona }}</span>
+        {% elif worker.prompt %}
+        <span class="loop-pill">Custom prompt</span>
+        {% elif worker.prompt_file %}
+        <span class="loop-pill">Prompt file</span>
+        {% else %}
+        <span class="loop-pill">Built-in default</span>
+        {% endif %}
+        {% if worker.harness %}
+        <span class="loop-pill loop-pill-runtime">Harness: {{ worker.harness }}</span>
+        {% endif %}
+        {% if worker.model %}
+        <span class="loop-pill loop-pill-runtime">Model: {{ worker.model }}</span>
+        {% endif %}
+    </div>
+    {% if worker.prompt %}
+    <div class="loop-worker-copy">
+        <span>Prompt</span>
+        <p>{{ worker.prompt }}</p>
+    </div>
+    {% elif worker.prompt_file %}
+    <div class="loop-worker-copy">
+        <span>Prompt file</span>
+        <code>{{ worker.prompt_file }}</code>
+    </div>
+    {% endif %}
+</div>
+{% endmacro %}
+
+<section class="detail-section" aria-labelledby="loop-spec-heading">
+    <div class="section-heading">
+        <div>
+            <p class="eyebrow">Control blueprint</p>
+            <h3 id="loop-spec-heading">Loop spec</h3>
+        </div>
+        <p>The validated plan, implement, and evaluate cycle.</p>
+    </div>
+
+    {% if spec %}
+    <div class="loop-spec-board">
+        <header class="loop-spec-overview">
+            <div>
+                <p class="loop-kicker">Refinement objective</p>
+                <h4>{{ spec.name }}</h4>
+                <p class="loop-goal">{{ spec.goal }}</p>
+            </div>
+            <div class="loop-spec-stats" aria-label="Loop specification summary">
+                <div><strong>{{ spec.max_iterations }}</strong><span>max iterations</span></div>
+                <div><strong>v{{ spec.plan_version }}</strong><span>plan version</span></div>
+                <div><strong>{{ spec.loop.evaluate.dimensions|length }}</strong><span>evaluators</span></div>
+                <div><strong>{{ spec.loop.evaluate.max_concurrent }}</strong><span>concurrent</span></div>
+            </div>
+        </header>
+
+        <div class="loop-cycle-grid">
+            <article class="loop-stage-card">
+                <div class="loop-stage-heading">
+                    <span>01</span>
+                    <div>
+                        <p>Decide</p>
+                        <h4>Plan</h4>
+                    </div>
+                </div>
+                {{ render_worker(spec.loop.plan) }}
+            </article>
+
+            <article class="loop-stage-card">
+                <div class="loop-stage-heading">
+                    <span>02</span>
+                    <div>
+                        <p>Change</p>
+                        <h4>Implement</h4>
+                    </div>
+                </div>
+                {{ render_worker(spec.loop.implement) }}
+            </article>
+
+            <article class="loop-stage-card loop-evaluate-card">
+                <div class="loop-stage-heading">
+                    <span>03</span>
+                    <div>
+                        <p>Judge</p>
+                        <h4>Evaluate</h4>
+                    </div>
+                </div>
+                <div class="loop-dimension-grid">
+                    {% for dimension in spec.loop.evaluate.dimensions %}
+                    <section class="loop-dimension">
+                        <div class="loop-dimension-heading">
+                            <span>{{ "%02d"|format(loop.index) }}</span>
+                            <h5>{{ dimension.name }}</h5>
+                        </div>
+                        <p>{{ dimension.rubric }}</p>
+                        {{ render_worker(dimension) }}
+                    </section>
+                    {% endfor %}
+                </div>
+            </article>
+        </div>
+
+        <footer class="loop-spec-footer">
+            <span>Schema version {{ spec.version }}</span>
+            <span>Plan -&gt; Implement -&gt; Evaluate -&gt; repeat</span>
+        </footer>
+    </div>
+    {% else %}
+    <div class="plan-alert" role="status">
+        <strong>Loop spec unavailable</strong>
+        <p>{{ spec_error or "The loop specification could not be loaded." }}</p>
+    </div>
+    {% endif %}
+
+    {% if spec_raw %}
+    <details class="plan-raw">
+        <summary>
+            <span>Raw loop YAML</span>
+            <small>View the stored source</small>
+        </summary>
+        <pre><code>{{ spec_raw }}</code></pre>
+    </details>
+    {% endif %}
+</section>

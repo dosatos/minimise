@@ -9,12 +9,18 @@ import markdown
 from flask import Flask, jsonify, request, render_template
 from flask_cors import CORS
 
+from minimise.interfaces.loop_views import register_loop_routes
 from minimise.models import Job, Plan
 from minimise.storage.database import Database
+from minimise.storage.loop_store import LoopStore
 from minimise.orchestration.job_controller import JobController
 from minimise.personas import load_personas
 
-NAV_LINKS = [("Jobs", "job_list_page"), ("Personas", "personas_page")]
+NAV_LINKS = [
+    ("Jobs", "job_list_page"),
+    ("Loops", "loop_list_page"),
+    ("Personas", "personas_page"),
+]
 JOBS_PAGE_SIZE = 50
 
 
@@ -65,6 +71,7 @@ class APIServer:
         """
         self.db = db
         self.job_controller = job_controller
+        self.loop_store = LoopStore(db, job_controller.store.jobs_dir)
         self.port = port
         self.app = Flask(__name__)
         self.app.add_template_filter(_duration_label, "duration_label")
@@ -76,6 +83,7 @@ class APIServer:
 
         # Register routes
         self._register_routes()
+        register_loop_routes(self.app, self.db, self.loop_store)
 
     def _load_job_with_tasks(self, job_id: str) -> Optional[Job]:
         """Fetch a job and attach its task list, or None if it doesn't exist."""

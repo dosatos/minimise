@@ -84,3 +84,18 @@ def test_journal_and_log_paths(db, temp_db_dir):
     assert log == jobs_dir / "loop-abc" / "job.log"
     assert journal != log
     assert journal.parent.exists() and log.parent.exists()
+
+
+def test_load_many_reconciles_dead_running_loops(
+    db, temp_db_dir, monkeypatch
+):
+    store = LoopStore(db, temp_db_dir / "jobs")
+    loop = store.create(LoopSpec.model_validate(SPEC), plan_path="loop.yaml")
+    db.update_loop_status(loop.loop_id, status=JobStatus.RUNNING, pid=12345)
+    monkeypatch.setattr("minimise.storage.loop_store._pid_alive", lambda _pid: False)
+
+    loaded = store.load_many(limit=10)
+
+    assert loaded[0].status == JobStatus.FAILED
+    assert loaded[0].completed_at is not None
+    assert db.get_loop(loop.loop_id).status == JobStatus.FAILED

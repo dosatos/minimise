@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+{% block title %}{{ loop_view.loop_id }} - minimise{% endblock %}
+{% block styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='detail.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='loop.css') }}">
+{% endblock %}
+
+{% block content %}
+<main class="loop-page" data-loop-id="{{ loop_view.loop_id }}">
+    <header class="detail-heading">
+        <p class="eyebrow">Loop detail</p>
+        <div class="detail-title-row">
+            <h2>{{ loop_view.name }}</h2>
+            <span id="loop-status" class="status status-{{ loop_view.status }}">{{ loop_view.status }}</span>
+        </div>
+        <p class="detail-meta">
+            <code>{{ loop_view.loop_id }}</code>
+            <span>Created {{ loop_view.created_at }}</span>
+        </p>
+    </header>
+
+    <section class="detail-section" aria-labelledby="loop-execution-heading">
+        <div class="section-heading">
+            <div>
+                <p class="eyebrow">Live state</p>
+                <h3 id="loop-execution-heading">Iteration execution</h3>
+            </div>
+            <p>Current cycle position and every dispatched loop step.</p>
+        </div>
+
+        <div class="loop-live-summary" aria-label="Loop execution summary">
+            <div>
+                <span>Iteration</span>
+                <strong id="loop-iteration">{{ loop_view.iteration }}/{{ loop_view.max_iterations }}</strong>
+            </div>
+            <div>
+                <span>Latest stage</span>
+                <strong id="loop-stage">{{ loop_view.stage }}</strong>
+            </div>
+            <div>
+                <span>Plan version</span>
+                <strong id="loop-plan-version">{{ "v" ~ loop_view.plan_version if loop_view.plan_version else "-" }}</strong>
+            </div>
+            <div>
+                <span>Elapsed</span>
+                <strong id="loop-elapsed">{{ loop_view.elapsed }}</strong>
+            </div>
+        </div>
+
+        <div class="table-wrap">
+            <table class="loop-step-table">
+                <thead>
+                    <tr><th>Iteration</th><th>Stage</th><th>Dimension</th><th>Status</th><th>Retries</th><th>Duration</th></tr>
+                </thead>
+                <tbody id="loop-step-rows">
+                    {% for step in loop_view.steps %}
+                    <tr>
+                        <td data-label="Iteration">{{ step.iteration }}</td>
+                        <td data-label="Stage">{{ step.stage }}</td>
+                        <td data-label="Dimension">{{ step.dimension or "-" }}</td>
+                        <td data-label="Status"><span class="status status-{{ step.status }}">{{ step.status }}</span></td>
+                        <td data-label="Retries">{{ step.retries }}</td>
+                        <td data-label="Duration">{{ step.duration }}</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="6" class="empty">No loop steps yet</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <div class="detail-tabs" data-detail-tabs data-default-tab="details">
+        <div class="detail-tab-list" role="tablist" aria-label="Loop detail views">
+            <button type="button" class="detail-tab" id="loop-tab-details" role="tab"
+                    aria-selected="true" aria-controls="loop-panel-details"
+                    data-detail-tab="details">Detailed view</button>
+            <button type="button" class="detail-tab" id="loop-tab-journal" role="tab"
+                    aria-selected="false" aria-controls="loop-panel-journal" tabindex="-1"
+                    data-detail-tab="journal">Journal</button>
+            <button type="button" class="detail-tab" id="loop-tab-logs" role="tab"
+                    aria-selected="false" aria-controls="loop-panel-logs" tabindex="-1"
+                    data-detail-tab="logs">Logs</button>
+        </div>
+
+        <div class="detail-tab-panel" id="loop-panel-details" role="tabpanel"
+             aria-labelledby="loop-tab-details" data-detail-panel="details">
+            {% include "_loop_spec_detail.html" %}
+        </div>
+
+        <div class="detail-tab-panel" id="loop-panel-journal" role="tabpanel"
+             aria-labelledby="loop-tab-journal" data-detail-panel="journal" hidden>
+            <section class="detail-section" aria-labelledby="loop-journal-heading">
+                <div class="section-heading">
+                    <div>
+                        <p class="eyebrow">Control memory</p>
+                        <h3 id="loop-journal-heading">Journal</h3>
+                    </div>
+                    <p>Planner decisions, implementation handovers, and evaluator verdicts.</p>
+                </div>
+                <div class="loop-journal-list" id="loop-journal-entries">
+                    {% for entry in journal_entries %}
+                    <article class="loop-journal-entry">
+                        <header>
+                            <span class="loop-outcome loop-outcome-{{ entry.tone }}">{{ entry.outcome }}</span>
+                            <strong>{{ entry.stage }}</strong>
+                            <span>{{ "Iteration " ~ entry.iteration if entry.iteration is not none else "Loop" }}</span>
+                            <time>{{ entry.timestamp }}</time>
+                        </header>
+                        <p>{{ entry.message }}</p>
+                        <details class="loop-record-raw">
+                            <summary>Raw record</summary>
+                            <pre><code>{{ entry.raw }}</code></pre>
+                        </details>
+                    </article>
+                    {% else %}
+                    <p class="empty">No journal entries yet</p>
+                    {% endfor %}
+                </div>
+            </section>
+        </div>
+
+        <div class="detail-tab-panel" id="loop-panel-logs" role="tabpanel"
+             aria-labelledby="loop-tab-logs" data-detail-panel="logs" hidden>
+            <section class="detail-section" aria-labelledby="loop-logs-heading">
+                <div class="section-heading">
+                    <div>
+                        <p class="eyebrow">Agent output</p>
+                        <h3 id="loop-logs-heading">Logs</h3>
+                    </div>
+                    <p>Latest narration emitted by plan, implement, and evaluate workers.</p>
+                </div>
+                <div class="log-controls loop-log-controls">
+                    <label>Iteration:
+                        <select id="loop-log-iteration-filter">
+                            <option value="all">All iterations</option>
+                            {% for iteration in log_filter_options.iterations %}
+                            <option value="{{ iteration }}">Iteration {{ iteration }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    <label>Stage:
+                        <select id="loop-log-stage-filter">
+                            <option value="all">All stages</option>
+                            <option value="plan">Plan</option>
+                            <option value="implement">Implement</option>
+                            <option value="evaluate">Evaluate</option>
+                        </select>
+                    </label>
+                    <label>Eval dimension:
+                        <select id="loop-log-dimension-filter">
+                            <option value="all">All dimensions</option>
+                            {% for dimension in log_filter_options.dimensions %}
+                            <option value="{{ dimension }}">{{ dimension }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                </div>
+                <div class="table-wrap">
+                    <table id="loop-log-table">
+                        <thead>
+                            <tr><th>Timestamp</th><th>Iteration</th><th>Stage</th><th>Level</th><th>Message</th></tr>
+                        </thead>
+                        <tbody id="loop-log-rows">
+                            {% for entry in log_entries %}
+                            <tr>
+                                <td data-label="Timestamp">{{ entry.timestamp }}</td>
+                                <td data-label="Iteration">{{ entry.iteration if entry.iteration is not none else "-" }}</td>
+                                <td data-label="Stage">{{ entry.stage }}</td>
+                                <td data-label="Level">{{ entry.level }}</td>
+                                <td data-label="Message" class="loop-log-message">{{ entry.message }}</td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="5" class="empty">No logs yet</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+    </div>
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='loop.js') }}"></script>
+<script>
+    const loopId = "{{ loop_view.loop_id }}";
+    const tabs = document.querySelector("[data-detail-tabs]");
+    tabs.addEventListener("detailtabchange", event => {
+        if (event.detail.name === "journal") refreshLoopJournal(loopId);
+        if (event.detail.name === "logs") refreshLoopLogs(loopId);
+    });
+    initLoopLogFilters();
+    initDetailTabs();
+    startLoopDetailPolling(loopId, 3000);
+    startLoopArtifactPolling(loopId, 3000);
+</script>
+{% endblock %}

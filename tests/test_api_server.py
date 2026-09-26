@@ -101,8 +101,203 @@ def test_api_server_initialization(db, mock_job_controller):
     server = APIServer(db, mock_job_controller, port=5001)
     assert server.db is db
     assert server.job_controller is mock_job_controller
+    assert server.loop_store.db is db
     assert server.port == 5001
     assert server.app is not None
+
+
+def _make_loop(api_server, name="Refine docs"):
+    from minimise.models import LoopSpec
+
+    spec = LoopSpec.model_validate({
+        "version": "1",
+        "name": name,
+        "goal": "Make the documentation easier to use.",
+        "max_iterations": 4,
+        "loop": {
+            "plan": {"prompt": "Plan the next improvement."},
+            "implement": {"harness": "codex"},
+            "evaluate": {
+                "max_concurrent": 2,
+                "dimensions": [
+                    {"name": "clarity", "rubric": "Is it clear?"},
+                    {"name": "coverage", "rubric": "Is it complete?"},
+                ],
+            },
+        },
+    })
+    return api_server.loop_store.create(spec, plan_path="/tmp/loop.yaml")
+
+
+def test_get_loops_api_returns_progress_and_pagination(
+    api_server, db, monkeypatch
+):
+    from minimise.models import LoopStep, TaskStatus
+
+    monkeypatch.setattr("minimise.interfaces.loop_views.LOOPS_PAGE_SIZE", 2)
+    loops = [_make_loop(api_server, f"Loop {index}") for index in range(3)]
+    db.create_loop_step(LoopStep(
+        step_id="step-running",
+        loop_id=loops[-1].loop_id,
+        iteration=2,
+        step_type="evaluate",
+        dimension="clarity",
+        status=TaskStatus.RUNNING,
+    ))
+
+    response = api_server.app.test_client().get("/api/loops?page=1")
+
+    assert response.status_code == 200
+    assert response.headers["X-Has-Next"] == "true"
+    data = response.get_json()
+    assert len(data) == 2
+    assert data[0]["loop_id"] == loops[-1].loop_id
+    assert data[0]["iteration"] == 2
+    assert data[0]["stage"] == "Evaluate / clarity"
+    assert data[0]["max_iterations"] == 4
+    assert "steps" not in data[0]
+
+
+def test_get_loop_api_returns_steps(api_server, db):
+    from datetime import datetime, timedelta
+    from minimise.models import LoopStep, TaskStatus
+
+    loop = _make_loop(api_server)
+    started = datetime(2026, 9, 26, 10, 0, 0)
+    db.create_loop_step(LoopStep(
+        step_id="step-plan",
+        loop_id=loop.loop_id,
+        iteration=1,
+        step_type="plan",
+        status=TaskStatus.COMPLETED,
+        started_at=started,
+        completed_at=started + timedelta(seconds=2),
+    ))
+
+    response = api_server.app.test_client().get(f"/api/loops/{loop.loop_id}")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["plan_version"] == 1
+    assert data["evaluator_count"] == 2
+    assert data["steps"][0]["stage"] == "Plan"
+    assert data["steps"][0]["duration"] == "2.0s"
+
+
+def test_loop_journal_and_logs_apis(api_server):
+    from minimise.orchestration import loop_journal
+
+    loop = _make_loop(api_server)
+    loop_journal.append(api_server.loop_store.journal_path(loop.loop_id), {
+        "timestamp": "2026-09-26T10:00:00",
+        "iteration": 1,
+        "step_type": "evaluate",
+        "dimension": "clarity",
+        "control": "done",
+        "verdict": "pass",
+        "findings": "Clear enough.",
+    })
+    api_server.loop_store.loop_log_path(loop.loop_id).write_text(
+        "\n".join([
+            json.dumps({
+                "timestamp": "t1",
+                "iteration": 1,
+                "step_type": "plan",
+                "level": "info",
+                "message": "planning",
+            }),
+            "legacy text",
+            json.dumps({
+                "timestamp": "t2",
+                "iteration": 1,
+                "step_type": "evaluate",
+                "dimension": "clarity",
+                "level": "info",
+                "message": "checking",
+            }),
+        ]) + "\n"
+    )
+    client = api_server.app.test_client()
+
+    journal_response = client.get(f"/api/loops/{loop.loop_id}/journal")
+    logs_response = client.get(
+        f"/api/loops/{loop.loop_id}/logs?step_type=evaluate"
+    )
+    legacy_response = client.get(f"/api/loops/{loop.loop_id}/logs?limit=2")
+
+    assert journal_response.get_json()["records"][0]["outcome"] == "pass"
+    assert journal_response.get_json()["records"][0]["message"] == "Clear enough."
+    assert [record["message"] for record in logs_response.get_json()["records"]] == [
+        "checking"
+    ]
+    assert legacy_response.get_json()["records"][0]["stage"] == "-"
+
+
+def test_loop_logs_api_combines_filters_before_tail_limit(api_server, db):
+    from minimise.models import LoopStep
+
+    loop = _make_loop(api_server)
+    db.create_loop_step(LoopStep(
+        step_id="step-clarity",
+        loop_id=loop.loop_id,
+        iteration=1,
+        step_type="evaluate",
+        dimension="clarity",
+    ))
+    db.create_loop_step(LoopStep(
+        step_id="step-coverage",
+        loop_id=loop.loop_id,
+        iteration=2,
+        step_type="evaluate",
+        dimension="coverage",
+    ))
+    api_server.loop_store.loop_log_path(loop.loop_id).write_text(
+        "\n".join([
+            json.dumps({
+                "iteration": 1,
+                "step_type": "evaluate",
+                "dimension": "clarity",
+                "message": "target",
+            }),
+            json.dumps({
+                "iteration": 2,
+                "step_type": "plan",
+                "message": "newer noise",
+            }),
+            json.dumps({
+                "iteration": 2,
+                "step_type": "evaluate",
+                "dimension": "coverage",
+                "message": "newest noise",
+            }),
+        ]) + "\n"
+    )
+
+    response = api_server.app.test_client().get(
+        f"/api/loops/{loop.loop_id}/logs"
+        "?limit=1&iteration=1&step_type=evaluate&dimension=clarity"
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert [record["message"] for record in data["records"]] == ["target"]
+    assert data["filter_options"] == {
+        "iterations": [1, 2],
+        "dimensions": ["clarity", "coverage"],
+    }
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/loops/missing",
+        "/api/loops/missing/journal",
+        "/api/loops/missing/logs",
+    ],
+)
+def test_loop_apis_404_for_unknown_loop(api_server, path):
+    response = api_server.app.test_client().get(path)
+    assert response.status_code == 404
 
 
 def test_get_jobs_endpoint(api_server, db):

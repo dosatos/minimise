@@ -41,6 +41,23 @@ def test_loop_roundtrip_and_schema_v6(db, temp_db_dir):
     assert fresh.get_job("j1").name == "n"
     assert fresh.list_loops() == []
 
+
+def test_list_loops_supports_limit_and_offset(db):
+    from datetime import timedelta
+
+    base = datetime(2026, 1, 1)
+    for index in range(4):
+        db.create_loop(Loop(
+            loop_id=f"loop-{index}",
+            name=f"Loop {index}",
+            created_at=base + timedelta(minutes=index),
+        ))
+
+    loops = db.list_loops(limit=2, offset=1)
+
+    assert [loop.loop_id for loop in loops] == ["loop-2", "loop-1"]
+
+
 def test_init_db(db):
     """Test database initialization."""
     # Should not raise an error

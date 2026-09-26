@@ -13,10 +13,15 @@ def mock_job_controller(db, temp_db_dir):
 
 
 @pytest.fixture
-def client(db, mock_job_controller):
+def api_server(db, mock_job_controller):
     server = APIServer(db, mock_job_controller, port=5002)
     server.app.testing = True
-    return server.app.test_client()
+    return server
+
+
+@pytest.fixture
+def client(api_server):
+    return api_server.app.test_client()
 
 
 def test_job_list_page_renders_empty_state(client):
@@ -37,6 +42,176 @@ def test_job_list_page_renders_job_row(client, mock_job_controller):
     assert resp.status_code == 200
     assert job.id.encode() in resp.data
     assert b"demo-plan" in resp.data
+
+
+def _make_loop(api_server):
+    from minimise.models import LoopSpec
+
+    spec = LoopSpec.model_validate({
+        "version": "1",
+        "name": "Refine the guide",
+        "goal": "<script>alert('goal')</script>\nMake onboarding effortless.",
+        "max_iterations": 3,
+        "loop": {
+            "plan": {"prompt": "Choose the highest-impact gap."},
+            "implement": {"prompt_file": "prompts/implement.md", "harness": "codex"},
+            "evaluate": {
+                "max_concurrent": 2,
+                "dimensions": [{
+                    "name": "clarity",
+                    "rubric": "Can a new user follow it?",
+                    "persona": "mini:doc-review:clarity",
+                }],
+            },
+        },
+    })
+    return api_server.loop_store.create(spec, plan_path="/tmp/loop.yaml")
+
+
+def test_loop_list_page_renders_empty_state_and_nav(client):
+    response = client.get("/loops/")
+
+    assert response.status_code == 200
+    assert b"No loops yet" in response.data
+    assert b"Loops" in response.data
+
+
+def test_loop_list_page_renders_loop_progress(client, api_server, db):
+    from minimise.models import LoopStep, TaskStatus
+
+    loop = _make_loop(api_server)
+    db.create_loop_step(LoopStep(
+        step_id="step-eval",
+        loop_id=loop.loop_id,
+        iteration=2,
+        step_type="evaluate",
+        dimension="clarity",
+        status=TaskStatus.RUNNING,
+    ))
+
+    response = client.get("/loops")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert loop.loop_id in html
+    assert "Refine the guide" in html
+    assert "2/3" in html
+    assert "Evaluate / clarity" in html
+    assert f"/loops/{loop.loop_id}/view" in html
+
+
+def test_loop_detail_page_renders_spec_steps_journal_and_logs(
+    client, api_server, db
+):
+    import json
+    from datetime import datetime, timedelta
+    from minimise.models import JobStatus, LoopStep, TaskStatus
+    from minimise.orchestration import loop_journal
+
+    loop = _make_loop(api_server)
+    started = datetime(2026, 9, 26, 10, 0, 0)
+    db.update_loop_status(
+        loop.loop_id,
+        status=JobStatus.COMPLETED,
+        started_at=started,
+        completed_at=started + timedelta(seconds=8),
+    )
+    db.create_loop_step(LoopStep(
+        step_id="step-plan",
+        loop_id=loop.loop_id,
+        iteration=1,
+        step_type="plan",
+        status=TaskStatus.COMPLETED,
+        started_at=started,
+        completed_at=started + timedelta(seconds=2),
+    ))
+    db.create_loop_step(LoopStep(
+        step_id="step-eval",
+        loop_id=loop.loop_id,
+        iteration=1,
+        step_type="evaluate",
+        dimension="clarity",
+        status=TaskStatus.COMPLETED,
+        started_at=started + timedelta(seconds=3),
+        completed_at=started + timedelta(seconds=5),
+    ))
+    loop_journal.append(api_server.loop_store.journal_path(loop.loop_id), {
+        "timestamp": "2026-09-26T10:00:05",
+        "iteration": 1,
+        "step_type": "evaluate",
+        "dimension": "clarity",
+        "control": "done",
+        "verdict": "pass",
+        "findings": "The guide is clear.",
+    })
+    api_server.loop_store.loop_log_path(loop.loop_id).write_text(json.dumps({
+        "timestamp": "2026-09-26T10:00:04",
+        "iteration": 1,
+        "step_type": "evaluate",
+        "dimension": "clarity",
+        "level": "info",
+        "message": "Reviewed the onboarding flow.",
+    }) + "\n")
+
+    response = client.get(f"/loops/{loop.loop_id}/view")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert html.index('id="loop-execution-heading"') < html.index('role="tablist"')
+    assert 'data-detail-tab="details"' in html
+    assert 'data-detail-tab="journal"' in html
+    assert 'data-detail-tab="logs"' in html
+    assert 'id="loop-log-iteration-filter"' in html
+    assert '<option value="1">Iteration 1</option>' in html
+    assert 'id="loop-log-stage-filter"' in html
+    assert 'id="loop-log-dimension-filter"' in html
+    assert '<option value="clarity">clarity</option>' in html
+    assert "1/3" in html
+    assert "Evaluate" in html
+    assert "Choose the highest-impact gap." in html
+    assert "prompts/implement.md" in html
+    assert "Harness: codex" in html
+    assert "Can a new user follow it?" in html
+    assert "Persona: mini:doc-review:clarity" in html
+    assert "The guide is clear." in html
+    assert "Reviewed the onboarding flow." in html
+    assert "Raw loop YAML" in html
+    assert "<script>alert('goal')</script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_loop_detail_page_survives_missing_cached_spec(
+    client, api_server
+):
+    loop = _make_loop(api_server)
+    (api_server.loop_store.jobs_dir / loop.loop_id / "plan.yaml").unlink()
+
+    response = client.get(f"/loops/{loop.loop_id}/view")
+
+    assert response.status_code == 200
+    assert b"Loop spec unavailable" in response.data
+    assert b"The cached loop spec is missing." in response.data
+    assert b"Iteration execution" in response.data
+    assert b"Journal" in response.data
+
+
+def test_loop_detail_page_preserves_invalid_raw_spec(client, api_server):
+    loop = _make_loop(api_server)
+    path = api_server.loop_store.jobs_dir / loop.loop_id / "plan.yaml"
+    path.write_text("name: [invalid")
+
+    response = client.get(f"/loops/{loop.loop_id}/view")
+
+    assert response.status_code == 200
+    assert b"Loop spec unavailable" in response.data
+    assert b"The cached loop spec could not be parsed" in response.data
+    assert b"Raw loop YAML" in response.data
+    assert b"name: [invalid" in response.data
+
+
+def test_loop_detail_page_404_for_unknown_loop(client):
+    response = client.get("/loops/missing/view")
+    assert response.status_code == 404
 
 
 def test_job_detail_page_renders(client, mock_job_controller):

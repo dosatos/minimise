@@ -637,12 +637,15 @@ class Database:
         rows = self._query("SELECT * FROM loops WHERE loop_id = ?", (loop_id,))
         return _row_to_loop(rows[0]) if rows else None
 
-    def list_loops(self, limit: Optional[int] = None) -> List[Loop]:
-        """Fetch loops with optional limit."""
+    def list_loops(self, limit: Optional[int] = None, offset: int = 0) -> List[Loop]:
+        """Fetch loops with optional limit/offset."""
         if limit is not None:
-            rows = self._query("SELECT * FROM loops ORDER BY created_at DESC LIMIT ?", (limit,))
+            rows = self._query(
+                "SELECT * FROM loops ORDER BY created_at DESC, loop_id LIMIT ? OFFSET ?",
+                (limit, offset),
+            )
         else:
-            rows = self._query("SELECT * FROM loops ORDER BY created_at DESC")
+            rows = self._query("SELECT * FROM loops ORDER BY created_at DESC, loop_id")
         return [_row_to_loop(row) for row in rows]
 
     def update_loop_status(self, loop_id: str, status: Optional[JobStatus] = None, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, pid: Optional[int] = None, conn: Optional[sqlite3.Connection] = None) -> None:

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Loops - minimise{% endblock %}
+{% block content %}
+<div class="table-wrap">
+<table>
+    <thead>
+        <tr><th>ID</th><th>Name</th><th>Status</th><th>Iteration</th><th>Stage</th><th>Created</th></tr>
+    </thead>
+    <tbody id="loop-rows">
+        {% if not loops %}
+        <tr><td colspan="6" class="empty">No loops yet</td></tr>
+        {% endif %}
+        {% for loop_view in loops %}
+        <tr>
+            <td data-label="ID"><a href="{{ url_for('loop_detail_page', loop_id=loop_view.loop_id) }}">{{ loop_view.loop_id }}</a></td>
+            <td data-label="Name">{{ loop_view.name }}</td>
+            <td data-label="Status"><span class="status status-{{ loop_view.status }}">{{ loop_view.status }}</span></td>
+            <td data-label="Iteration">{{ loop_view.iteration }}/{{ loop_view.max_iterations }}</td>
+            <td data-label="Stage">{{ loop_view.stage }}</td>
+            <td data-label="Created">{{ loop_view.created_at }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+<div class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('loop_list_page', page=page - 1) }}">Prev</a>
+    {% else %}
+    <span class="disabled">Prev</span>
+    {% endif %}
+    <span>Page {{ page }}</span>
+    {% if has_next %}
+    <a href="{{ url_for('loop_list_page', page=page + 1) }}">Next</a>
+    {% else %}
+    <span class="disabled">Next</span>
+    {% endif %}
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='loop.js') }}"></script>
+<script>startLoopListPolling(3000);</script>
+{% endblock %}
