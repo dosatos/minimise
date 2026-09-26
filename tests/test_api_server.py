@@ -10,7 +10,7 @@ from minimise.models import Job, Task, JobStatus, TaskStatus, Plan, PlanTask
 from minimise.storage.database import Database
 from minimise.storage.job_store import JobStore
 from minimise.orchestration.job_controller import JobController
-from minimise.interfaces.api_server import APIServer
+from minimise.interfaces.api_server import APIServer, _duration_label
 
 
 def _make_plan_yaml(tmp_path):
@@ -23,6 +23,19 @@ def _make_plan_yaml(tmp_path):
             )
         ],
     )
+
+
+@pytest.mark.parametrize(
+    ("minutes", "expected"),
+    [
+        (5, "5 min"),
+        (60, "1 hr"),
+        (75, "1 hr 15 min"),
+        (120, "2 hr"),
+    ],
+)
+def test_duration_label_is_compact_and_human_readable(minutes, expected):
+    assert _duration_label(minutes) == expected
 
 
 @pytest.fixture

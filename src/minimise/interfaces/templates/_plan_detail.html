@@ -1,0 +1,191 @@
+{% macro render_hook(hook, phase) %}
+<article class="plan-hook">
+    <div class="plan-hook-heading">
+        <span class="plan-hook-phase">{{ phase }}</span>
+        <strong>{{ hook.name }}</strong>
+    </div>
+    <div class="plan-hook-meta">
+        <span>{{ hook.estimated_duration_min|duration_label }} estimate</span>
+        {% if hook.timeout_min %}
+        <span>{{ hook.timeout_min|duration_label }} timeout</span>
+        {% endif %}
+        <span>On failure: {{ hook.on_failure }}</span>
+    </div>
+    {% if hook.shell %}
+    <pre class="plan-hook-command"><code>{{ hook.shell }}</code></pre>
+    {% endif %}
+</article>
+{% endmacro %}
+
+<section class="detail-section" aria-labelledby="plan-heading">
+    <div class="section-heading">
+        <div>
+            <p class="eyebrow">Source of truth</p>
+            <h3 id="plan-heading">Plan</h3>
+        </div>
+        <p>The intended work, parsed from the job's validated YAML.</p>
+    </div>
+
+    {% if plan %}
+    <div class="plan-board">
+        <header class="plan-overview">
+            <div class="plan-overview-copy">
+                <p class="plan-kicker">Execution blueprint</p>
+                <h4>{{ plan.name }}</h4>
+                <p>Read top to bottom: plan hooks, ordered tasks, then completion hooks.</p>
+                <div class="plan-overview-actions">
+                    <button type="button" class="plan-action" onclick="setPlanTasksExpanded(true)">Expand all</button>
+                    <button type="button" class="plan-action" onclick="setPlanTasksExpanded(false)">Collapse all</button>
+                </div>
+            </div>
+            <div class="plan-stats" aria-label="Plan summary">
+                <div class="plan-stat">
+                    <strong>{{ plan_summary.task_count }}</strong>
+                    <span>{{ "task" if plan_summary.task_count == 1 else "tasks" }}</span>
+                </div>
+                <div class="plan-stat">
+                    <strong>{{ plan_summary.total_minutes|duration_label }}</strong>
+                    <span>planned time</span>
+                </div>
+                <div class="plan-stat">
+                    <strong>{{ plan_summary.hook_count }}</strong>
+                    <span>{{ "hook" if plan_summary.hook_count == 1 else "hooks" }}</span>
+                </div>
+            </div>
+        </header>
+
+        {% if plan_briefing %}
+        <section class="plan-context-block">
+            <h5>Briefing</h5>
+            <div class="plan-briefing">{{ plan_briefing }}</div>
+        </section>
+        {% endif %}
+
+        {% if plan.pre_hooks %}
+        <section class="plan-lifecycle">
+            <div class="plan-lifecycle-heading">
+                <span class="plan-flow-marker">Start</span>
+                <div>
+                    <h4>Before all tasks</h4>
+                    <p>Plan-level hooks that must run before implementation starts.</p>
+                </div>
+            </div>
+            <div class="plan-hook-grid">
+                {% for hook in plan.pre_hooks %}
+                {{ render_hook(hook, "Pre-plan") }}
+                {% endfor %}
+            </div>
+        </section>
+        {% endif %}
+
+        <ol class="plan-task-list">
+            {% for task in plan.tasks %}
+            <li class="plan-task-item">
+                <details class="plan-task-card" open>
+                    <summary class="plan-task-summary">
+                        <div class="plan-task-index" aria-hidden="true">
+                            <span>Task</span>
+                            <strong>{{ "%02d"|format(loop.index) }}</strong>
+                        </div>
+                        <div class="plan-task-heading">
+                            <div>
+                                <h4>{{ task.name }}</h4>
+                                <code>{{ task.id }}</code>
+                            </div>
+                            <div class="plan-pill-row">
+                                <span class="plan-pill">{{ task.estimated_duration_min|duration_label }} estimate</span>
+                                {% if task.timeout_min %}
+                                <span class="plan-pill">{{ task.timeout_min|duration_label }} timeout</span>
+                                {% endif %}
+                                {% if task.assignee %}
+                                <span class="plan-pill plan-pill-worker">Persona · {{ task.assignee }}</span>
+                                {% elif task.harness or task.model %}
+                                <span class="plan-pill plan-pill-worker">
+                                    {{ task.harness or "default harness" }} · {{ task.model or "default model" }}
+                                </span>
+                                {% else %}
+                                <span class="plan-pill plan-pill-worker">Default worker</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                        <span class="plan-task-toggle" aria-hidden="true">
+                            <span class="plan-task-toggle-open">Collapse</span>
+                            <span class="plan-task-toggle-closed">Expand</span>
+                        </span>
+                    </summary>
+
+                    <div class="plan-task-content">
+                        <section class="plan-field plan-goal">
+                            <h5>Goal</h5>
+                            <p>{{ task.goal }}</p>
+                        </section>
+
+                        <section class="plan-field">
+                            <h5>Instructions</h5>
+                            <div class="plan-prose">{{ task.description }}</div>
+                        </section>
+
+                        {% if task.pre_hooks or task.post_hooks %}
+                        <div class="plan-task-hooks">
+                            {% if task.pre_hooks %}
+                            <section>
+                                <h5>Before this task</h5>
+                                <div class="plan-hook-grid">
+                                    {% for hook in task.pre_hooks %}
+                                    {{ render_hook(hook, "Pre-task") }}
+                                    {% endfor %}
+                                </div>
+                            </section>
+                            {% endif %}
+                            {% if task.post_hooks %}
+                            <section>
+                                <h5>After this task</h5>
+                                <div class="plan-hook-grid">
+                                    {% for hook in task.post_hooks %}
+                                    {{ render_hook(hook, "Post-task") }}
+                                    {% endfor %}
+                                </div>
+                            </section>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+                    </div>
+                </details>
+            </li>
+            {% endfor %}
+        </ol>
+
+        {% if plan.post_hooks %}
+        <section class="plan-lifecycle plan-lifecycle-final">
+            <div class="plan-lifecycle-heading">
+                <span class="plan-flow-marker">Finish</span>
+                <div>
+                    <h4>After all tasks</h4>
+                    <p>Final plan-level hooks run once implementation is complete.</p>
+                </div>
+            </div>
+            <div class="plan-hook-grid">
+                {% for hook in plan.post_hooks %}
+                {{ render_hook(hook, "Post-plan") }}
+                {% endfor %}
+            </div>
+        </section>
+        {% endif %}
+    </div>
+    {% else %}
+    <div class="plan-alert" role="status">
+        <strong>Plan unavailable</strong>
+        <p>{{ plan_error or "The plan could not be loaded for this job." }}</p>
+    </div>
+    {% endif %}
+
+    {% if plan_raw %}
+    <details class="plan-raw">
+        <summary>
+            <span>Raw plan YAML</span>
+            <small>View the stored source</small>
+        </summary>
+        <pre><code>{{ plan_raw }}</code></pre>
+    </details>
+    {% endif %}
+</section>

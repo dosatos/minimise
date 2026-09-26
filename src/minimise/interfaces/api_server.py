@@ -9,13 +9,40 @@ import markdown
 from flask import Flask, jsonify, request, render_template
 from flask_cors import CORS
 
-from minimise.models import Job
+from minimise.models import Job, Plan
 from minimise.storage.database import Database
 from minimise.orchestration.job_controller import JobController
 from minimise.personas import load_personas
 
 NAV_LINKS = [("Jobs", "job_list_page"), ("Personas", "personas_page")]
 JOBS_PAGE_SIZE = 50
+
+
+def _duration_label(minutes: Optional[int]) -> str:
+    """Format a positive minute count for compact human-readable UI labels."""
+    if minutes is None:
+        return ""
+    hours, remaining = divmod(minutes, 60)
+    if not hours:
+        return f"{remaining} min"
+    if not remaining:
+        return f"{hours} hr"
+    return f"{hours} hr {remaining} min"
+
+
+def _plan_summary(plan: Plan) -> dict:
+    """Return the small set of derived metrics used by the detail page."""
+    hooks = [*plan.pre_hooks, *plan.post_hooks]
+    for task in plan.tasks:
+        hooks.extend(task.pre_hooks)
+        hooks.extend(task.post_hooks)
+    task_minutes = sum(task.estimated_duration_min for task in plan.tasks)
+    hook_minutes = sum(hook.estimated_duration_min for hook in hooks)
+    return {
+        "task_count": len(plan.tasks),
+        "hook_count": len(hooks),
+        "total_minutes": task_minutes + hook_minutes,
+    }
 
 
 def _persona_summary(system_prompt: str, width: int = 70) -> str:
@@ -40,6 +67,7 @@ class APIServer:
         self.job_controller = job_controller
         self.port = port
         self.app = Flask(__name__)
+        self.app.add_template_filter(_duration_label, "duration_label")
 
         # Enable CORS
         CORS(self.app, resources={r"/*": {"origins": "*"}})
@@ -82,7 +110,38 @@ class APIServer:
             job = self._load_job_with_tasks(job_id)
             if job is None:
                 return "Job not found", 404
-            return render_template("detail.html", job=job)
+
+            plan = None
+            plan_raw = None
+            plan_error = None
+            plan_summary = None
+            plan_briefing = None
+            plan_yaml_path = self.job_controller.store.jobs_dir / job_id / "plan.yaml"
+            try:
+                plan_raw = plan_yaml_path.read_text()
+            except FileNotFoundError:
+                plan_error = "The cached plan file is missing for this job."
+            except OSError as e:
+                plan_error = f"The cached plan file could not be read: {e}"
+            else:
+                try:
+                    plan = self.job_controller.store.load_plan(job_id)
+                    plan_summary = _plan_summary(plan)
+                    plan_briefing = (plan.model_extra or {}).get("briefing")
+                except Exception as e:
+                    # A historical plan can become invalid after a schema change.
+                    # Keep operational status and logs available in that case.
+                    plan_error = f"The cached plan could not be parsed: {e}"
+
+            return render_template(
+                "detail.html",
+                job=job,
+                plan=plan,
+                plan_raw=plan_raw,
+                plan_error=plan_error,
+                plan_summary=plan_summary,
+                plan_briefing=plan_briefing,
+            )
 
         @self.app.route("/personas", methods=["GET"])
         def personas_page():

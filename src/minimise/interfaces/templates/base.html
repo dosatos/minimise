@@ -8,6 +8,7 @@
         document.documentElement.dataset.theme = localStorage.getItem('theme') || 'dark';
     </script>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    {% block styles %}{% endblock %}
 </head>
 <body>
     <div class="page-header">

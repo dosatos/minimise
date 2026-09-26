@@ -1,0 +1,567 @@
+:root {
+    --surface: #121212;
+    --surface-raised: #181818;
+    --muted: #929292;
+    --plan-accent: #f0c674;
+    --plan-accent-soft: #211d14;
+    --plan-goal-bg: #111b16;
+    --plan-alert-bg: #241717;
+    --shadow: rgba(0, 0, 0, 0.28);
+}
+:root[data-theme="light"] {
+    --surface: #fafafa;
+    --surface-raised: #ffffff;
+    --muted: #686868;
+    --plan-accent: #8a6500;
+    --plan-accent-soft: #fff7df;
+    --plan-goal-bg: #eff8f1;
+    --plan-alert-bg: #fff0f0;
+    --shadow: rgba(45, 37, 18, 0.1);
+}
+
+.detail-heading,
+.detail-tabs,
+.detail-section {
+    width: min(100%, 1200px);
+}
+.detail-heading {
+    margin: 3rem 0 2rem;
+}
+.eyebrow {
+    margin: 0 0 0.45rem;
+    color: var(--plan-accent);
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+}
+.detail-title-row {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+}
+.detail-title-row h2 {
+    margin: 0;
+    font-size: clamp(1.65rem, 4vw, 2.7rem);
+    font-weight: normal;
+    letter-spacing: -0.045em;
+}
+.detail-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem 1.25rem;
+    margin: 0.8rem 0 0;
+    color: var(--muted);
+    font-size: 0.8rem;
+}
+.detail-meta code {
+    color: var(--fg);
+}
+.detail-tab-list {
+    display: flex;
+    gap: 0;
+    margin-top: 2.75rem;
+    border-bottom: 1px solid var(--border);
+}
+.detail-tab {
+    position: relative;
+    min-width: 9rem;
+    padding: 0.9rem 1.2rem;
+    border: 0;
+    color: var(--muted);
+    background: transparent;
+    font: inherit;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+.detail-tab::after {
+    position: absolute;
+    right: 0;
+    bottom: -1px;
+    left: 0;
+    height: 2px;
+    background: transparent;
+    content: "";
+}
+.detail-tab:hover {
+    color: var(--fg);
+    background: var(--row-hover-bg);
+}
+.detail-tab[aria-selected="true"] {
+    color: var(--plan-accent);
+    background: linear-gradient(180deg, transparent, var(--plan-accent-soft));
+}
+.detail-tab[aria-selected="true"]::after {
+    background: var(--plan-accent);
+}
+.detail-tab:focus-visible {
+    z-index: 1;
+    outline: 1px solid var(--plan-accent);
+    outline-offset: -3px;
+}
+.detail-tab-panel[hidden] {
+    display: none;
+}
+.detail-tab-panel > .detail-section:first-child {
+    margin-top: 2.25rem;
+}
+.detail-section {
+    margin-top: 3.5rem;
+}
+.section-heading {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 2rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.85rem;
+    border-bottom: 1px solid var(--border);
+}
+.section-heading h3 {
+    margin: 0;
+    font-size: 1.35rem;
+    font-weight: normal;
+}
+.section-heading > p {
+    max-width: 34rem;
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.82rem;
+    line-height: 1.5;
+    text-align: right;
+}
+
+.plan-board {
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background:
+        linear-gradient(145deg, var(--surface-raised) 0, var(--surface) 22rem);
+    box-shadow: 0 20px 60px var(--shadow);
+}
+.plan-overview {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2rem;
+    align-items: end;
+    padding: clamp(1.25rem, 4vw, 2.5rem);
+    background:
+        linear-gradient(120deg, var(--plan-accent-soft), transparent 62%);
+    border-bottom: 1px solid var(--border);
+}
+.plan-kicker {
+    margin: 0 0 0.6rem;
+    color: var(--plan-accent);
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+.plan-overview-copy h4 {
+    margin: 0;
+    font-size: clamp(1.45rem, 3vw, 2.15rem);
+    font-weight: normal;
+    letter-spacing: -0.035em;
+}
+.plan-overview-copy > p:not(.plan-kicker) {
+    max-width: 40rem;
+    margin: 0.8rem 0 0;
+    color: var(--muted);
+    font-size: 0.83rem;
+    line-height: 1.55;
+}
+.plan-overview-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-top: 1rem;
+}
+.plan-action {
+    padding: 0.32rem 0.55rem;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    background: var(--surface-raised);
+    font: inherit;
+    font-size: 0.68rem;
+    cursor: pointer;
+}
+.plan-action:hover,
+.plan-action:focus-visible {
+    border-color: var(--plan-accent);
+    color: var(--plan-accent);
+}
+.plan-action:focus-visible {
+    outline: 1px solid var(--plan-accent);
+    outline-offset: 2px;
+}
+.plan-stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(5.5rem, 1fr));
+    gap: 1px;
+    border: 1px solid var(--border);
+    background: var(--border);
+}
+.plan-stat {
+    min-width: 6.5rem;
+    padding: 0.8rem 0.9rem;
+    background: var(--surface-raised);
+}
+.plan-stat strong,
+.plan-stat span {
+    display: block;
+}
+.plan-stat strong {
+    color: var(--plan-accent);
+    font-size: 1.05rem;
+    font-weight: normal;
+}
+.plan-stat span {
+    margin-top: 0.2rem;
+    color: var(--muted);
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.plan-context-block {
+    padding: 1.4rem clamp(1.25rem, 4vw, 2.5rem);
+    border-bottom: 1px solid var(--border);
+}
+.plan-context-block > h5,
+.plan-task-hooks > section > h5 {
+    margin: 0 0 0.8rem;
+    color: var(--muted);
+    font-size: 0.7rem;
+    font-weight: normal;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+.plan-briefing {
+    max-width: 78ch;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.plan-lifecycle {
+    padding: 1.5rem clamp(1.25rem, 4vw, 2.5rem);
+    border-bottom: 1px solid var(--border);
+    background: var(--plan-accent-soft);
+}
+.plan-lifecycle-final {
+    border-top: 1px solid var(--border);
+    border-bottom: 0;
+}
+.plan-lifecycle-heading {
+    display: flex;
+    gap: 1rem;
+    align-items: start;
+    margin-bottom: 1rem;
+}
+.plan-lifecycle-heading h4,
+.plan-lifecycle-heading p {
+    margin: 0;
+}
+.plan-lifecycle-heading h4 {
+    font-size: 0.95rem;
+    font-weight: normal;
+}
+.plan-lifecycle-heading p {
+    margin-top: 0.3rem;
+    color: var(--muted);
+    font-size: 0.75rem;
+}
+.plan-flow-marker {
+    min-width: 4rem;
+    padding: 0.25rem 0.45rem;
+    border: 1px solid var(--plan-accent);
+    color: var(--plan-accent);
+    font-size: 0.66rem;
+    letter-spacing: 0.08em;
+    text-align: center;
+    text-transform: uppercase;
+}
+.plan-hook-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+    gap: 0.75rem;
+}
+.plan-hook {
+    min-width: 0;
+    padding: 0.9rem;
+    border: 1px solid var(--border);
+    background: var(--surface-raised);
+}
+.plan-hook-heading {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    align-items: center;
+}
+.plan-hook-heading strong {
+    font-size: 0.82rem;
+    font-weight: normal;
+}
+.plan-hook-phase {
+    color: var(--plan-accent);
+    font-size: 0.63rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+.plan-hook-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.8rem;
+    margin-top: 0.6rem;
+    color: var(--muted);
+    font-size: 0.68rem;
+}
+.plan-hook-command {
+    margin: 0.8rem 0 0;
+    padding: 0.65rem;
+    border-color: var(--border);
+    font-size: 0.72rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.plan-task-list {
+    display: grid;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+.plan-task-item {
+    border-bottom: 1px solid var(--border);
+}
+.plan-task-item:last-child {
+    border-bottom: 0;
+}
+.plan-task-card {
+    background: var(--surface-raised);
+}
+.plan-task-summary {
+    display: grid;
+    grid-template-columns: 5.25rem minmax(0, 1fr) auto;
+    align-items: stretch;
+    cursor: pointer;
+    list-style: none;
+}
+.plan-task-summary::-webkit-details-marker {
+    display: none;
+}
+.plan-task-summary::marker {
+    content: "";
+}
+.plan-task-summary:hover {
+    background: var(--row-hover-bg);
+}
+.plan-task-summary:focus-visible {
+    outline: 1px solid var(--plan-accent);
+    outline-offset: -1px;
+}
+.plan-task-index {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 1.6rem 0.75rem;
+    border-right: 1px solid var(--border);
+    color: var(--muted);
+    background:
+        linear-gradient(180deg, var(--plan-accent-soft), var(--surface));
+}
+.plan-task-index span {
+    font-size: 0.62rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+.plan-task-index strong {
+    color: var(--plan-accent);
+    font-size: 1.35rem;
+    font-weight: normal;
+}
+.plan-task-content {
+    min-width: 0;
+    margin-left: 5.25rem;
+    padding: clamp(1.2rem, 3vw, 2rem);
+    border-top: 1px solid var(--border);
+    border-left: 1px solid var(--border);
+}
+.plan-task-heading {
+    display: flex;
+    justify-content: space-between;
+    gap: 1.5rem;
+    align-items: start;
+    min-width: 0;
+    padding: 1.4rem 1.25rem;
+}
+.plan-task-heading h4 {
+    margin: 0;
+    font-size: 1.15rem;
+    font-weight: normal;
+}
+.plan-task-heading code {
+    display: inline-block;
+    margin-top: 0.35rem;
+    color: var(--muted);
+    font-size: 0.72rem;
+}
+.plan-pill-row {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.4rem;
+}
+.plan-pill {
+    padding: 0.25rem 0.45rem;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    background: var(--surface);
+    font-size: 0.66rem;
+    white-space: nowrap;
+}
+.plan-pill-worker {
+    max-width: 100%;
+    border-color: var(--plan-accent);
+    color: var(--plan-accent);
+    background: var(--plan-accent-soft);
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+.plan-task-toggle {
+    align-self: center;
+    margin-right: 1.25rem;
+    color: var(--plan-accent);
+    font-size: 0.65rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+.plan-task-toggle-closed {
+    display: none;
+}
+.plan-task-card:not([open]) .plan-task-toggle-open {
+    display: none;
+}
+.plan-task-card:not([open]) .plan-task-toggle-closed {
+    display: inline;
+}
+.plan-field {
+    margin-top: 1.25rem;
+}
+.plan-field h5 {
+    margin: 0 0 0.45rem;
+    color: var(--muted);
+    font-size: 0.67rem;
+    font-weight: normal;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+.plan-field p {
+    margin: 0;
+}
+.plan-goal {
+    padding: 0.85rem 1rem;
+    border-left: 2px solid var(--status-completed);
+    background: var(--plan-goal-bg);
+    line-height: 1.55;
+}
+.plan-prose {
+    max-width: 78ch;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.plan-task-hooks {
+    display: grid;
+    gap: 1.2rem;
+    margin-top: 1.4rem;
+    padding-top: 1.25rem;
+    border-top: 1px dashed var(--border);
+}
+.plan-task-hooks > section > h5 {
+    color: var(--plan-accent);
+}
+
+.plan-alert {
+    padding: 1.25rem;
+    border: 1px solid var(--status-failed);
+    background: var(--plan-alert-bg);
+}
+.plan-alert strong {
+    color: var(--status-failed);
+    font-weight: normal;
+}
+.plan-alert p {
+    margin: 0.5rem 0 0;
+    line-height: 1.5;
+}
+.plan-raw {
+    margin-top: 0.85rem;
+    border: 1px solid var(--border);
+    background: var(--surface);
+}
+.plan-raw summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.8rem 1rem;
+    cursor: pointer;
+    list-style: none;
+}
+.plan-raw summary::-webkit-details-marker {
+    display: none;
+}
+.plan-raw summary::after {
+    content: "+";
+    color: var(--plan-accent);
+    font-size: 1rem;
+}
+.plan-raw[open] summary::after {
+    content: "−";
+}
+.plan-raw summary:hover {
+    background: var(--row-hover-bg);
+}
+.plan-raw summary:focus-visible {
+    outline: 1px solid var(--plan-accent);
+    outline-offset: 2px;
+}
+.plan-raw summary small {
+    margin-left: auto;
+    color: var(--muted);
+}
+.plan-raw pre {
+    max-height: 34rem;
+    margin: 0;
+    border-width: 1px 0 0;
+    line-height: 1.55;
+}
+
+@media (max-width: 640px) {
+    .detail-heading { margin-top: 2rem; }
+    .detail-title-row { align-items: flex-start; flex-direction: column; gap: 0.65rem; }
+    .detail-tab-list { margin-top: 2rem; }
+    .detail-tab { flex: 1; min-width: 0; }
+    .detail-section { margin-top: 2.75rem; }
+    .section-heading { display: block; }
+    .section-heading > p { margin-top: 0.65rem; text-align: left; }
+    .plan-overview { grid-template-columns: 1fr; align-items: start; }
+    .plan-stats { grid-template-columns: repeat(3, 1fr); }
+    .plan-stat { min-width: 0; padding: 0.7rem 0.55rem; }
+    .plan-task-summary { grid-template-columns: minmax(0, 1fr) auto; }
+    .plan-task-index {
+        grid-column: 1 / -1;
+        flex-direction: row;
+        justify-content: flex-start;
+        padding: 0.65rem 1rem;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+    }
+    .plan-task-heading { display: block; padding: 1rem; }
+    .plan-task-toggle { margin-right: 1rem; }
+    .plan-task-content { margin-left: 0; border-left: 0; }
+    .plan-pill-row { justify-content: flex-start; margin-top: 0.8rem; }
+    .plan-lifecycle-heading { display: block; }
+    .plan-lifecycle-heading > div { margin-top: 0.7rem; }
+    .plan-raw summary small { display: none; }
+}

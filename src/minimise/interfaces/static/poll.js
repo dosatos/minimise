@@ -12,6 +12,65 @@ function workerLabel(t) {
     return "default";
 }
 
+function setPlanTasksExpanded(expanded) {
+    document.querySelectorAll(".plan-task-card").forEach(task => {
+        task.open = expanded;
+    });
+}
+
+function selectDetailTab(name, updateHash = true) {
+    const tabs = Array.from(document.querySelectorAll("[data-detail-tab]"));
+    if (!tabs.some(tab => tab.dataset.detailTab === name)) {
+        name = "details";
+    }
+
+    tabs.forEach(tab => {
+        const selected = tab.dataset.detailTab === name;
+        tab.setAttribute("aria-selected", String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+    });
+    document.querySelectorAll("[data-detail-panel]").forEach(panel => {
+        panel.hidden = panel.dataset.detailPanel !== name;
+    });
+
+    if (updateHash) {
+        history.replaceState(null, "", name === "logs" ? "#logs" : "#details");
+    }
+    if (name === "logs") {
+        refreshLogsNow();
+    }
+}
+
+function initDetailTabs() {
+    const tabList = document.querySelector("[data-detail-tabs] [role='tablist']");
+    if (!tabList) return;
+
+    const tabs = Array.from(tabList.querySelectorAll("[data-detail-tab]"));
+    tabs.forEach(tab => {
+        tab.addEventListener("click", () => selectDetailTab(tab.dataset.detailTab));
+    });
+    tabList.addEventListener("keydown", event => {
+        const currentIndex = tabs.indexOf(document.activeElement);
+        if (currentIndex === -1) return;
+
+        let nextIndex;
+        if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % tabs.length;
+        if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+        if (event.key === "Home") nextIndex = 0;
+        if (event.key === "End") nextIndex = tabs.length - 1;
+        if (nextIndex === undefined) return;
+
+        event.preventDefault();
+        tabs[nextIndex].focus();
+        tabs[nextIndex].click();
+    });
+    window.addEventListener("hashchange", () => {
+        selectDetailTab(location.hash === "#logs" ? "logs" : "details", false);
+    });
+
+    selectDetailTab(location.hash === "#logs" ? "logs" : "details", false);
+}
+
 function startJobListPolling(intervalMs) {
     const page = new URLSearchParams(location.search).get("page") || 1;
     let intervalId = null;
@@ -109,21 +168,6 @@ function startJobDetailPolling(jobId, intervalMs) {
     });
     refresh();
     intervalId = setInterval(refresh, intervalMs);
-}
-
-function togglePlanView() {
-    const raw = document.getElementById("plan-raw");
-    const btn = document.getElementById("plan-toggle-btn");
-    const showing = raw.style.display !== "none";
-    raw.style.display = showing ? "none" : "block";
-    btn.textContent = showing ? "Show raw plan YAML" : "Hide raw plan YAML";
-}
-
-async function loadPlan(jobId) {
-    const resp = await fetch(`/jobs/${jobId}/plan`);
-    if (!resp.ok) return;
-    const data = await resp.json();
-    document.getElementById("plan-raw").textContent = data.raw_yaml;
 }
 
 function escapeHtml(s) {

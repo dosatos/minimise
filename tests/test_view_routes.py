@@ -53,6 +53,132 @@ def test_job_detail_page_renders(client, mock_job_controller):
     assert b"demo-plan" in resp.data
 
 
+def test_job_detail_page_keeps_execution_above_plan_and_logs_tabs(
+    client, mock_job_controller
+):
+    job = _make_job(mock_job_controller)
+
+    resp = client.get(f"/jobs/{job.id}/view")
+
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert 'role="tablist"' in html
+    assert 'data-detail-tab="details"' in html
+    assert 'data-detail-tab="logs"' in html
+    assert 'id="detail-panel-details"' in html
+    assert 'id="detail-panel-logs"' in html
+    execution_position = html.index('id="execution-heading"')
+    tabs_position = html.index('role="tablist"')
+    plan_position = html.index('id="plan-heading"')
+    assert execution_position < tabs_position < plan_position
+    logs_panel = html[html.index('id="detail-panel-logs"'):]
+    assert "hidden" in logs_panel[:250]
+
+
+def test_job_detail_page_renders_plan_as_human_readable_structure(
+    client, mock_job_controller
+):
+    from minimise.models import Plan
+
+    plan = Plan.model_validate({
+        "name": "Readable migration",
+        "briefing": "<script>alert('x')</script>\nCoordinate the rollout.",
+        "pre_hooks": [{
+            "name": "Validate plan",
+            "estimated_duration_min": 5,
+            "shell": "python scripts/validate.py",
+        }],
+        "tasks": [
+            {
+                "id": "schema",
+                "name": "Design the schema",
+                "goal": "Agree on a backwards-compatible contract.",
+                "description": "Inspect current consumers.\nDocument migration risks.",
+                "estimated_duration_min": 25,
+                "timeout_min": 40,
+                "harness": "codex",
+                "model": "openai/gpt-5.5",
+                "post_hooks": [{
+                    "name": "Review schema",
+                    "estimated_duration_min": 5,
+                    "timeout_min": 10,
+                    "shell": "python scripts/review.py",
+                    "on_failure": "retry",
+                }],
+            },
+            {
+                "id": "migrate",
+                "name": "Implement the migration",
+                "goal": "Ship the new schema without downtime.",
+                "description": "Add the migration and regression coverage.",
+                "estimated_duration_min": 30,
+                "assignee": "migration-owner",
+            },
+        ],
+        "post_hooks": [{
+            "name": "Verify rollout",
+            "estimated_duration_min": 5,
+            "shell": "pytest -q",
+        }],
+    })
+    job = mock_job_controller.store.create(
+        plan, base_commit="abc123", plan_path="/tmp/plan.yaml"
+    )
+
+    resp = client.get(f"/jobs/{job.id}/view")
+
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert html.count('class="plan-task-card"') == 2
+    assert html.count('<details class="plan-task-card" open>') == 2
+    assert "Expand all" in html
+    assert "Collapse all" in html
+    assert "Execution blueprint" in html
+    assert "<strong>1 hr 10 min</strong>" in html
+    assert "Agree on a backwards-compatible contract." in html
+    assert "Inspect current consumers.\nDocument migration risks." in html
+    assert "codex · openai/gpt-5.5" in html
+    assert "Persona · migration-owner" in html
+    assert "Pre-plan" in html
+    assert "Post-task" in html
+    assert "Post-plan" in html
+    assert "Briefing" in html
+    assert "Coordinate the rollout." in html
+    assert "Raw plan YAML" in html
+    assert "<script>alert('x')</script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_job_detail_page_survives_missing_cached_plan(client, mock_job_controller):
+    job = _make_job(mock_job_controller)
+    plan_path = mock_job_controller.store.jobs_dir / job.id / "plan.yaml"
+    plan_path.unlink()
+
+    resp = client.get(f"/jobs/{job.id}/view")
+
+    assert resp.status_code == 200
+    assert b"Plan unavailable" in resp.data
+    assert b"The cached plan file is missing for this job." in resp.data
+    assert b"Execution" in resp.data
+    assert b"Logs" in resp.data
+
+
+def test_job_detail_page_preserves_raw_yaml_when_cached_plan_is_invalid(
+    client, mock_job_controller
+):
+    job = _make_job(mock_job_controller)
+    plan_path = mock_job_controller.store.jobs_dir / job.id / "plan.yaml"
+    plan_path.write_text("name: [invalid")
+
+    resp = client.get(f"/jobs/{job.id}/view")
+
+    assert resp.status_code == 200
+    assert b"Plan unavailable" in resp.data
+    assert b"The cached plan could not be parsed" in resp.data
+    assert b"Raw plan YAML" in resp.data
+    assert b"name: [invalid" in resp.data
+
+
 def test_job_detail_page_404_for_unknown_job(client):
     resp = client.get("/jobs/nonexistent/view")
     assert resp.status_code == 404

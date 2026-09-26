@@ -1,70 +1,140 @@
 {% extends "base.html" %}
 {% block title %}{{ job.id }} — minimise{% endblock %}
+{% block styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='detail.css') }}">
+{% endblock %}
+
 {% block content %}
-<h2>{{ job.id }} <span id="job-status" class="status status-{{ job.status.value }}">{{ job.status.value }}</span></h2>
-<p>{{ job.name }} — created {{ job.created_at.isoformat() }}</p>
+<header class="detail-heading">
+    <p class="eyebrow">Job detail</p>
+    <div class="detail-title-row">
+        <h2>{{ job.name }}</h2>
+        <span id="job-status" class="status status-{{ job.status.value }}">{{ job.status.value }}</span>
+    </div>
+    <p class="detail-meta">
+        <code>{{ job.id }}</code>
+        <span>Created {{ job.created_at.isoformat() }}</span>
+    </p>
+</header>
 
-<h3>Tasks</h3>
-<div class="table-wrap">
-<table>
-    <thead><tr><th>ID</th><th>Name</th><th>Goal</th><th>Worker</th><th>Status</th><th>Retries</th><th>Type</th></tr></thead>
-    <tbody id="task-rows">
-        {% for task in job.tasks %}
-        <tr>
-            <td data-label="ID">{{ task.id }}</td><td data-label="Name">{{ task.name }}</td>
-            <td data-label="Goal">{{ task.goal or "" }}</td>
-            <td data-label="Worker">{{ task.assignee or (task.harness ~ "/" ~ (task.model or "default") if task.harness else "default") }}</td>
-            <td data-label="Status"><span class="status status-{{ task.status.value }}">{{ task.status.value }}</span></td>
-            <td data-label="Retries">{{ task.retries }}</td>
-            <td data-label="Type">task</td>
-        </tr>
-        {% else %}
-        <tr><td colspan="7" class="empty">No tasks</td></tr>
-        {% endfor %}
-    </tbody>
-</table>
-</div>
-
-<button id="plan-toggle-btn" class="toggle-btn" onclick="togglePlanView()">Show raw plan YAML</button>
-<pre id="plan-raw" style="display:none;"></pre>
-
-<h3 data-job-id="{{ job.id }}">Logs</h3>
-<div class="log-controls">
-    <label>Task:
-        <select id="log-task-filter" onchange="refreshLogsNow()">
-            <option value="all">All</option>
-            <optgroup label="Tasks">
+<section class="detail-section" aria-labelledby="execution-heading">
+    <div class="section-heading">
+        <div>
+            <p class="eyebrow">Live state</p>
+            <h3 id="execution-heading">Execution</h3>
+        </div>
+        <p>Current task and lifecycle-hook status.</p>
+    </div>
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>ID</th><th>Name</th><th>Goal</th><th>Worker</th><th>Status</th><th>Retries</th><th>Type</th></tr></thead>
+            <tbody id="task-rows">
                 {% for task in job.tasks %}
-                <option value="{{ task.id }}" data-kind="task">{{ task.id }} — {{ task.name }}</option>
+                <tr>
+                    <td data-label="ID">{{ task.id }}</td><td data-label="Name">{{ task.name }}</td>
+                    <td data-label="Goal">{{ task.goal or "" }}</td>
+                    <td data-label="Worker">{{ task.assignee or (task.harness ~ "/" ~ (task.model or "default") if task.harness else "default") }}</td>
+                    <td data-label="Status"><span class="status status-{{ task.status.value }}">{{ task.status.value }}</span></td>
+                    <td data-label="Retries">{{ task.retries }}</td>
+                    <td data-label="Type">task</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="7" class="empty">No tasks</td></tr>
                 {% endfor %}
-            </optgroup>
-            <optgroup label="Hooks" id="log-hook-optgroup"></optgroup>
-        </select>
-    </label>
-    <label><input type="checkbox" class="log-col-toggle" data-col="timestamp" checked> Timestamp</label>
-    <label><input type="checkbox" class="log-col-toggle" data-col="task_id" checked> Task ID</label>
-    <label><input type="checkbox" class="log-col-toggle" data-col="level" checked> Level</label>
-</div>
-<div class="table-wrap">
-<table id="log-table">
-    <thead>
-        <tr>
-            <th class="log-col-timestamp">Timestamp</th>
-            <th class="log-col-task_id">Task ID</th>
-            <th class="log-col-level">Level</th>
-            <th class="log-col-message">Message</th>
-        </tr>
-    </thead>
-    <tbody id="log-rows">
-        <tr><td colspan="4" class="empty">No logs yet</td></tr>
-    </tbody>
-</table>
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<div class="detail-tabs" data-detail-tabs data-job-id="{{ job.id }}">
+    <div class="detail-tab-list" role="tablist" aria-label="Job detail views">
+        <button
+            type="button"
+            class="detail-tab"
+            id="detail-tab-details"
+            role="tab"
+            aria-selected="true"
+            aria-controls="detail-panel-details"
+            data-detail-tab="details"
+        >Detailed view</button>
+        <button
+            type="button"
+            class="detail-tab"
+            id="detail-tab-logs"
+            role="tab"
+            aria-selected="false"
+            aria-controls="detail-panel-logs"
+            tabindex="-1"
+            data-detail-tab="logs"
+        >Logs</button>
+    </div>
+
+    <div
+        class="detail-tab-panel"
+        id="detail-panel-details"
+        role="tabpanel"
+        aria-labelledby="detail-tab-details"
+        data-detail-panel="details"
+    >
+        {% include "_plan_detail.html" %}
+    </div>
+
+    <div
+        class="detail-tab-panel"
+        id="detail-panel-logs"
+        role="tabpanel"
+        aria-labelledby="detail-tab-logs"
+        data-detail-panel="logs"
+        hidden
+    >
+        <section class="detail-section" aria-labelledby="logs-heading">
+            <div class="section-heading">
+                <div>
+                    <p class="eyebrow">Agent output</p>
+                    <h3 id="logs-heading">Logs</h3>
+                </div>
+                <p>The latest structured messages from tasks and hooks.</p>
+            </div>
+            <div class="log-controls">
+                <label>Task:
+                    <select id="log-task-filter" onchange="refreshLogsNow()">
+                        <option value="all">All</option>
+                        <optgroup label="Tasks">
+                            {% for task in job.tasks %}
+                            <option value="{{ task.id }}" data-kind="task">{{ task.id }} — {{ task.name }}</option>
+                            {% endfor %}
+                        </optgroup>
+                        <optgroup label="Hooks" id="log-hook-optgroup"></optgroup>
+                    </select>
+                </label>
+                <label><input type="checkbox" class="log-col-toggle" data-col="timestamp" checked> Timestamp</label>
+                <label><input type="checkbox" class="log-col-toggle" data-col="task_id" checked> Task ID</label>
+                <label><input type="checkbox" class="log-col-toggle" data-col="level" checked> Level</label>
+            </div>
+            <div class="table-wrap">
+                <table id="log-table">
+                    <thead>
+                        <tr>
+                            <th class="log-col-timestamp">Timestamp</th>
+                            <th class="log-col-task_id">Task ID</th>
+                            <th class="log-col-level">Level</th>
+                            <th class="log-col-message">Message</th>
+                        </tr>
+                    </thead>
+                    <tbody id="log-rows">
+                        <tr><td colspan="4" class="empty">No logs yet</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
 </div>
 {% endblock %}
+
 {% block scripts %}
 <script>
+    initDetailTabs();
     startJobDetailPolling("{{ job.id }}", 3000);
-    loadPlan("{{ job.id }}");
     startLogPolling("{{ job.id }}", 3000);
     document.querySelectorAll(".log-col-toggle").forEach(cb => {
         cb.addEventListener("change", applyLogColumnVisibility);
