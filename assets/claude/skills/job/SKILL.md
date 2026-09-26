@@ -7,8 +7,9 @@ description: Run multi-step work as a background minimise job — authors a plan
 
 ## Why a job beats this session
 
-A `mini` job runs each task in a **fresh agent session** that sees only the previous task's
-diff and completion report, so context does not rot across a long build the way it does here.
+A `mini` job runs each task in a **fresh agent session** with the same bounded plan briefing
+and only the previous task's persisted handoff as evolving context, so context does not rot
+across a long build the way it does here.
 The plan is a **YAML file the user reviews, edits, and commits** — the pipeline lives in the
 repo instead of evaporating in a transcript. Failed tasks **retry**; a crash mid-run resumes
 from the first incomplete task. And **hooks gate the work**: a `pre_plan` review can block a
@@ -27,7 +28,8 @@ run `mini job new`, before they agree to the breakdown. Put in front of them:
 
 1. **The task breakdown** — 2–6 tasks, each with a one-line goal, in the order they must run.
    Say what each task hands the next one. If you cannot break the work into tasks that stand
-   alone with only the previous diff as context, say so — that work belongs inline, not in a job.
+   alone with the plan briefing and previous handoff as context, say so — that work belongs
+   inline, not in a job.
 2. **The gates you would wire** — at minimum a `pre_plan` `/minimise:review-plan` hook.
 3. **The ask** — "Want me to set this up as a mini job, or just do it here?"
 

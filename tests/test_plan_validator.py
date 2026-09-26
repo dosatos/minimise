@@ -91,12 +91,27 @@ class TestFromYaml:
         plan = Plan.from_yaml(path)
         assert plan.name == "My Plan"
 
-    def test_extras_preserved(self, tmp_path):
+    def test_typed_briefing_and_unrelated_extras_preserved(self, tmp_path):
         data = _valid_plan_dict()
         data["briefing"] = "context here"
+        data["owner"] = "platform"
         path = self._write(tmp_path, yaml.dump(data))
         plan = Plan.from_yaml(path)
         assert plan.briefing == "context here"
+        assert plan.model_dump()["briefing"] == "context here"
+        assert plan.model_extra == {"owner": "platform"}
+
+    def test_briefing_defaults_to_none(self):
+        plan = Plan.model_validate(_valid_plan_dict())
+        assert plan.briefing is None
+        assert "briefing" not in (plan.model_extra or {})
+
+    @pytest.mark.parametrize("briefing", [1, True, [], {}])
+    def test_briefing_must_be_a_string_when_present(self, briefing):
+        data = _valid_plan_dict()
+        data["briefing"] = briefing
+        with pytest.raises(ValidationError):
+            Plan.model_validate(data)
 
     def test_invalid_plan_raises(self, tmp_path):
         path = self._write(tmp_path, yaml.dump({"name": "P", "tasks": []}))

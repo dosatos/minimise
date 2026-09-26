@@ -45,6 +45,11 @@ class JobExecutor:
 
     def execute(self, job: Job, plan: Plan) -> bool:
         """Run all of a job's tasks (and plan hooks); returns True on success."""
+        # This is the complete, stable plan context available to task prompts;
+        # the renderer omits it when briefing is blank. Hooks still receive the
+        # full serialized plan through stdin.
+        plan_name = plan.name
+        plan_briefing = plan.briefing
         plan_yaml = dump_yaml_readable(plan.model_dump())
 
         if not self._run_hooks(plan.pre_hooks, "pre_plan", None, stdin=plan_yaml):
@@ -84,6 +89,7 @@ class JobExecutor:
             success, output = self.task_executor.execute_task(
                 task, job.id, handover, next_task=next_task,
                 verify=self._make_post_verify(post, task.id, plan_yaml),
+                plan_name=plan_name, plan_briefing=plan_briefing,
             )
             if not success:
                 print(f"Task {task.name} failed: {output}")

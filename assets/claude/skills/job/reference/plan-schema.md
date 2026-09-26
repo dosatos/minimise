@@ -1,14 +1,15 @@
 # Plan schema + hook contract
 
 Everything needed to author a plan `mini job new --plan <file>` will accept. Fields not listed
-here do not exist — do not invent them.
+here have no defined product behavior — do not invent them. Unknown plan and task keys are
+preserved for compatibility, not interpreted by the runtime.
 
 ## Plan
 
 ```yaml
 plan:                              # top-level `plan:` key is optional; a bare mapping works too
   name: "Implement Feature X"      # required
-  briefing: "Free-form context"    # optional, extra keys are allowed
+  briefing: "Free-form context"    # optional, stable context sent to every task
   pre_hooks: []                    # optional, run once before the whole job (the plan gate)
   post_hooks: []                   # optional, run once after the whole job
   tasks:                           # required, at least one; ids must be unique
@@ -24,8 +25,9 @@ plan:                              # top-level `plan:` key is optional; a bare m
 ```
 
 **Goal vs description:** goal is *what* (one line), description is *how* (the steps). Each task
-runs in a fresh agent session and receives only the previous task's git diff and completion
-report — so a task must be self-contained given that.
+runs in a fresh agent session with the same plan name and non-blank briefing, plus only the
+previous task's persisted handoff as evolving context. The briefing aligns constraints,
+non-goals, and terminology; it does not expand the current task's scope.
 
 ## Hook
 

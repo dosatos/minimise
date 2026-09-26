@@ -296,6 +296,8 @@ def test_job_detail_page_renders_plan_as_human_readable_structure(
             "shell": "pytest -q",
         }],
     })
+    assert plan.briefing == "<script>alert('x')</script>\nCoordinate the rollout."
+    assert "briefing" not in (plan.model_extra or {})
     job = mock_job_controller.store.create(
         plan, base_commit="abc123", plan_path="/tmp/plan.yaml"
     )

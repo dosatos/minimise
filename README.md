@@ -41,8 +41,9 @@ Not identical output — these are language models, and nothing makes them
 deterministic. The guarantee is **procedural**:
 
 - Every task in the plan runs, in the order written.
-- Each task starts from a clean session and receives only structured handover
-  from the previous one — its diff and completion report.
+- Each task starts from a clean session with the same bounded plan context
+  (name plus non-blank briefing) and the previous task's persisted handoff.
+  The full plan YAML and the other task definitions are withheld from task agents.
 - Gates you define run when you say they run, and a failing gate blocks or
   retries rather than being talked past.
 - The pipeline is a file in your repo. You diff it, review it, and roll it back
@@ -117,12 +118,12 @@ A **plan** is a YAML file describing the tasks to implement; a **job** is a sing
 
 ### 1. Define your implementation plan
 
-Create a plan file that describes what needs to be implemented (the example below ships as [`examples/example-plan.yaml`](examples/example-plan.yaml)). Each task starts fresh with only the previous task's output as context:
+Create a plan file that describes what needs to be implemented (the example below ships as [`examples/example-plan.yaml`](examples/example-plan.yaml)). Each task starts fresh with the same bounded plan briefing plus only the previous task's handoff as evolving context; it does not receive the full plan or task list:
 
 ```yaml
 plan:
   name: "Implement Feature X"
-  briefing: "Build a new API endpoint with tests and documentation"
+  briefing: "Ship the endpoint without breaking v1 clients; call the new contract v2."
   
   tasks:
     - id: task-1
@@ -147,7 +148,14 @@ plan:
 `estimated_duration_min` is required on every task (it drives the Gantt); optional `timeout_min`
 adds a hard kill deadline and must be >= the estimate.
 
-Each task includes a **goal** field that clearly states the task's objective. The agent receives this goal prepended to the description, ensuring alignment on intent. Each task receives **only** the output of the previous task (git diff, completion report) — fresh context prevents degradation.
+Each task includes a **goal** field that clearly states the task's objective. The agent receives
+this goal prepended to the description, ensuring alignment on intent. A non-blank plan
+**briefing** is repeated for every task as stable alignment context; it does not expand scope
+beyond the current task's goal and description. Keep the briefing concise and stable: put the
+plan-wide outcome, enduring constraints, non-goals, and shared terminology there. Put procedural,
+task-specific instructions in that task's **goal** and **description**. Task agents receive no
+full plan YAML or other task definitions; their only evolving context is the previous task's
+persisted handoff.
 
 ### 2. Create, run, and monitor a job
 
@@ -221,7 +229,7 @@ mini job results diff a1b2c3d4 --task-id task-2
 #### Full task context for debugging
 
 ```bash
-# Show full prompt with handover context for a task
+# Show task diagnostics and a reconstructed prompt with handover context
 mini job show a1b2c3d4 --task-id task-2
 ```
 
@@ -485,7 +493,7 @@ tasks:
 ```bash
 mini job new --plan FILE                      # Create job (PENDING state)
 mini job show <ID>                            # Show plan structure
-mini job show <ID> --task-id <TASK_ID>        # Show full prompt with context for a task
+mini job show <ID> --task-id <TASK_ID>        # Show diagnostics + reconstructed task prompt
 mini job start <ID>                           # Start/resume a job (idempotent); backs off a live one
 mini job start <ID> --harness pi              # Run with pi instead of claude (default: claude)
 mini job start <ID> --harness codex           # Run with OpenAI Codex

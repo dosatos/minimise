@@ -1,10 +1,12 @@
-import os
-import pytest
 import json
+import os
 import uuid
 from pathlib import Path
 from datetime import datetime
 from unittest.mock import Mock, MagicMock
+
+import pytest
+import yaml
 
 from minimise.models import Job, Task, JobStatus, TaskStatus, Plan, PlanTask
 from minimise.storage.database import Database
@@ -13,9 +15,10 @@ from minimise.orchestration.job_controller import JobController
 from minimise.interfaces.api_server import APIServer, _duration_label
 
 
-def _make_plan_yaml(tmp_path):
+def _make_plan_yaml(tmp_path, briefing=None):
     return Plan(
         name="test-plan",
+        briefing=briefing,
         tasks=[
             PlanTask(
                 id="t1", name="Task One", description="desc", goal="goal",
@@ -66,7 +69,8 @@ def client(api_server):
 
 def test_get_job_plan_returns_structured_and_raw(client, mock_job_controller, temp_db_dir):
     job = mock_job_controller.store.create(
-        _make_plan_yaml(temp_db_dir), base_commit="abc123",
+        _make_plan_yaml(temp_db_dir, briefing="Preserve the public contract."),
+        base_commit="abc123",
         plan_path=str(temp_db_dir / "original-plan.yaml"),
     )
 
@@ -75,8 +79,10 @@ def test_get_job_plan_returns_structured_and_raw(client, mock_job_controller, te
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["plan"]["name"] == "test-plan"
+    assert data["plan"]["briefing"] == "Preserve the public contract."
     assert data["plan"]["tasks"][0]["id"] == "t1"
     assert "name: test-plan" in data["raw_yaml"]
+    assert yaml.safe_load(data["raw_yaml"])["briefing"] == "Preserve the public contract."
 
 
 def test_get_job_plan_404_for_unknown_job(client):

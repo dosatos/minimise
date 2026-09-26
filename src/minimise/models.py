@@ -208,6 +208,7 @@ class PlanTask(BaseModel):
 class Plan(BaseModel):
     model_config = ConfigDict(extra="allow")
     name: str
+    briefing: Optional[str] = None
     tasks: list[PlanTask] = Field(min_length=1)
     pre_hooks: list[Hook] = Field(default_factory=list)
     post_hooks: list[Hook] = Field(default_factory=list)

@@ -4,13 +4,57 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 from unittest.mock import Mock
-from minimise.orchestration.task_executor import TaskExecutor
+from minimise.orchestration.task_executor import TaskExecutor, render_task_prompt
 from minimise.models import Task, TaskStatus
 from minimise.storage.database import Database
 from minimise.storage.git_tracker import GitTracker
 from minimise.storage.job_store import JobStore
 from minimise.agents.harness import AgentHarness, HarnessResult
 import uuid
+
+
+def test_render_task_prompt_without_briefing_preserves_legacy_text():
+    expected = """You are executing a task in a multi-agent plan execution system.
+
+Task: Build widget
+
+Goal: Ship a working widget
+
+Description:
+Implement the widget module
+
+Context from previous tasks:
+prior handover
+
+Execute this task by modifying the codebase as needed. When done, write a summary of what you implemented."""
+    kwargs = {
+        "task_name": "Build widget",
+        "task_description": "Implement the widget module",
+        "task_goal": "Ship a working widget",
+        "handover": "prior handover",
+        "plan_name": "Widget plan",
+    }
+
+    assert render_task_prompt(**kwargs) == expected
+    assert render_task_prompt(**kwargs, plan_briefing=" \n\t") == expected
+
+
+def test_render_task_prompt_includes_bounded_plan_context_and_scope_guard():
+    prompt = render_task_prompt(
+        task_name="Implement schema",
+        task_description="Add the schema types.",
+        task_goal="Land the schema.",
+        plan_name="Migration plan",
+        plan_briefing="\n  Call the old format legacy-v1. Do not migrate data.  \n",
+    )
+
+    assert "Plan context:\nName: Migration plan" in prompt
+    assert "Call the old format legacy-v1. Do not migrate data." in prompt
+    assert "alignment, constraints, non-goals, and terminology" in prompt
+    assert "current task's Goal and Description remain the authoritative scope" in prompt
+    assert "Do not perform other plan tasks unless the current task explicitly requires them." in prompt
+    assert "Goal: Land the schema." in prompt
+    assert "Description:\nAdd the schema types." in prompt
 
 
 class _FixedHarnessFactory:
@@ -333,21 +377,34 @@ def test_failed_attempt_handover_injected_into_retry(temp_db_dir, db, git_repo):
     db.create_task(task)
 
     seen_handovers = []
+    seen_plan_context = []
 
     def mock_invoke(harness, context):
         seen_handovers.append(context["handover"])
+        seen_plan_context.append((context["plan_name"], context["plan_briefing"]))
         # Fail first attempt, succeed second.
         if len(seen_handovers) == 1:
             return False, "boom: missing import", "agent_error"
         return True, "ok", "success"
 
     executor._invoke_agent = mock_invoke
-    success, _ = executor.execute_task(task, job_id, "ORIGINAL_HANDOVER")
+    success, _ = executor.execute_task(
+        task,
+        job_id,
+        "ORIGINAL_HANDOVER",
+        plan_name="Stable plan",
+        plan_briefing="Keep the public contract unchanged.",
+    )
 
     assert success
     assert seen_handovers[0] == "ORIGINAL_HANDOVER"          # first attempt: plain handover
     assert "boom: missing import" in seen_handovers[1]        # retry learns from the failure
     assert "ORIGINAL_HANDOVER" in seen_handovers[1]           # ...without losing prior context
+    assert seen_plan_context == [
+        ("Stable plan", "Keep the public contract unchanged."),
+        ("Stable plan", "Keep the public contract unchanged."),
+    ]
+    assert "Keep the public contract unchanged." not in seen_handovers[1]
 
 
 def test_retry_reads_prior_attempt_agent_written_handoff(temp_db_dir, db, git_repo):

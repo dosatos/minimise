@@ -63,7 +63,53 @@ class HandoffWritingHarness(AgentHarness):
         return HarnessResult(success=True, output="stdout-noise", error=None)
 
 
-def test_task1_agent_handoff_flows_to_task2(temp_db_dir, db, git_repo):
+def test_job_executor_passes_only_stable_plan_scalars_to_each_task():
+    calls = []
+
+    class RecordingTaskExecutor:
+        def execute_task(
+            self, task, job_id, handover_context, next_task=None, verify=None,
+            *, plan_name=None, plan_briefing=None,
+        ):
+            calls.append({
+                "task": task.name,
+                "handover": handover_context,
+                "plan_name": plan_name,
+                "plan_briefing": plan_briefing,
+            })
+            return True, f"handoff from {task.name}"
+
+    tasks = [
+        Task(id="t1", job_id="j1", name="First", description="d1",
+             estimated_duration_min=1),
+        Task(id="t2", job_id="j1", name="Second", description="d2",
+             estimated_duration_min=1),
+    ]
+    job = Job(id="j1", name="J", tasks=tasks)
+    plan = Plan.model_validate({
+        "name": "Stable plan",
+        "briefing": "Use shared terminology.",
+        "unrelated_metadata": {"do_not_forward": True},
+        "tasks": [
+            {"id": "p1", "name": "First", "description": "d1", "goal": "g1",
+             "estimated_duration_min": 1},
+            {"id": "p2", "name": "Second", "description": "d2", "goal": "g2",
+             "estimated_duration_min": 1},
+        ],
+    })
+
+    assert JobExecutor(RecordingTaskExecutor(), HookExecutor()).execute(job, plan)
+    assert [(call["plan_name"], call["plan_briefing"]) for call in calls] == [
+        ("Stable plan", "Use shared terminology."),
+        ("Stable plan", "Use shared terminology."),
+    ]
+    assert calls[0]["handover"] == ""
+    assert calls[1]["handover"] == "handoff from First"
+
+
+def test_plan_briefing_and_task1_handoff_flow_to_downstream_task(
+    temp_db_dir, db, git_repo
+):
     git_tracker = GitTracker(git_repo)
     harness = HandoffWritingHarness()
     store = JobStore(db, temp_db_dir)
@@ -79,9 +125,15 @@ def test_task1_agent_handoff_flows_to_task2(temp_db_dir, db, git_repo):
     db.create_task(t2)
     job = Job(id=job_id, name="J", status=JobStatus.PENDING, tasks=[t1, t2])
 
-    plan = Plan(name="J", tasks=[
+    plan = Plan(name="BRIEFED_PLAN_NAME", briefing="Use the term widget-v2.", tasks=[
         {"id": t1.id, "name": "T1", "description": "d1", "goal": "g1", "estimated_duration_min": 5},
-        {"id": t2.id, "name": "T2", "description": "d2", "goal": "g2", "estimated_duration_min": 5},
+        {
+            "id": t2.id,
+            "name": "DOWNSTREAM_SECRET",
+            "description": "DOWNSTREAM_DESCRIPTION",
+            "goal": "DOWNSTREAM_GOAL",
+            "estimated_duration_min": 5,
+        },
     ])
 
     executor = JobExecutor(TaskExecutor(store, git_tracker, factory=_FixedHarnessFactory(harness)), HookExecutor())
@@ -91,9 +143,19 @@ def test_task1_agent_handoff_flows_to_task2(temp_db_dir, db, git_repo):
     assert "TASK1_AGENT_HANDOFF marker" in harness.prompts[1]
     assert "(agent-written handoff)" in harness.prompts[1]
     assert "stdout-noise" not in harness.prompts[1]
+    for prompt in harness.prompts:
+        assert prompt.count("Plan context:") == 1
+        assert "Name: BRIEFED_PLAN_NAME" in prompt
+        assert "Use the term widget-v2." in prompt
+    # Stable context is bounded: task 1 does not receive the rest of the plan.
+    assert "DOWNSTREAM_SECRET" not in harness.prompts[0]
+    assert "DOWNSTREAM_DESCRIPTION" not in harness.prompts[0]
+    assert "DOWNSTREAM_GOAL" not in harness.prompts[0]
 
 
-def _single_task_job(db, git_tracker, *, pre=None, post=None, plan_pre=None):
+def _single_task_job(
+    db, git_tracker, *, pre=None, post=None, plan_pre=None, briefing=None
+):
     job_id = str(uuid.uuid4())
     db.create_job(Job(id=job_id, name="J", status=JobStatus.PENDING,
                       base_commit=git_tracker.get_current_commit()))
@@ -101,11 +163,30 @@ def _single_task_job(db, git_tracker, *, pre=None, post=None, plan_pre=None):
               name="T1", description="d1", status=TaskStatus.PENDING)
     db.create_task(t1)
     job = Job(id=job_id, name="J", status=JobStatus.PENDING, tasks=[t1])
-    plan = Plan(name="J", pre_hooks=plan_pre or [], tasks=[{
+    plan = Plan(name="J", briefing=briefing, pre_hooks=plan_pre or [], tasks=[{
         "id": t1.id, "name": "T1", "description": "d1", "goal": "g1",
         "estimated_duration_min": 5, "pre_hooks": pre or [], "post_hooks": post or [],
     }])
     return job, plan, t1
+
+
+@pytest.mark.parametrize("briefing", [None, "", " \n\t"])
+def test_blank_or_omitted_briefing_keeps_legacy_prompt_shape(
+    temp_db_dir, db, git_repo, briefing
+):
+    git_tracker = GitTracker(git_repo)
+    store = JobStore(db, temp_db_dir)
+    job, plan, _ = _single_task_job(db, git_tracker, briefing=briefing)
+    harness = HandoffWritingHarness()
+
+    executor = JobExecutor(
+        TaskExecutor(store, git_tracker, factory=_FixedHarnessFactory(harness)),
+        HookExecutor(),
+    )
+    assert executor.execute(job, plan)
+
+    assert "Plan context:" not in harness.prompts[0]
+    assert "Briefing:" not in harness.prompts[0]
 
 
 def test_post_task_hook_failure_fails_task(temp_db_dir, db, git_repo):
@@ -133,6 +214,7 @@ def test_post_task_hook_retry_reruns_with_findings(temp_db_dir, db, git_repo, tm
     flag = tmp_path / "fixed"
     job, plan, t1 = _single_task_job(
         db, git_tracker,
+        briefing="Keep the review contract stable.",
         post=[{"name": "gate", "shell": f"test -f {flag} && echo PASS || (echo NEEDS_FIX; exit 1)",
                "estimated_duration_min": 1, "on_failure": "retry"}])
 
@@ -154,6 +236,11 @@ def test_post_task_hook_retry_reruns_with_findings(temp_db_dir, db, git_repo, tm
     # if they only survived via the fallback, this invariant would be masked.
     assert "TASK1_AGENT_HANDOFF marker" in harness.prompts[1]
     assert "(agent-written handoff)" in harness.prompts[1]
+    assert all("Keep the review contract stable." in prompt for prompt in harness.prompts)
+    assert (
+        harness.prompts[0].split("\nTask: ", 1)[0]
+        == harness.prompts[1].split("\nTask: ", 1)[0]
+    )
     assert db.get_task(t1.id).status == TaskStatus.COMPLETED
 
 
@@ -242,7 +329,7 @@ def test_resume_skips_completed_and_seeds_prev_handoff(temp_db_dir, db, git_repo
     # Task 1's handoff already on disk from its prior successful run.
     store.handoff_path(job_id, t1.id, 0).write_text("PRIOR_RUN_HANDOFF marker")
     job = Job(id=job_id, name="J", status=JobStatus.PENDING, tasks=[t1, t2])
-    plan = Plan(name="J", tasks=[
+    plan = Plan(name="RESUMED_PLAN", briefing="Resume with the cached terminology.", tasks=[
         {"id": t1.id, "name": "T1", "description": "d1", "goal": "g1", "estimated_duration_min": 5},
         {"id": t2.id, "name": "T2", "description": "d2", "goal": "g2", "estimated_duration_min": 5},
     ])
@@ -254,6 +341,8 @@ def test_resume_skips_completed_and_seeds_prev_handoff(temp_db_dir, db, git_repo
     assert len(harness.prompts) == 1
     assert "d2" in harness.prompts[0]
     assert "PRIOR_RUN_HANDOFF marker" in harness.prompts[0]
+    assert "Name: RESUMED_PLAN" in harness.prompts[0]
+    assert "Resume with the cached terminology." in harness.prompts[0]
 
 
 def test_mark_running_clears_stale_completed_at(temp_db_dir, db, git_repo):

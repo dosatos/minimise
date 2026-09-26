@@ -9,6 +9,7 @@ from typing import Optional
 
 import click
 import pydantic
+import yaml
 from rich.table import Table
 from rich.text import Text
 
@@ -29,8 +30,169 @@ from minimise.interfaces.cli._shared import (
     task_narration,
 )
 from minimise.interfaces.cli.results import job_results
+from minimise.orchestration.handover_manager import HandoverManager
+from minimise.orchestration.task_executor import render_task_prompt
 from minimise.orchestration import job_controller as controller
 from minimise.personas import load_personas
+from minimise.storage.git_tracker import GitTracker
+from minimise.storage.job_store import _pid_alive
+
+
+def _handoff_artifact_path(job_id: str, task_id: str, attempt: int) -> Path:
+    """Return a handoff path without creating its parent directories."""
+    return (
+        _cli.JOBS_DIR
+        / job_id
+        / "handoffs"
+        / task_id
+        / f"attempt-{attempt}.md"
+    )
+
+
+def _latest_persisted_handoff(
+    job_id: str, task_id: str, *, through_attempt: int
+) -> Optional[str]:
+    """Read the newest non-blank handoff at or before a known attempt."""
+    handoff_dir = _cli.JOBS_DIR / job_id / "handoffs" / task_id
+    try:
+        candidates = []
+        for path in handoff_dir.glob("attempt-*.md"):
+            try:
+                attempt = int(path.stem.removeprefix("attempt-"))
+            except ValueError:
+                continue
+            if attempt <= through_attempt:
+                candidates.append((attempt, path))
+    except OSError:
+        return None
+
+    for _, path in sorted(candidates, reverse=True):
+        try:
+            content = path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            continue
+        if content:
+            if content.startswith("## Previous Task Summary"):
+                return f"WARNING auto-generated from diff - not reviewed\n\n{content}"
+            return f"(agent-written handoff)\n\n{content}"
+    return None
+
+
+def _load_prompt_plan_context(job_id: str, job_obj) -> tuple[str, Optional[str]]:
+    """Load only prompt-visible plan metadata, tolerating historical schemas."""
+    paths = [_cli.JOBS_DIR / job_id / "plan.yaml"]
+    if job_obj.plan_path:
+        paths.append(Path(job_obj.plan_path))
+
+    for path in paths:
+        if not path.is_file():
+            continue
+
+        try:
+            plan = Plan.from_yaml(path)
+        except Exception:
+            # Historical plans can remain valid YAML after their schema stops
+            # validating. Read only the two bounded prompt fields in that case.
+            try:
+                raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, yaml.YAMLError):
+                continue
+            if isinstance(raw, dict) and isinstance(raw.get("plan"), dict):
+                raw = raw["plan"]
+            if not isinstance(raw, dict):
+                continue
+            name = raw.get("name")
+            briefing = raw.get("briefing")
+            return (
+                name if isinstance(name, str) and name else job_obj.name,
+                briefing if isinstance(briefing, str) else None,
+            )
+        else:
+            return plan.name, plan.briefing
+
+    return job_obj.name, None
+
+
+def _prompt_attempt(task, latest_execution) -> int:
+    """Choose the latest/next task attempt whose prompt is useful to inspect."""
+    if latest_execution:
+        if (
+            task.status == TaskStatus.PENDING
+            and latest_execution.status == TaskStatus.FAILED
+        ):
+            return latest_execution.attempt + 1
+        if task.status in (TaskStatus.RUNNING, TaskStatus.STOPPED):
+            return latest_execution.attempt
+    return max(0, task.retries)
+
+
+def _task_diff(task, git_tracker: GitTracker, job_base_commit: Optional[str]) -> str:
+    """Use a persisted per-task diff when available, then fall back to git."""
+    if task.diff_path:
+        try:
+            return Path(task.diff_path).read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            pass
+    base_commit = task.base_commit or job_base_commit
+    return git_tracker.get_diff(base_commit) if base_commit else ""
+
+
+def _initial_task_handover(
+    job_id: str,
+    task,
+    previous_task,
+    git_tracker: GitTracker,
+    job_base_commit: Optional[str],
+) -> str:
+    """Reconstruct attempt-zero context, preferring the persisted handoff."""
+    if previous_task is None:
+        return ""
+
+    persisted = _latest_persisted_handoff(
+        job_id, previous_task.id, through_attempt=max(0, previous_task.retries)
+    )
+    if persisted is not None:
+        return persisted
+
+    previous_output = task_narration(job_id, previous_task)
+    previous_diff = _task_diff(previous_task, git_tracker, job_base_commit)
+    fallback = HandoverManager.build_handover_prompt(
+        previous_output or "(previous task output unavailable)",
+        previous_diff,
+        task,
+    )
+    return f"WARNING auto-generated from diff - not reviewed\n\n{fallback}"
+
+
+def _task_prompt_handover(
+    job_id: str,
+    task,
+    previous_task,
+    attempt: int,
+    git_tracker: GitTracker,
+    job_base_commit: Optional[str],
+) -> str:
+    """Build the best available handover for the selected task attempt."""
+    initial_handover = _initial_task_handover(
+        job_id, task, previous_task, git_tracker, job_base_commit
+    )
+    if attempt <= 0:
+        return initial_handover
+
+    persisted = _latest_persisted_handoff(
+        job_id, task.id, through_attempt=attempt - 1
+    )
+    if persisted is not None:
+        return persisted
+
+    failure_output = task_narration(job_id, task)
+    fallback = HandoverManager.build_retry_prompt(
+        initial_handover,
+        task,
+        attempt - 1,
+        failure_output or "(previous attempt output unavailable)",
+    )
+    return f"WARNING auto-generated from diff - not reviewed\n\n{fallback}"
 
 
 def job_estimate_total(tasks, plan=None) -> int:
@@ -562,17 +724,29 @@ def _tail_filtered(f, db, job_id: str, backend, log_query, as_json: bool) -> Non
 
 @job.command(name="show")
 @click.argument("job_id")
-@click.option("--task-id", default=None, help="Show full prompt with handover context for a specific task")
+@click.option(
+    "--task-id",
+    default=None,
+    help="Show task diagnostics and reconstruct its agent prompt",
+)
 def job_show(job_id: str, task_id: Optional[str]):
-    """Show job plan structure or full prompt for a specific task."""
+    """Show job plan structure or inspect a specific task and its prompt."""
     try:
-        from minimise.orchestration.handover_manager import HandoverManager
-        import yaml
+        # Avoid constructing JobController or JobStore, whose constructors create
+        # artifact directories. Retain the established read-path reconciliation.
+        job_id = resolve_job_id(job_id)
+        db = get_db()
+        job_obj = db.get_job(job_id)
+        if job_obj is None:
+            _error_job_not_found(job_id)
+        if job_obj.status == JobStatus.RUNNING and not _pid_alive(job_obj.pid):
+            db.update_job_status(
+                job_id, JobStatus.FAILED, completed_at=datetime.utcnow()
+            )
+            job_obj.status = JobStatus.FAILED
+        git_tracker = GitTracker(_cli.REPO_PATH)
 
-        job_id, db, job_obj = _get_and_validate_job(job_id)
-        job_controller = get_job_controller(db)
-
-        # If task_id is provided, show full prompt with handover context
+        # If task_id is provided, show diagnostics and reconstruct its prompt.
         if task_id:
             tasks = db.list_tasks_for_job(job_id)
             matching_tasks = _filter_tasks_by_id(tasks, task_id)
@@ -589,12 +763,28 @@ def job_show(job_id: str, task_id: Optional[str]):
                 raise SystemExit(1)
 
             task = matching_tasks[0]
+            task_execs = [
+                execution
+                for execution in db.list_executions_for_task(task.id)
+                if execution.execution_type == "task"
+            ]
+            # Attempts restart at zero when a failed/stopped job resumes.
+            # Timestamp order avoids treating a larger old attempt as current.
+            latest_execution = max(
+                task_execs,
+                key=lambda execution: (
+                    execution.completed_at
+                    or execution.started_at
+                    or datetime.min,
+                    execution.attempt,
+                ),
+                default=None,
+            )
 
             console.print(f"\n[bold]Full Prompt for Task[/bold]")
             console.print(f"[bold]Job:[/bold] {job_obj.name} ({job_id})")
             console.print(f"[bold]Task:[/bold] {task.name} ({task.id})")
-            task_execs = [e for e in db.list_executions_for_task(task.id) if e.execution_type == "task"]
-            latest_reason = task_execs[-1].exit_reason if task_execs else None
+            latest_reason = latest_execution.exit_reason if latest_execution else None
             console.print(f"[bold]Status:[/bold] {task.status.value}")
             if task.assignee:
                 console.print(f"[bold]Assignee:[/bold] {task.assignee}")
@@ -608,9 +798,9 @@ def job_show(job_id: str, task_id: Optional[str]):
             # If task is not the first one, show handover context
             all_tasks = db.list_tasks_for_job(job_id)
             task_index = next((i for i, t in enumerate(all_tasks) if t.id == task.id), None)
+            previous_task = all_tasks[task_index - 1] if task_index and task_index > 0 else None
 
-            if task_index and task_index > 0:
-                previous_task = all_tasks[task_index - 1]
+            if previous_task is not None:
                 console.print(f"[bold cyan]Handover Context[/bold cyan]")
                 console.print(f"[dim]From previous task: {previous_task.name}[/dim]\n")
 
@@ -625,7 +815,7 @@ def job_show(job_id: str, task_id: Optional[str]):
 
                 # Show git diff since job start
                 if job_obj.base_commit:
-                    diff = job_controller.git_tracker.get_diff(job_obj.base_commit)
+                    diff = git_tracker.get_diff(job_obj.base_commit)
                     if diff:
                         console.print(f"[bold]Git Changes Summary:[/bold]")
                         file_count = diff.count("diff --git")
@@ -650,6 +840,37 @@ def job_show(job_id: str, task_id: Optional[str]):
                                     console.print(f"  [red]{line}[/red]")
                                 else:
                                     console.print(f"  {line}")
+
+            attempt = _prompt_attempt(task, latest_execution)
+            plan_name, plan_briefing = _load_prompt_plan_context(job_id, job_obj)
+            handover = _task_prompt_handover(
+                job_id,
+                task,
+                previous_task,
+                attempt,
+                git_tracker,
+                job_obj.base_commit,
+            )
+            prompt = render_task_prompt(
+                task_name=task.name,
+                task_description=task.description,
+                task_goal=task.goal,
+                handover=handover,
+                handoff_path=str(
+                    _handoff_artifact_path(job_id, task.id, attempt)
+                ),
+                plan_name=plan_name,
+                plan_briefing=plan_briefing,
+            )
+            console.print(
+                f"\n[bold cyan]Reconstructed Agent Prompt "
+                f"(try {attempt + 1})[/bold cyan]"
+            )
+            console.print(
+                "[dim]Built from stored task data and the best available "
+                "plan/handoff artifacts; handoff fallbacks are marked.[/dim]"
+            )
+            console.print(prompt, markup=False, soft_wrap=True)
         else:
             # Show plan structure
             # Try cached plan first, fall back to original path for backward compat
@@ -669,9 +890,9 @@ def job_show(job_id: str, task_id: Optional[str]):
             console.print(f"[bold]Plan Path:[/bold] {plan_path}")
             console.print(f"[bold]Status:[/bold] {job_obj.status.value}\n")
 
-            # Display plan metadata (briefing/documentation are pydantic extras)
+            # Display typed plan metadata plus extensible optional documentation.
             console.print(f"[bold]Plan Name:[/bold] {plan.name}")
-            briefing = getattr(plan, 'briefing', None)
+            briefing = plan.briefing
             if briefing:
                 console.print(f"[bold]Briefing:[/bold] {briefing}")
             documentation = getattr(plan, 'documentation', None)
@@ -713,7 +934,10 @@ def job_show(job_id: str, task_id: Optional[str]):
                 if len(description_lines) > 3:
                     console.print(f"      [dim]...[/dim]")
 
-            console.print(f"\n[dim]View full prompt with: mini job show {job_id[:8]} --task-id <task-id>[/dim]")
+            console.print(
+                f"\n[dim]View task diagnostics and reconstructed prompt with: "
+                f"mini job show {job_id[:8]} --task-id <task-id>[/dim]"
+            )
 
     except SystemExit:
         raise

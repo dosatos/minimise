@@ -12,7 +12,7 @@ from datetime import datetime
 from click.testing import CliRunner
 from minimise.interfaces.cli import mini
 from minimise.storage.database import Database
-from minimise.models import Job, JobStatus, Task, TaskStatus
+from minimise.models import Execution, Job, JobStatus, Task, TaskStatus
 
 
 @pytest.fixture
@@ -1583,6 +1583,380 @@ tasks:
 
     assert result.exit_code == 0
     assert "Full Prompt" in result.output or "Task 2" in result.output or "description" in result.output
+
+
+def test_show_task_renders_cached_briefing_and_best_handoff_with_all_diagnostics(
+    runner, mock_config_dir, tmp_path, monkeypatch
+):
+    """Task inspection adds a reconstructed prompt without dropping diagnostics."""
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+
+    original_plan_path = tmp_path / "original-plan.yaml"
+    original_plan_path.write_text(
+        """name: Original Plan
+briefing: Stale original briefing
+tasks:
+  - id: prepare
+    name: Prepare
+    goal: Prepare the workspace
+    description: Prepare files
+    estimated_duration_min: 5
+  - id: implement
+    name: Implement
+    goal: Ship the cached contract
+    description: Implement the selected task
+    estimated_duration_min: 5
+"""
+    )
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Inspection Job",
+        status=JobStatus.PENDING,
+        plan_path=str(original_plan_path),
+        base_commit="base-sha",
+    )
+    db.create_job(job)
+
+    previous_task = Task(
+        id="task-previous",
+        job_id=job.id,
+        name="Prepare",
+        description="Prepare files",
+        goal="Prepare the workspace",
+        status=TaskStatus.COMPLETED,
+        retries=2,
+        estimated_duration_min=5,
+    )
+    selected_task = Task(
+        id="task-selected",
+        job_id=job.id,
+        name="Implement",
+        description="Implement the selected task",
+        goal="Ship the cached contract",
+        status=TaskStatus.PENDING,
+        estimated_duration_min=5,
+    )
+    db.create_task(previous_task)
+    db.create_task(selected_task)
+
+    job_dir = mock_config_dir / "jobs" / job.id
+    job_dir.mkdir(parents=True)
+    (job_dir / "plan.yaml").write_text(
+        """name: Cached Plan
+briefing: |
+  Preserve widget-v2 terminology.
+  Do not migrate stored data.
+tasks:
+  - id: prepare
+    name: Prepare
+    goal: Prepare the workspace
+    description: Prepare files
+    estimated_duration_min: 5
+  - id: implement
+    name: Implement
+    goal: Ship the cached contract
+    description: Implement the selected task
+    estimated_duration_min: 5
+"""
+    )
+    handoff_dir = job_dir / "handoffs" / previous_task.id
+    handoff_dir.mkdir(parents=True)
+    (handoff_dir / "attempt-0.md").write_text("OLDER HANDOFF")
+    (handoff_dir / "attempt-2.md").write_text("LATEST PERSISTED HANDOFF")
+    (handoff_dir / "attempt-3.md").write_text("STALE LATER HANDOFF")
+    (job_dir / "job.log").write_text(
+        json.dumps(
+            {
+                "type": "task",
+                "step": previous_task.name,
+                "message": "PREVIOUS NARRATION",
+            }
+        )
+        + "\n"
+    )
+
+    diff = """diff --git a/widget.py b/widget.py
+--- a/widget.py
++++ b/widget.py
+-legacy
++current
+    """
+    monkeypatch.setattr(
+        "minimise.storage.git_tracker.GitTracker.get_diff",
+        lambda self, base_commit: diff,
+    )
+
+    result = runner.invoke(
+        mini, ["job", "show", job.id, "--task-id", selected_task.id]
+    )
+
+    assert result.exit_code == 0, result.output
+    for section in (
+        "Task Description",
+        "Handover Context",
+        "Previous Task Output:",
+        "Git Changes Summary:",
+        "Diff Preview (first 2000 chars):",
+        "Reconstructed Agent Prompt (try 1)",
+    ):
+        assert section in result.output
+    assert "PREVIOUS NARRATION" in result.output
+    assert "Files changed: 1" in result.output
+    assert "Plan context:" in result.output
+    assert "Name: Cached Plan" in result.output
+    assert "Preserve widget-v2 terminology." in result.output
+    assert "Ship the cached contract" in result.output
+    assert "(agent-written handoff)" in result.output
+    assert "LATEST PERSISTED HANDOFF" in result.output
+    assert "OLDER HANDOFF" not in result.output
+    assert "STALE LATER HANDOFF" not in result.output
+    assert "Stale original briefing" not in result.output
+    assert str(
+        job_dir / "handoffs" / selected_task.id / "attempt-0.md"
+    ) in result.output
+
+
+def test_show_task_uses_briefing_from_cached_plan_with_obsolete_schema(
+    runner, mock_config_dir
+):
+    """Prompt inspection keeps bounded context when current Plan validation fails."""
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Historical Job",
+        status=JobStatus.COMPLETED,
+        plan_path="/deleted/original-plan.yaml",
+    )
+    db.create_job(job)
+    task = Task(
+        id="task-historical",
+        job_id=job.id,
+        name="Historical Task",
+        description="Inspect historical state",
+        goal="Keep inspection available",
+        status=TaskStatus.COMPLETED,
+        estimated_duration_min=5,
+    )
+    db.create_task(task)
+
+    job_dir = mock_config_dir / "jobs" / job.id
+    job_dir.mkdir(parents=True)
+    # Valid YAML, but intentionally invalid under the current PlanTask schema.
+    (job_dir / "plan.yaml").write_text(
+        """plan:
+  name: Historical Cached Plan
+  briefing: Preserve the legacy protocol name.
+  tasks:
+    - name: Historical Task
+      description: Missing modern required fields
+"""
+    )
+
+    result = runner.invoke(mini, ["job", "show", job.id, "--task-id", task.id])
+
+    assert result.exit_code == 0, result.output
+    assert "Reconstructed Agent Prompt (try 1)" in result.output
+    assert "Name: Historical Cached Plan" in result.output
+    assert "Preserve the legacy protocol name." in result.output
+    assert "Keep inspection available" in result.output
+
+
+def test_show_task_does_not_create_artifact_directories(
+    runner, mock_config_dir, tmp_path
+):
+    """The read-only prompt inspector computes handoff paths without mkdir."""
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+    original_plan_path = tmp_path / "historical-plan.yaml"
+    # Also exercises raw loading from an original plan that no longer validates.
+    original_plan_path.write_text(
+        """name: Historical Original Plan
+briefing: Keep this inspection read-only.
+tasks:
+  - name: Earlier Task
+    description: Missing modern required fields
+  - name: Legacy Task
+    description: Missing modern required fields
+"""
+    )
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Read-only Job",
+        status=JobStatus.PENDING,
+        plan_path=str(original_plan_path),
+    )
+    db.create_job(job)
+    previous_task = Task(
+        id="task-earlier",
+        job_id=job.id,
+        name="Earlier Task",
+        description="Earlier work",
+        goal="Prepare context",
+        status=TaskStatus.COMPLETED,
+        estimated_duration_min=5,
+    )
+    task = Task(
+        id="task-read-only",
+        job_id=job.id,
+        name="Legacy Task",
+        description="Inspect without writes",
+        goal="Do not create artifacts",
+        status=TaskStatus.PENDING,
+        estimated_duration_min=5,
+    )
+    db.create_task(previous_task)
+    db.create_task(task)
+    jobs_dir = mock_config_dir / "jobs"
+    assert not jobs_dir.exists()
+
+    result = runner.invoke(mini, ["job", "show", job.id, "--task-id", task.id])
+
+    assert result.exit_code == 0, result.output
+    assert "Keep this inspection read-only." in result.output
+    assert "WARNING auto-generated from diff - not reviewed" in result.output
+    assert "(previous task output unavailable)" in result.output
+    assert not jobs_dir.exists()
+
+
+def test_show_task_uses_current_retry_artifacts_after_attempts_restart(
+    runner, mock_config_dir
+):
+    """A resumed attempt zero wins over higher-numbered artifacts from an old run."""
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Resumed Job",
+        status=JobStatus.PENDING,
+        plan_path="/missing/plan.yaml",
+    )
+    db.create_job(job)
+    task = Task(
+        id="task-resumed",
+        job_id=job.id,
+        name="Resumed Task",
+        description="Continue safely",
+        goal="Use the current retry context",
+        status=TaskStatus.PENDING,
+        estimated_duration_min=5,
+    )
+    db.create_task(task)
+    db.save_execution(
+        Execution(
+            job_id=job.id,
+            task_id=task.id,
+            attempt=3,
+            status=TaskStatus.FAILED,
+            started_at=datetime(2025, 1, 1),
+            completed_at=datetime(2025, 1, 1, 0, 1),
+            exit_reason="stale_failure",
+        )
+    )
+    db.save_execution(
+        Execution(
+            job_id=job.id,
+            task_id=task.id,
+            attempt=0,
+            status=TaskStatus.FAILED,
+            started_at=datetime(2026, 1, 1),
+            completed_at=datetime(2026, 1, 1, 0, 1),
+            exit_reason="current_failure",
+        )
+    )
+    handoff_dir = mock_config_dir / "jobs" / job.id / "handoffs" / task.id
+    handoff_dir.mkdir(parents=True)
+    (handoff_dir / "attempt-0.md").write_text("CURRENT RUN HANDOFF")
+    (handoff_dir / "attempt-3.md").write_text("STALE OLD RUN HANDOFF")
+
+    result = runner.invoke(mini, ["job", "show", job.id, "--task-id", task.id])
+
+    assert result.exit_code == 0, result.output
+    assert "Exit Reason: current_failure" in result.output
+    assert "stale_failure" not in result.output
+    assert "Reconstructed Agent Prompt (try 2)" in result.output
+    assert "CURRENT RUN HANDOFF" in result.output
+    assert "STALE OLD RUN HANDOFF" not in result.output
+    assert str(handoff_dir / "attempt-1.md") in result.output
+
+
+def test_prompt_attempt_uses_execution_for_running_or_stopped_retry():
+    """The DB retry counter is reset transiently, so live attempts use execution data."""
+    import importlib
+
+    prompt_attempt = importlib.import_module(
+        "minimise.interfaces.cli.job"
+    )._prompt_attempt
+    task = Task(
+        id="task-retrying",
+        job_id="job-retrying",
+        name="Retrying",
+        description="Retry",
+        status=TaskStatus.RUNNING,
+        retries=0,
+        estimated_duration_min=5,
+    )
+    latest = Execution(
+        job_id=task.job_id,
+        task_id=task.id,
+        attempt=2,
+        status=TaskStatus.RUNNING,
+    )
+
+    assert prompt_attempt(task, latest) == 2
+    task.status = TaskStatus.STOPPED
+    assert prompt_attempt(task, latest) == 2
+
+
+def test_show_reconciles_dead_job_without_creating_artifact_directories(
+    runner, mock_config_dir, tmp_path, monkeypatch
+):
+    """Job inspection keeps legacy status reconciliation without mkdir side effects."""
+    import importlib
+
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+    plan_path = tmp_path / "plan.yaml"
+    plan_path.write_text(
+        """name: Reconcile Plan
+tasks:
+  - id: inspect
+    name: Inspect
+    description: Inspect state
+    goal: Preserve status behavior
+    estimated_duration_min: 5
+"""
+    )
+    job = Job(
+        id=str(uuid.uuid4()),
+        name="Crashed Job",
+        status=JobStatus.RUNNING,
+        plan_path=str(plan_path),
+        pid=12345,
+    )
+    db.create_job(job)
+    task = Task(
+        id="task-inspect",
+        job_id=job.id,
+        name="Inspect",
+        description="Inspect state",
+        goal="Preserve status behavior",
+        status=TaskStatus.PENDING,
+        estimated_duration_min=5,
+    )
+    db.create_task(task)
+    job_cli = importlib.import_module("minimise.interfaces.cli.job")
+    monkeypatch.setattr(job_cli, "_pid_alive", lambda pid: False)
+    jobs_dir = mock_config_dir / "jobs"
+    assert not jobs_dir.exists()
+
+    result = runner.invoke(mini, ["job", "show", job.id])
+
+    assert result.exit_code == 0, result.output
+    assert "Status: failed" in result.output
+    assert db.get_job(job.id).status == JobStatus.FAILED
+    assert not jobs_dir.exists()
 
 
 def test_show_with_invalid_job_id_fails(runner, mock_config_dir):

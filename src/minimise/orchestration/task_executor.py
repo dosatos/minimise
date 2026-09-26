@@ -7,6 +7,52 @@ from minimise.orchestration.handover_manager import HandoverManager
 from minimise.logging.backend import JsonlLogBackend
 
 
+def render_task_prompt(
+    task_name: str = "Task",
+    task_description: str = "",
+    task_goal: Optional[str] = None,
+    handover: str = "",
+    handoff_path: str = "",
+    plan_name: Optional[str] = None,
+    plan_briefing: Optional[str] = None,
+) -> str:
+    """Render the user prompt for one task attempt without side effects."""
+    plan_section = ""
+    if plan_briefing and plan_briefing.strip():
+        plan_section = f"""Plan context:
+Name: {plan_name or "(unnamed plan)"}
+Briefing:
+{plan_briefing.strip()}
+
+This briefing is for alignment, constraints, non-goals, and terminology.
+The current task's Goal and Description remain the authoritative scope.
+Do not perform other plan tasks unless the current task explicitly requires them.
+
+"""
+
+    goal_section = f"Goal: {task_goal}\n\n" if task_goal else ""
+    handoff_section = f"""
+
+When done, write a handoff for the next task to this exact path: {handoff_path}
+Use these section headers:
+## What changed & why
+## Gotchas
+## Current state
+## What the next task needs""" if handoff_path else ""
+
+    return f"""You are executing a task in a multi-agent plan execution system.
+
+{plan_section}Task: {task_name}
+
+{goal_section}Description:
+{task_description}
+
+Context from previous tasks:
+{handover if handover else "(no prior context)"}
+
+Execute this task by modifying the codebase as needed. When done, write a summary of what you implemented.{handoff_section}"""
+
+
 class TaskExecutor:
     """Executes individual tasks with retry logic. Hooks run in JobExecutor."""
 
@@ -33,14 +79,18 @@ class TaskExecutor:
         handover_context: str,
         next_task: Optional[Task] = None,
         verify=None,
+        *,
+        plan_name: Optional[str] = None,
+        plan_briefing: Optional[str] = None,
     ) -> tuple[bool, str]:
         """Execute a task with retries; returns (success, output_or_handover).
 
         Each attempt writes a per-attempt handoff file. A failed attempt's
         handoff feeds the next attempt; on success the returned handover is the
         completed attempt's handoff (agent-written, or the diff-based builder as
-        a marked fallback when the agent wrote nothing). Hooks run in
-        JobExecutor (via HookExecutor), not here.
+        a marked fallback when the agent wrote nothing). Plan name/briefing stay
+        fixed while that handover evolves. Hooks run in JobExecutor (via
+        HookExecutor), not here.
         """
         if not self.store.load(job_id):
             return False, f"Job {job_id} not found"
@@ -51,7 +101,7 @@ class TaskExecutor:
 
         final_success = False
         final_output = ""
-        context = handover_context
+        attempt_handover = handover_context
 
         job_log_path = self.store.job_log_path(job_id)
         log_backend = JsonlLogBackend()
@@ -86,7 +136,9 @@ class TaskExecutor:
             handoff_path = self.store.handoff_path(job_id, task.id, attempt)
             harness = self._factory.for_task(task)
             success, output, exit_reason = self._invoke_agent(harness, {
-                "handover": context,
+                "handover": attempt_handover,
+                "plan_name": plan_name,
+                "plan_briefing": plan_briefing,
                 "task_name": task.name,
                 "task_description": task.description,
                 "task_goal": task.goal,
@@ -130,7 +182,10 @@ class TaskExecutor:
                             handoff_path,
                             lambda: HandoverManager.build_retry_prompt(handover_context, task, attempt, output),
                         )
-                        context = f"## Post-task review findings (fix these)\n\n{combined}\n\n{base_context}"
+                        attempt_handover = (
+                            f"## Post-task review findings (fix these)\n\n"
+                            f"{combined}\n\n{base_context}"
+                        )
                         continue
                 final_success = True
                 break
@@ -138,7 +193,7 @@ class TaskExecutor:
                 _log_failure(_step_label(attempt), output)
                 self.store.record_attempt(task, attempt, output, exit_reason=exit_reason, ended_at=agent_end)
                 # learn-from-failure: feed this attempt's handoff into the next.
-                context = self._read_handoff(
+                attempt_handover = self._read_handoff(
                     handoff_path,
                     lambda: HandoverManager.build_retry_prompt(handover_context, task, attempt, output),
                 )
@@ -194,7 +249,7 @@ class TaskExecutor:
 
         Args:
             harness: Resolved AgentHarness instance.
-            context: Context dictionary with task_name, task_description, task_goal, handover
+            context: Task fields, stable plan context, and evolving handover.
 
         Returns:
             (success, output, exit_reason)
@@ -204,31 +259,21 @@ class TaskExecutor:
         task_goal = context.get("task_goal", "")
         handover = context.get("handover", "")
         handoff_path = context.get("handoff_path", "")
+        plan_name = context.get("plan_name")
+        plan_briefing = context.get("plan_briefing")
         system_prompt = context.get("system_prompt")
         log_path = context.get("log_path")
         log_fields = context.get("log_fields")
 
-        # Build prompt for Claude Code agent
-        goal_section = f"Goal: {task_goal}\n\n" if task_goal else ""
-        handoff_section = f"""
-
-When done, write a handoff for the next task to this exact path: {handoff_path}
-Use these section headers:
-## What changed & why
-## Gotchas
-## Current state
-## What the next task needs""" if handoff_path else ""
-        prompt = f"""You are executing a task in a multi-agent plan execution system.
-
-Task: {task_name}
-
-{goal_section}Description:
-{task_description}
-
-Context from previous tasks:
-{handover if handover else "(no prior context)"}
-
-Execute this task by modifying the codebase as needed. When done, write a summary of what you implemented.{handoff_section}"""
+        prompt = render_task_prompt(
+            task_name=task_name,
+            task_description=task_description,
+            task_goal=task_goal,
+            handover=handover,
+            handoff_path=handoff_path,
+            plan_name=plan_name,
+            plan_briefing=plan_briefing,
+        )
 
         # Delegate to the resolved harness. The harness owns env construction,
         # the subprocess invocation, and error handling. No timeout unless the

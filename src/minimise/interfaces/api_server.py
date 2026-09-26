@@ -135,7 +135,7 @@ class APIServer:
                 try:
                     plan = self.job_controller.store.load_plan(job_id)
                     plan_summary = _plan_summary(plan)
-                    plan_briefing = (plan.model_extra or {}).get("briefing")
+                    plan_briefing = plan.briefing
                 except Exception as e:
                     # A historical plan can become invalid after a schema change.
                     # Keep operational status and logs available in that case.

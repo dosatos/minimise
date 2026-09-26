@@ -177,7 +177,7 @@ mini job show a1b2c3d4
 #     - task-2: Implement feature (PENDING)
 #     ...
 
-# View full prompt for specific task (with handover context)
+# View task diagnostics and a reconstructed prompt (with handover context)
 mini job show a1b2c3d4 --task-id task-2
 # Output:
 #   Full Prompt for Task
