@@ -8,7 +8,8 @@ Minimise is a CLI that runs your coding agent unattended. You describe the work 
 file in your repo; minimise executes it step by step, each step in a fresh session,
 with hooks that can block or retry. It brings no agent of its own — it shells out to
 an agent CLI you already have ([Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-by default, or [pi](https://github.com/mariozechner/pi-coding-agent)).
+by default, [pi](https://github.com/mariozechner/pi-coding-agent), or
+[OpenAI Codex](https://developers.openai.com/codex/cli)).
 
 There are two ways to leave an agent alone: give it a plan, or give it a rubric.
 
@@ -72,6 +73,7 @@ If you just need a quick one-off edit, use your agent directly — Minimise is f
 - **An agent harness on your `PATH`** — tasks are executed by shelling out to an agent CLI.
   - **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** (`claude` — default) must be installed and authenticated. Verify with `claude --version`.
   - **[pi](https://github.com/mariozechner/pi-coding-agent)** (`pi` — opt-in via `--harness pi`) must be installed and configured. Verify with `pi --version`.
+  - **[OpenAI Codex](https://developers.openai.com/codex/cli)** (`codex` — opt-in via `--harness codex`) must be installed and authenticated. Verify with `codex --version` and `codex login status`.
 - **Git** — jobs run inside a git repo and use commits/diffs to track task output.
 
 ### Setup
@@ -283,6 +285,13 @@ By default every task and loop step runs on `claude` with no explicit model. Ove
 that per-task, per-persona, globally via `~/.minimise/settings.yaml`, or per-invocation
 via a CLI flag or env var.
 
+Supported harness names are `claude`, `pi`, and `codex`. Codex runs through
+`codex exec --json --ephemeral`: read-only workers use Codex's read-only sandbox,
+while implement/evaluate workers bypass approval checks and sandboxing, matching
+Claude Code's unattended edit behavior. Persona prompts are passed as Codex developer instructions,
+and provider-prefixed model names such as `openai/gpt-5.5` are translated to the
+bare model ID expected by the Codex CLI.
+
 ### Resolution chain
 
 For each task/step, harness and model are each resolved independently, highest priority first:
@@ -309,8 +318,8 @@ freely accompany a step's `prompt`/`prompt_file`.
 ```yaml
 # ~/.minimise/settings.yaml
 version: "0.0.1"
-harness: pi              # optional, default: claude
-model: claude-opus-4-8   # optional, default: none
+harness: codex          # optional: claude, pi, or codex; default: claude
+model: openai/gpt-5.5   # optional, default: harness default
 ```
 
 Both keys are optional; a missing file or missing keys fall back to the hardcoded
@@ -343,7 +352,7 @@ loop:
     dimensions:
       - name: clarity
         rubric: Is the change easy to follow?
-        harness: claude       # this dimension always runs on claude
+        harness: codex        # this dimension always runs on Codex
 ```
 
 ## Task Goals
@@ -479,6 +488,7 @@ mini job show <ID>                            # Show plan structure
 mini job show <ID> --task-id <TASK_ID>        # Show full prompt with context for a task
 mini job start <ID>                           # Start/resume a job (idempotent); backs off a live one
 mini job start <ID> --harness pi              # Run with pi instead of claude (default: claude)
+mini job start <ID> --harness codex           # Run with OpenAI Codex
 mini job start <ID> --model claude-opus-4-8   # Override the default model for this job
 mini job stop <ID>                            # Stop job (RUNNING → STOPPED)
 ```
@@ -528,6 +538,7 @@ mini job logs <ID> --query 'fields @timestamp, message | filter type = "task" | 
 mini loop new --plan FILE                     # Register a loop from a spec (does not execute)
 mini loop start <ID>                          # Start/resume a loop in the background (idempotent); returns immediately
 mini loop start <ID> --harness pi             # Run with pi instead of claude (default: claude)
+mini loop start <ID> --harness codex          # Run with OpenAI Codex
 mini loop start <ID> --model claude-opus-4-8  # Override the default model for this loop
 mini loop stop <ID>                           # Stop a running loop
 mini loop list                                # List all loops
@@ -554,7 +565,7 @@ mini view start                # Launch web UI (Ctrl+C to stop)
 ### Diagnostics
 
 ```bash
-mini doctor                    # Harness/provider health: binaries on PATH, API keys, active settings
+mini doctor                    # Harness/auth health: binaries, API keys/login state, active settings
 ```
 
 ## Job Lifecycle

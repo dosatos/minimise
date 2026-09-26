@@ -141,11 +141,17 @@ def test_get_job_status_not_found(job_controller):
     assert retrieved_job is None
 
 
-def test_start_job_with_pi_harness_resolver_resolves_pi(temp_db_dir, git_repo, plan_file):
+def test_start_job_with_pi_harness_resolver_resolves_pi(
+    temp_db_dir, git_repo, plan_file, monkeypatch
+):
     """A controller built with a pi-defaulting factory produces pi tasks."""
     from minimise.agents.harness import HARNESS_PI, PiHarness, HarnessFactory
     from minimise.models import Task
 
+    monkeypatch.setattr(
+        "minimise.agents.harness.shutil.which",
+        lambda name: f"/usr/local/bin/{name}",
+    )
     db = Database(temp_db_dir / "test.db")
     db.init_db()
     git_tracker = GitTracker(git_repo)

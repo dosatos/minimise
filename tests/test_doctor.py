@@ -1,15 +1,18 @@
 """Tests for `mini doctor` — harness health, provider auth, settings display."""
 
+import importlib
 import os
+import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-import tempfile
 
 import pytest
 from click.testing import CliRunner
 
 import minimise.interfaces.cli as _cli
 from minimise.interfaces.cli.doctor import doctor, _HARNESS_BINS, _PROVIDER_KEYS
+
+_DOCTOR_MODULE = importlib.import_module("minimise.interfaces.cli.doctor")
 
 
 @pytest.fixture
@@ -39,13 +42,14 @@ def _fake_run_ok(cmd, **kwargs):
     proc = MagicMock()
     proc.stdout = f"{cmd[0]} v1.0.0"
     proc.stderr = ""
+    proc.returncode = 0
     return proc
 
 
 # ── harness health: only the resolved harness gates healthy ──────────────
 
-@patch("minimise.interfaces.cli.doctor.subprocess.run")
-@patch("minimise.interfaces.cli.doctor.shutil.which")
+@patch.object(_DOCTOR_MODULE.subprocess, "run")
+@patch.object(_DOCTOR_MODULE.shutil, "which")
 def test_claude_installed_pi_missing_still_healthy(mock_which, mock_run,
                                                     runner, temp_config, monkeypatch):
     """When claude is the resolved harness (default), a missing pi binary
@@ -65,8 +69,8 @@ def test_claude_installed_pi_missing_still_healthy(mock_which, mock_run,
     assert result.exit_code == 0
 
 
-@patch("minimise.interfaces.cli.doctor.subprocess.run")
-@patch("minimise.interfaces.cli.doctor.shutil.which")
+@patch.object(_DOCTOR_MODULE.subprocess, "run")
+@patch.object(_DOCTOR_MODULE.shutil, "which")
 def test_pi_resolved_but_pi_missing_is_unhealthy(mock_which, mock_run,
                                                   runner, temp_config, monkeypatch):
     """When pi is the resolved harness (via settings), a missing pi binary
@@ -86,8 +90,8 @@ def test_pi_resolved_but_pi_missing_is_unhealthy(mock_which, mock_run,
     assert result.exit_code == 1
 
 
-@patch("minimise.interfaces.cli.doctor.subprocess.run")
-@patch("minimise.interfaces.cli.doctor.shutil.which")
+@patch.object(_DOCTOR_MODULE.subprocess, "run")
+@patch.object(_DOCTOR_MODULE.shutil, "which")
 def test_env_var_overrides_settings_for_resolved_harness(mock_which, mock_run,
                                                           runner, temp_config, monkeypatch):
     """MINIMISE_HARNESS=claude should resolve claude even when settings says pi."""
@@ -106,12 +110,13 @@ def test_env_var_overrides_settings_for_resolved_harness(mock_which, mock_run,
     result = runner.invoke(doctor, catch_exceptions=False)
     # pi is missing but resolved harness is claude → healthy
     assert result.exit_code == 0
+    assert "│ harness │ claude" in result.stdout
 
 
 # ── provider auth: expanded key list + auth.json fallback ────────────────
 
-@patch("minimise.interfaces.cli.doctor.subprocess.run")
-@patch("minimise.interfaces.cli.doctor.shutil.which")
+@patch.object(_DOCTOR_MODULE.subprocess, "run")
+@patch.object(_DOCTOR_MODULE.shutil, "which")
 def test_all_provider_keys_listed_in_table(mock_which, mock_run,
                                             runner, temp_config, monkeypatch):
     """Every key in _PROVIDER_KEYS should appear in the table."""
@@ -138,8 +143,8 @@ def test_all_provider_keys_listed_in_table(mock_which, mock_run,
     assert "GOOGLE_API_KEY" in output
 
 
-@patch("minimise.interfaces.cli.doctor.subprocess.run")
-@patch("minimise.interfaces.cli.doctor.shutil.which")
+@patch.object(_DOCTOR_MODULE.subprocess, "run")
+@patch.object(_DOCTOR_MODULE.shutil, "which")
 def test_auth_json_makes_healthy_without_env_vars(mock_which, mock_run,
                                                    runner, temp_config, monkeypatch):
     """When no provider env vars are set but ~/.pi/agent/auth.json exists,
@@ -161,8 +166,8 @@ def test_auth_json_makes_healthy_without_env_vars(mock_which, mock_run,
     assert result.exit_code == 0
 
 
-@patch("minimise.interfaces.cli.doctor.subprocess.run")
-@patch("minimise.interfaces.cli.doctor.shutil.which")
+@patch.object(_DOCTOR_MODULE.subprocess, "run")
+@patch.object(_DOCTOR_MODULE.shutil, "which")
 def test_no_env_vars_and_no_auth_json_is_unhealthy(mock_which, mock_run,
                                                     runner, temp_config, monkeypatch):
     """When no provider env vars are set AND auth.json doesn't exist,
@@ -184,8 +189,8 @@ def test_no_env_vars_and_no_auth_json_is_unhealthy(mock_which, mock_run,
     assert result.exit_code == 1
 
 
-@patch("minimise.interfaces.cli.doctor.subprocess.run")
-@patch("minimise.interfaces.cli.doctor.shutil.which")
+@patch.object(_DOCTOR_MODULE.subprocess, "run")
+@patch.object(_DOCTOR_MODULE.shutil, "which")
 def test_any_provider_env_var_makes_healthy(mock_which, mock_run,
                                              runner, temp_config, monkeypatch):
     """Setting any single provider env var should make doctor healthy,
@@ -207,10 +212,65 @@ def test_any_provider_env_var_makes_healthy(mock_which, mock_run,
     assert result.exit_code == 0
 
 
+@patch.object(_DOCTOR_MODULE.subprocess, "run")
+@patch.object(_DOCTOR_MODULE.shutil, "which")
+def test_codex_auth_file_makes_resolved_codex_healthy(
+    mock_which, mock_run, runner, temp_config, monkeypatch
+):
+    (temp_config / "settings.yaml").write_text(
+        'version: "0.0.1"\nharness: codex\n'
+    )
+    monkeypatch.setattr(_cli, "CONFIG_DIR", temp_config)
+    monkeypatch.setenv("CODEX_HOME", "/custom/codex")
+    for key in _PROVIDER_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+    mock_which.side_effect = _fake_which_all_installed
+    mock_run.side_effect = _fake_run_ok
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda self: str(self) == "/custom/codex/auth.json",
+    )
+
+    result = runner.invoke(doctor, catch_exceptions=False)
+    assert result.exit_code == 0
+    assert "codex" in result.stdout
+
+
+@patch.object(_DOCTOR_MODULE.subprocess, "run")
+@patch.object(_DOCTOR_MODULE.shutil, "which")
+def test_codex_without_auth_is_unhealthy(
+    mock_which, mock_run, runner, temp_config, monkeypatch
+):
+    (temp_config / "settings.yaml").write_text(
+        'version: "0.0.1"\nharness: codex\n'
+    )
+    monkeypatch.setattr(_cli, "CONFIG_DIR", temp_config)
+    for key in _PROVIDER_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(Path, "is_file", lambda self: False)
+    monkeypatch.setattr(Path, "home", lambda: Path("/fake/home"))
+
+    mock_which.side_effect = _fake_which_all_installed
+
+    def fake_run(cmd, **kwargs):
+        proc = _fake_run_ok(cmd, **kwargs)
+        if cmd[:3] == ["codex", "login", "status"]:
+            proc.returncode = 1
+            proc.stdout = ""
+            proc.stderr = "not logged in"
+        return proc
+
+    mock_run.side_effect = fake_run
+    result = runner.invoke(doctor, catch_exceptions=False)
+    assert result.exit_code == 1
+
+
 # ── settings display ─────────────────────────────────────────────────────
 
-@patch("minimise.interfaces.cli.doctor.subprocess.run")
-@patch("minimise.interfaces.cli.doctor.shutil.which")
+@patch.object(_DOCTOR_MODULE.subprocess, "run")
+@patch.object(_DOCTOR_MODULE.shutil, "which")
 def test_settings_table_shows_harness_and_model(mock_which, mock_run,
                                                  runner, temp_config, monkeypatch):
     """The active settings table shows the harness and model from settings.yaml."""
@@ -232,8 +292,8 @@ def test_settings_table_shows_harness_and_model(mock_which, mock_run,
     assert "gpt-5" in output
 
 
-@patch("minimise.interfaces.cli.doctor.subprocess.run")
-@patch("minimise.interfaces.cli.doctor.shutil.which")
+@patch.object(_DOCTOR_MODULE.subprocess, "run")
+@patch.object(_DOCTOR_MODULE.shutil, "which")
 def test_persona_overrides_table(mock_which, mock_run,
                                   runner, temp_config, monkeypatch):
     """Persona overrides with harness/model should appear in the output."""

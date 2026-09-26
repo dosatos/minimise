@@ -13,7 +13,7 @@ from rich.table import Table
 from rich.text import Text
 
 import minimise.interfaces.cli as _cli  # patchable constants; read at call time
-from minimise.agents.harness import HARNESS_CLAUDE, HARNESS_PI, HarnessNotFoundError
+from minimise.agents.harness import SUPPORTED_HARNESSES, HarnessNotFoundError
 from minimise.models import JobStatus, TaskStatus, Plan
 from minimise.interfaces.terminal_ui import get_status_color, render_execution_table_with_gantt, humanize_duration
 from minimise.interfaces.cli._shared import (
@@ -110,7 +110,7 @@ def job_new(plan: str):
 
 @job.command(name="start")
 @click.argument("job_id")
-@click.option("--harness", type=click.Choice([HARNESS_CLAUDE, HARNESS_PI]),
+@click.option("--harness", type=click.Choice(SUPPORTED_HARNESSES),
               default=None, help="Agent harness to use (default: settings or claude)")
 @click.option("--model", default=None, help="Default model for agent invocations (overrides settings.model)")
 def job_start(job_id: str, harness: str | None, model: str | None):
@@ -155,7 +155,7 @@ def job_start(job_id: str, harness: str | None, model: str | None):
 
 @job.command(name="_run", hidden=True)
 @click.argument("job_id")
-@click.option("--harness", type=click.Choice([HARNESS_CLAUDE, HARNESS_PI]),
+@click.option("--harness", type=click.Choice(SUPPORTED_HARNESSES),
               default=None, help="Agent harness to use (default: settings or claude)")
 @click.option("--model", default=None, help="Default model for agent invocations (overrides settings.model)")
 def job_run(job_id: str, harness: str | None, model: str | None):

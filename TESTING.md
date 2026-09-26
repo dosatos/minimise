@@ -5,14 +5,25 @@
 ### 1. Run Tests
 
 ```bash
-# Run all 159 tests
+# Run the full test suite
 pytest tests/ -v
 
 # Run specific test suite
 pytest tests/test_cli.py -v
 ```
 
-Expected output: `159 passed`
+The suite should pass; optional real-harness integrations may skip unless they
+are explicitly enabled.
+
+Real Codex CLI coverage is opt-in so routine tests never consume model tokens:
+
+```bash
+MINIMISE_RUN_CODEX_INTEGRATION=1 pytest tests/test_codex_harness_integration.py -v
+```
+
+This requires an installed, authenticated `codex` CLI.
+The integration verifies that unattended editing can write both inside and
+outside the repository, matching the Claude Code harness behavior.
 
 ### 1a. Tests for Goal Attribute Feature
 

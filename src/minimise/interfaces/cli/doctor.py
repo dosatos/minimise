@@ -9,20 +9,24 @@ import click
 from rich.table import Table
 
 import minimise.interfaces.cli as _cli  # patchable CONFIG_DIR; read at call time
+from minimise.agents.harness import HARNESS_CODEX, SUPPORTED_HARNESSES
 from minimise.interfaces.cli._shared import console
 from minimise.personas import load_personas
 from minimise.settings import load_settings
 
-_HARNESS_BINS = {"claude": "claude", "pi": "pi"}
+_HARNESS_BINS = {name: name for name in SUPPORTED_HARNESSES}
+_CODEX_AUTH_KEYS = {"CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "OPENAI_API_KEY"}
 
 # All provider env vars recognised by at least one harness. Kept in sync with
-# ClaudeCodeHarness._build_env and PiHarness._build_env in harness.py. Every
-# key maps to a ", "-joined list of harness/provider labels.
+# the harness environment allowlists in harness.py. Every key maps to a
+# ", "-joined list of harness/provider labels.
 _PROVIDER_KEYS = {
     # Anthropic (Claude Code, pi)
     "ANTHROPIC_API_KEY": "claude, pi/anthropic",
-    # OpenAI (pi)
-    "OPENAI_API_KEY": "pi/openai",
+    # OpenAI (pi, Codex)
+    "OPENAI_API_KEY": "pi/openai, codex/openai",
+    "CODEX_API_KEY": "codex/openai",
+    "CODEX_ACCESS_TOKEN": "codex",
     # Azure (pi)
     "AZURE_OPENAI_API_KEY": "pi/azure",
     # DeepSeek (pi)
@@ -91,11 +95,36 @@ def _harness_version(binary: str) -> tuple[bool, str]:
         return False, f"error: {e}"
 
 
+def _codex_has_auth() -> bool:
+    """Detect env, file, keyring, and managed-wrapper Codex authentication."""
+    if any(os.environ.get(key) for key in _CODEX_AUTH_KEYS):
+        return True
+
+    codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    if (codex_home / "auth.json").is_file():
+        return True
+    if shutil.which("codex") is None:
+        return False
+
+    try:
+        result = subprocess.run(
+            ["codex", "login", "status"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    output = f"{result.stdout}\n{result.stderr}".lower()
+    return result.returncode == 0 or "login is not required" in output
+
+
 @click.command(name="doctor")
 def doctor():
     """Check harness availability, provider auth, and active settings."""
     settings = load_settings(_cli.CONFIG_DIR)
     resolved_harness = os.environ.get("MINIMISE_HARNESS") or settings.harness
+    resolved_model = os.environ.get("MINIMISE_MODEL") or settings.model
 
     healthy = True
 
@@ -127,15 +156,19 @@ def doctor():
     # opaque and not checked here (ANTHROPIC_API_KEY is the canonical signal).
     pi_auth_json = Path.home() / ".pi" / "agent" / "auth.json"
     pi_has_auth_file = pi_auth_json.is_file()
-    if not any_provider_set and not pi_has_auth_file:
+    if resolved_harness == HARNESS_CODEX:
+        auth_available = _codex_has_auth()
+    else:
+        auth_available = any_provider_set or pi_has_auth_file
+    if not auth_available:
         healthy = False
     console.print(provider_table)
 
     settings_table = Table(title="Active Settings")
     settings_table.add_column("Setting")
     settings_table.add_column("Value")
-    settings_table.add_row("harness", settings.harness)
-    settings_table.add_row("model", settings.model or "(default)")
+    settings_table.add_row("harness", resolved_harness)
+    settings_table.add_row("model", resolved_model or "(default)")
     console.print(settings_table)
 
     personas = load_personas(_cli.CONFIG_DIR)

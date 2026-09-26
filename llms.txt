@@ -5,8 +5,8 @@ agent session. The plan is a YAML file you commit. Each task's result is a git c
 task sees only the previous task's diff and completion report, so context does not rot. Hooks
 gate the run.
 
-Harness-neutral: any agent (Claude Code, Codex, Cursor, …) can drive `mini` from the shell. The
-Claude Code plugin is optional sugar; nothing below needs it.
+Supported execution harnesses are Claude Code (`claude`, default), pi (`pi`), and OpenAI Codex
+(`codex`). The Claude Code plugin is optional sugar; nothing below needs it.
 
 **GitHub:** https://github.com/dosatos/minimise
 
@@ -19,9 +19,10 @@ pip install -e .          # installs the `mini` command
 mini --help               # verify (there is no `--version`)
 ```
 
-Requires Python 3.9+, git, and the `claude` CLI on `PATH` (tasks are executed by shelling out to
-it). State lives in `~/.minimise/` (auto-created). `mini` must be run from inside a git repo —
-that repo is what the tasks edit and commit to.
+Requires Python 3.9+, git, and at least one authenticated harness CLI on `PATH`. Select pi or
+Codex with `--harness pi` / `--harness codex`; otherwise `claude` is used. State lives in
+`~/.minimise/` (auto-created). `mini` must be run from inside a git repo — that repo is what the
+tasks edit and commit to.
 
 ## Job flow
 

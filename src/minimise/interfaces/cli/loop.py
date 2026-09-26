@@ -19,7 +19,7 @@ from rich.table import Table
 from rich.text import Text
 
 import minimise.interfaces.cli as _cli  # patchable constants; read at call time
-from minimise.agents.harness import HARNESS_CLAUDE, HARNESS_PI, HarnessFactory, HarnessNotFoundError
+from minimise.agents.harness import SUPPORTED_HARNESSES, HarnessFactory, HarnessNotFoundError
 from minimise.models import JobStatus, LoopSpec
 from minimise.interfaces.terminal_ui import (
     get_status_color,
@@ -180,7 +180,7 @@ def loop_patch(loop_id: str, plan: Optional[str]):
 
 @loop.command(name="start")
 @click.argument("loop_id")
-@click.option("--harness", type=click.Choice([HARNESS_CLAUDE, HARNESS_PI]),
+@click.option("--harness", type=click.Choice(SUPPORTED_HARNESSES),
               default=None, help="Agent harness to use (default: settings or claude)")
 @click.option("--model", default=None, help="Default model for agent invocations (overrides settings.model)")
 def loop_start(loop_id: str, harness: str | None, model: str | None):
@@ -231,7 +231,7 @@ def loop_start(loop_id: str, harness: str | None, model: str | None):
 
 @loop.command(name="_run", hidden=True)
 @click.argument("loop_id")
-@click.option("--harness", type=click.Choice([HARNESS_CLAUDE, HARNESS_PI]),
+@click.option("--harness", type=click.Choice(SUPPORTED_HARNESSES),
               default=None, help="Agent harness to use (default: settings or claude)")
 @click.option("--model", default=None, help="Default model for agent invocations (overrides settings.model)")
 def loop_run(loop_id: str, harness: str | None, model: str | None):

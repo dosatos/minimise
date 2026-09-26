@@ -4,7 +4,7 @@ import shutil
 import subprocess
 import threading
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, Union
 
@@ -14,12 +14,14 @@ from minimise.logging.backend import JobLogBackend, JsonlLogBackend
 # so grep/reference-finding stays precise as the registry grows.
 HARNESS_CLAUDE = "claude"
 HARNESS_PI = "pi"
+HARNESS_CODEX = "codex"
 
 # Install hints shown by HarnessNotFoundError; keep in sync with each
 # harness's actual CLI package.
 _INSTALL_HINTS = {
     HARNESS_CLAUDE: "npm install -g @anthropic-ai/claude-code",
     HARNESS_PI: "npm install -g @mariozechner/pi-coding-agent",
+    HARNESS_CODEX: "npm install -g @openai/codex",
 }
 
 
@@ -106,6 +108,55 @@ def _extract_text_pi_final(event: dict) -> str:
     )
 
 
+def _extract_text_codex(event: dict) -> str:
+    """Extract the completed Codex agent message from a JSONL event."""
+    if event.get("type") != "item.completed":
+        return ""
+    item = event.get("item")
+    if not isinstance(item, dict) or item.get("type") != "agent_message":
+        return ""
+    text = item.get("text", "")
+    return text if isinstance(text, str) else ""
+
+
+def _extract_error_codex(event: dict) -> str:
+    """Extract a diagnostic from Codex error events for failed runs."""
+    message = None
+    if event.get("type") == "error":
+        message = event.get("message")
+    elif event.get("type") == "item.completed":
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") == "error":
+            message = item.get("message")
+    elif event.get("type") == "turn.failed":
+        error = event.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+        else:
+            message = error
+    return message if isinstance(message, str) else ""
+
+
+def _strip_provider_prefix(model: Optional[str]) -> Optional[str]:
+    """Translate the shared provider/model form to CLIs that want a bare ID."""
+    if model and "/" in model:
+        return model.split("/", 1)[1]
+    return model
+
+
+def _wrap_with_orchestration_guardrails(prompt: str) -> str:
+    return (
+        "⚠️  CRITICAL: Do not create exploratory jobs with 'mini job new'. "
+        "If you accidentally create any jobs (test plans, temporary "
+        "explorations, etc.), delete them before finishing:\n"
+        "   mini job delete <job_id>\n\n"
+        "⚠️  COMMITS: Do not create git commits or add co-author/generated-by "
+        "trailers. Leave changes uncommitted — the orchestrator commits your "
+        "work after the task succeeds.\n\n"
+        + prompt
+    )
+
+
 def _feed_subprocess_stdin(proc: "subprocess.Popen", prompt: str) -> None:
     """Feed *prompt* to *proc*'s stdin on a best-effort basis."""
     if proc.stdin is None:
@@ -135,8 +186,8 @@ class AgentHarness(ABC):
     ) -> HarnessResult:
         """Send a prompt to the harness and return its text output.
 
-        allow_edits=True permits the agent to modify files (adds
-        --dangerously-skip-permissions). When False, the call is a
+        allow_edits=True permits the agent to modify files using the
+        harness's unattended execution policy. When False, the call is a
         read-only completion.
 
         log_path + log_fields, when both given, write each extracted assistant
@@ -153,31 +204,324 @@ class AgentHarness(ABC):
     def wrap_prompt(self, prompt: str) -> str:
         """Optional: inject harness-specific instructions into the prompt.
 
-        The default is a no-op. ClaudeCodeHarness overrides this to prepend
-        the Claude-specific warnings; other harnesses inherit the no-op.
+        The default is a no-op. Harnesses can override this to prepend
+        orchestration-specific guardrails.
         """
         return prompt
 
 
-class ClaudeCodeHarness(AgentHarness):
-    """AgentHarness backed by the `claude -p` CLI subprocess."""
+@dataclass
+class _StreamState:
+    chunks: list[str] = field(default_factory=list)
+    final_output: Optional[str] = None
+    errors: list[str] = field(default_factory=list)
+    fatal_error: Optional[str] = None
 
-    def __init__(self, backend: Optional[JobLogBackend] = None, model: Optional[str] = None) -> None:
+
+class _JsonlCapture(ABC):
+    """Harness-specific event handling over a shared JSONL process runner."""
+
+    def __init__(
+        self,
+        backend: JobLogBackend,
+        log_path: Optional[Union[str, Path]],
+        log_fields: Optional[dict],
+        log_filter: Optional[Callable[[str], str]],
+    ) -> None:
+        self.state = _StreamState()
+        self._backend = backend
+        self._log_path = log_path
+        self._log_fields = log_fields
+        self._log_filter = log_filter
+
+    @property
+    def output(self) -> str:
+        if self.state.final_output is not None:
+            return self.state.final_output
+        return "".join(self.state.chunks)
+
+    @property
+    def error(self) -> str:
+        return "\n".join(self.state.errors)
+
+    @property
+    def fatal_error(self) -> Optional[str]:
+        return self.state.fatal_error
+
+    def _append(self, text: str, *, record: bool = True) -> None:
+        self.state.chunks.append(text)
+        if record:
+            self._record(text)
+
+    def _record(self, text: str) -> None:
+        if self._log_path is None or self._log_fields is None:
+            return
+        logged = self._log_filter(text) if self._log_filter else text
+        if logged:
+            self._backend.record(self._log_path, self._log_fields, logged)
+
+    def finish(self) -> None:
+        """Flush any buffered log text after stdout closes."""
+
+    @abstractmethod
+    def consume(self, event: dict) -> None:
+        """Consume one decoded JSONL event."""
+        raise NotImplementedError
+
+
+class _ClaudeCapture(_JsonlCapture):
+    def consume(self, event: dict) -> None:
+        text = _extract_text(event)
+        if text:
+            self._append(text)
+
+
+class _PiCapture(_JsonlCapture):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._buffer = ""
+
+    def consume(self, event: dict) -> None:
+        live_text = _extract_text_pi_live(event)
+        if live_text:
+            self._append(live_text, record=False)
+            self._buffer += live_text
+            self._flush_complete_lines()
+            if len(self._buffer) > 4096:
+                self._record(self._buffer)
+                self._buffer = ""
+
+        final_text = _extract_text_pi_final(event)
+        if final_text:
+            self.state.final_output = final_text
+
+    def _flush_complete_lines(self) -> None:
+        while "\n" in self._buffer:
+            line_text, self._buffer = self._buffer.split("\n", 1)
+            self._record(line_text)
+
+    def finish(self) -> None:
+        if self._buffer:
+            self._record(self._buffer)
+            self._buffer = ""
+
+
+class _CodexCapture(_JsonlCapture):
+    def consume(self, event: dict) -> None:
+        text = _extract_text_codex(event)
+        if text:
+            self._append(text)
+            # Codex agent_message items are complete messages, not deltas. The
+            # latest one is the turn result; earlier ones remain in the live log.
+            self.state.final_output = text
+
+        error = _extract_error_codex(event)
+        if error:
+            self.state.errors.append(error)
+            if event.get("type") in {"error", "turn.failed"}:
+                self.state.fatal_error = error
+
+
+def _read_jsonl_stdout(
+    proc: "subprocess.Popen",
+    capture: _JsonlCapture,
+    reader_errors: list[str],
+) -> None:
+    """Decode stdout line-by-line and delegate events to the harness capture."""
+    try:
+        for raw_line in proc.stdout or []:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            capture.consume(event)
+    except Exception as e:
+        reader_errors.append(str(e))
+    finally:
+        try:
+            capture.finish()
+        except Exception as e:
+            reader_errors.append(str(e))
+
+
+def _drain_stderr(proc: "subprocess.Popen", target: list[str]) -> None:
+    target.append(proc.stderr.read() if proc.stderr else "")
+
+
+def _kill_and_reap(proc: "subprocess.Popen") -> None:
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _run_jsonl_subprocess(
+    cmd: list[str],
+    prompt: str,
+    *,
+    cwd: Optional[str],
+    env: dict,
+    timeout: Optional[float],
+    capture: _JsonlCapture,
+) -> HarnessResult:
+    """Run a JSONL-emitting CLI with bounded, deadlock-safe pipe handling."""
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            cwd=cwd,
+            env=env,
+        )
+
+        threading.Thread(
+            target=_feed_subprocess_stdin, args=(proc, prompt), daemon=True
+        ).start()
+        stderr_capture: list[str] = []
+        stderr_thread = threading.Thread(
+            target=_drain_stderr, args=(proc, stderr_capture), daemon=True
+        )
+        stderr_thread.start()
+
+        reader_errors: list[str] = []
+        reader = threading.Thread(
+            target=_read_jsonl_stdout,
+            args=(proc, capture, reader_errors),
+            daemon=True,
+        )
+        reader.start()
+        reader.join(timeout=timeout)
+        if reader.is_alive():
+            _kill_and_reap(proc)
+            reader.join(timeout=10)
+            return HarnessResult(
+                success=False,
+                output=capture.output,
+                error=f"timeout after {timeout}s",
+                exit_reason="timeout",
+            )
+
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            _kill_and_reap(proc)
+        stderr_thread.join(timeout=10)
+
+        if reader_errors:
+            return HarnessResult(
+                success=False,
+                output=capture.output,
+                error=reader_errors[0],
+                exit_reason="agent_error",
+            )
+        if capture.fatal_error is not None:
+            return HarnessResult(
+                success=False,
+                output=capture.output,
+                error=capture.fatal_error,
+                exit_reason="agent_error",
+            )
+        if proc.returncode == 0:
+            return HarnessResult(
+                success=True, output=capture.output, exit_reason="success"
+            )
+
+        stderr = stderr_capture[0] if stderr_capture else ""
+        return HarnessResult(
+            success=False,
+            output=capture.output,
+            error=stderr or capture.error,
+            exit_reason="agent_error",
+        )
+    except Exception as e:
+        if proc is not None:
+            _kill_and_reap(proc)
+        return HarnessResult(
+            success=False,
+            output=capture.output,
+            error=str(e),
+            exit_reason="agent_error",
+        )
+
+
+class _JsonlSubprocessHarness(AgentHarness):
+    """Shared process lifecycle for harness CLIs that emit JSONL events."""
+
+    def __init__(
+        self,
+        backend: Optional[JobLogBackend] = None,
+        model: Optional[str] = None,
+    ) -> None:
         self._backend = backend or JsonlLogBackend()
         self._model = model
 
-    def wrap_prompt(self, prompt: str) -> str:
-        return (
-            "⚠️  CRITICAL: Do not create exploratory jobs with 'mini job new'. "
-            "If you accidentally create any jobs (test plans, temporary "
-            "explorations, etc.), delete them before finishing:\n"
-            "   mini job delete <job_id>\n\n"
-            "⚠️  COMMITS: If you create any git commits, do NOT add co-author "
-            "trailers (no \"Co-Authored-By:\" lines, no \"Generated with Claude "
-            "Code\" lines). Use a plain commit message only. Prefer to leave "
-            "changes uncommitted — the orchestrator commits your work for you.\n\n"
-            + prompt
+    @abstractmethod
+    def _build_command(
+        self, *, allow_edits: bool, system_prompt: Optional[str]
+    ) -> list[str]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _build_env(self) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _new_capture(
+        self,
+        log_path: Optional[Union[str, Path]],
+        log_fields: Optional[dict],
+        log_filter: Optional[Callable[[str], str]],
+    ) -> _JsonlCapture:
+        raise NotImplementedError
+
+    def run(
+        self,
+        prompt: str,
+        *,
+        cwd: Optional[str] = None,
+        timeout: Optional[float] = None,
+        system_prompt: Optional[str] = None,
+        allow_edits: bool = False,
+        log_path: Optional[Union[str, Path]] = None,
+        log_fields: Optional[dict] = None,
+        log_filter: Optional[Callable[[str], str]] = None,
+    ) -> HarnessResult:
+        try:
+            capture = self._new_capture(log_path, log_fields, log_filter)
+            cmd = self._build_command(
+                allow_edits=allow_edits, system_prompt=system_prompt
+            )
+            env = self._build_env()
+        except Exception as e:
+            return HarnessResult(
+                success=False, output="", error=str(e), exit_reason="agent_error"
+            )
+        return _run_jsonl_subprocess(
+            cmd,
+            prompt,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            capture=capture,
         )
+
+
+class ClaudeCodeHarness(_JsonlSubprocessHarness):
+    """AgentHarness backed by the `claude -p` CLI subprocess."""
+
+    def wrap_prompt(self, prompt: str) -> str:
+        return _wrap_with_orchestration_guardrails(prompt)
 
     def _build_env(self) -> dict:
         """Build secure environment for Claude Code subprocess.
@@ -213,133 +557,35 @@ class ClaudeCodeHarness(AgentHarness):
 
         return {k: v for k, v in os.environ.items() if k in safe_keys}
 
-    def run(
+    def _build_command(
         self,
-        prompt: str,
         *,
-        cwd: Optional[str] = None,
-        timeout: Optional[float] = None,
-        system_prompt: Optional[str] = None,
         allow_edits: bool = False,
-        log_path: Optional[Union[str, Path]] = None,
-        log_fields: Optional[dict] = None,
-        log_filter: Optional[Callable[[str], str]] = None,
-    ) -> HarnessResult:
-        # Translate canonical model string: strip provider/ prefix
-        model = self._model
-        if model and "/" in model:
-            model = model.split("/", 1)[1]
-
+        system_prompt: Optional[str] = None,
+    ) -> list[str]:
         # stream-json lets the orchestrator read assistant output live;
         # the CLI requires --verbose alongside it.
         cmd = ["claude", "-p", "--output-format", "stream-json", "--verbose"]  # HARNESS_CLAUDE
         if allow_edits:
             cmd.append("--dangerously-skip-permissions")
+        model = _strip_provider_prefix(self._model)
         if model is not None:
             cmd += ["--model", model]
         if system_prompt is not None:
             cmd += ["--system-prompt", system_prompt]
+        return cmd
 
-        proc = None
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                cwd=cwd,
-                env=self._build_env(),
-            )
-
-            # Feed stdin and drain stderr on separate threads so a large prompt
-            # or a chatty subprocess can't deadlock against the stdout we read.
-            threading.Thread(target=_feed_subprocess_stdin, args=(proc, prompt), daemon=True).start()
-            stderr_capture: list[str] = []
-            stderr_thread = threading.Thread(
-                target=lambda: stderr_capture.append(proc.stderr.read() if proc.stderr else ""),
-                daemon=True,
-            )
-            stderr_thread.start()
-
-            chunks: list[str] = []
-            reader = threading.Thread(
-                target=self._read_stdout,
-                args=(proc, chunks, log_path, log_fields, self._backend, log_filter),
-            )
-            reader.start()
-            # Bound the live read with a real wall-clock deadline; the old
-            # subprocess.run(timeout=) guarantee is otherwise lost (a hung agent
-            # that holds stdout open would block the read loop forever).
-            reader.join(timeout=timeout)
-            if reader.is_alive():
-                proc.kill()
-                proc.wait()  # reap the killed child so it doesn't linger as a zombie
-                reader.join()
-                return HarnessResult(success=False, output="".join(chunks), error=f"timeout after {timeout}s", exit_reason="timeout")
-
-            # stdout hit EOF; reap the child and drain stderr, but stay bounded.
-            # A surviving grandchild can keep these pipes open and otherwise hang
-            # the worker forever, defeating the timeout the read loop preserves.
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-            stderr_thread.join(timeout=10)  # daemon; safe to abandon if still stuck
-            output = "".join(chunks)
-
-            if proc.returncode == 0:
-                return HarnessResult(success=True, output=output, exit_reason="success")
-            stderr = stderr_capture[0] if stderr_capture else ""
-            return HarnessResult(success=False, output=output, error=stderr or "", exit_reason="agent_error")
-
-        except Exception as e:
-            if proc is not None:
-                proc.kill()
-                proc.wait()  # reap the child and let the reader thread close the log sink
-            return HarnessResult(success=False, output="", error=str(e), exit_reason="agent_error")
-
-    @staticmethod
-    def _read_stdout(proc: "subprocess.Popen", chunks: list, log_path, log_fields, backend, log_filter=None) -> None:
-        """Read stdout line-by-line, accumulate assistant text, record each chunk.
-
-        Each chunk is written as a structured JSON line via the backend when both
-        log_path and log_fields are given; otherwise nothing is written.
-        """
-        record = log_path is not None and log_fields is not None
-        for line in proc.stdout or []:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            text = _extract_text(event)
-            if not text:
-                continue
-            chunks.append(text)
-            if record:
-                logged = log_filter(text) if log_filter else text
-                if logged:
-                    backend.record(log_path, log_fields, logged)
+    def _new_capture(self, log_path, log_fields, log_filter) -> _JsonlCapture:
+        return _ClaudeCapture(self._backend, log_path, log_fields, log_filter)
 
 
-class PiHarness(AgentHarness):
+class PiHarness(_JsonlSubprocessHarness):
     """AgentHarness backed by the `pi --mode json` CLI subprocess."""
 
-    def __init__(self, backend: Optional[JobLogBackend] = None, model: Optional[str] = None) -> None:
-        self._backend = backend or JsonlLogBackend()
-        self._model = model
-
     def wrap_prompt(self, prompt: str) -> str:
-        # Pi has no harness-specific guard rails yet. ClaudeCodeHarness
-        # prepends warnings against exploratory `mini job new` calls and
-        # co-author commit trailers — those are Claude-specific behaviors
-        # that pi does not exhibit. If pi-specific bad behaviors emerge
-        # (e.g. writing session files into the repo), add warnings here.
+        # Pi has no harness-specific guard rails yet. If pi-specific bad
+        # behaviors emerge (e.g. writing session files into the repo), add
+        # warnings here.
         return prompt
 
     def _build_env(self) -> dict:
@@ -409,18 +655,12 @@ class PiHarness(AgentHarness):
         }
         return {k: v for k, v in os.environ.items() if k in (safe_keys | provider_keys)}
 
-    def run(
+    def _build_command(
         self,
-        prompt: str,
         *,
-        cwd: Optional[str] = None,
-        timeout: Optional[float] = None,
-        system_prompt: Optional[str] = None,
         allow_edits: bool = False,
-        log_path: Optional[Union[str, Path]] = None,
-        log_fields: Optional[dict] = None,
-        log_filter: Optional[Callable[[str], str]] = None,
-    ) -> HarnessResult:
+        system_prompt: Optional[str] = None,
+    ) -> list[str]:
         # Pi accepts provider/id format natively via --model; no translation needed.
         # Pass canonical model string through unchanged.
         model = self._model
@@ -442,123 +682,107 @@ class PiHarness(AgentHarness):
             cmd += ["--model", model]
         if system_prompt is not None:
             cmd += ["--system-prompt", system_prompt]
+        return cmd
 
-        proc = None
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                cwd=cwd,
-                env=self._build_env(),
-            )
+    def _new_capture(self, log_path, log_fields, log_filter) -> _JsonlCapture:
+        return _PiCapture(self._backend, log_path, log_fields, log_filter)
 
-            threading.Thread(
-                target=_feed_subprocess_stdin, args=(proc, prompt), daemon=True
-            ).start()
-            stderr_capture: list[str] = []
-            stderr_thread = threading.Thread(
-                target=lambda: stderr_capture.append(proc.stderr.read() if proc.stderr else ""),
-                daemon=True,
-            )
-            stderr_thread.start()
 
-            chunks: list[str] = []
-            final_output: list[str] = [""]
-            reader = threading.Thread(
-                target=self._read_stdout_pi,
-                args=(proc, chunks, final_output, log_path, log_fields, self._backend, log_filter),
-            )
-            reader.start()
-            reader.join(timeout=timeout)
-            if reader.is_alive():
-                proc.kill()
-                proc.wait()
-                reader.join()
-                return HarnessResult(
-                    success=False,
-                    output=final_output[0] or "".join(chunks),
-                    error=f"timeout after {timeout}s",
-                    exit_reason="timeout",
-                )
+class CodexHarness(_JsonlSubprocessHarness):
+    """AgentHarness backed by the non-interactive `codex exec` CLI."""
 
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-            stderr_thread.join(timeout=10)
-            output = final_output[0] or "".join(chunks)
+    def wrap_prompt(self, prompt: str) -> str:
+        return _wrap_with_orchestration_guardrails(prompt)
 
-            if proc.returncode == 0:
-                return HarnessResult(success=True, output=output, exit_reason="success")
-            stderr = stderr_capture[0] if stderr_capture else ""
-            return HarnessResult(success=False, output=output, error=stderr or "", exit_reason="agent_error")
+    def _build_env(self) -> dict:
+        """Keep Codex auth/config and network plumbing without leaking the full env."""
+        safe_keys = {
+            "PATH",
+            "HOME",
+            "USER",
+            "SHELL",
+            "LANG",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+            "CODEX_HOME",
+            "CODEX_API_KEY",
+            "CODEX_ACCESS_TOKEN",
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+            "OPENAI_ORG_ID",
+            "OPENAI_PROJECT_ID",
+            "OPENAI_ORGANIZATION",
+            "CODEX_CA_CERTIFICATE",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "REQUESTS_CA_BUNDLE",
+            "CURL_CA_BUNDLE",
+            "NODE_EXTRA_CA_CERTS",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "AWS_PROFILE",
+            "AWS_DEFAULT_PROFILE",
+            "AWS_REGION",
+            "AWS_DEFAULT_REGION",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            "AWS_ROLE_ARN",
+        }
+        return {k: v for k, v in os.environ.items() if k in safe_keys}
 
-        except Exception as e:
-            if proc is not None:
-                proc.kill()
-                proc.wait()
-            return HarnessResult(success=False, output="", error=str(e), exit_reason="agent_error")
+    def _build_command(
+        self,
+        *,
+        allow_edits: bool = False,
+        system_prompt: Optional[str] = None,
+    ) -> list[str]:
+        cmd = [
+            "codex",
+            "exec",
+            "--json",
+            "--ephemeral",
+            "--color",
+            "never",
+        ]
+        if allow_edits:
+            cmd.append("--dangerously-bypass-approvals-and-sandbox")
+        else:
+            cmd += [
+                "--sandbox",
+                "read-only",
+                "-c",
+                'approval_policy="never"',
+            ]
 
-    @staticmethod
-    def _read_stdout_pi(proc: "subprocess.Popen", chunks: list, final_output: list, log_path, log_fields, backend, log_filter=None) -> None:
-        """Read pi's `--mode json` stdout line-by-line.
+        model = _strip_provider_prefix(self._model)
+        if model is not None:
+            cmd += ["--model", model]
+        if system_prompt is not None:
+            cmd += [
+                "-c",
+                f"developer_instructions={json.dumps(system_prompt)}",
+            ]
 
-        Pi emits per-token text_delta events, so we buffer live chunks and
-        flush to the log on newline boundaries (plus a length safety valve).
-        The last message_end's full text becomes final_output[0], which wins
-        over the joined live chunks so LoopEngine control-line extraction sees
-        the complete, unfiltered message.
-        """
-        record = log_path is not None and log_fields is not None
-        buf = ""
-        for line in proc.stdout or []:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+        # A lone "-" makes stdin the only prompt source and avoids shell
+        # quoting limits for large task handovers.
+        cmd.append("-")
+        return cmd
 
-            live_text = _extract_text_pi_live(event)
-            if live_text:
-                chunks.append(live_text)
-                if record:
-                    buf += live_text
-                    # Flush on newline boundaries (normal sentence/paragraph
-                    # output) or when the buffer grows unreasonably large
-                    # (e.g. a code block with no newlines).
-                    while "\n" in buf:
-                        line_text, buf = buf.split("\n", 1)
-                        logged = log_filter(line_text) if log_filter else line_text
-                        if logged:
-                            backend.record(log_path, log_fields, logged)
-                    if len(buf) > 4096:
-                        logged = log_filter(buf) if log_filter else buf
-                        if logged:
-                            backend.record(log_path, log_fields, logged)
-                        buf = ""
-
-            final_text = _extract_text_pi_final(event)
-            if final_text:
-                final_output[0] = final_text
-
-        # Flush anything left in the buffer after stdout closes.
-        if record and buf:
-            logged = log_filter(buf) if log_filter else buf
-            if logged:
-                backend.record(log_path, log_fields, logged)
+    def _new_capture(self, log_path, log_fields, log_filter) -> _JsonlCapture:
+        return _CodexCapture(self._backend, log_path, log_fields, log_filter)
 
 
 _BUILDERS: dict[str, type[AgentHarness]] = {
     HARNESS_CLAUDE: ClaudeCodeHarness,
     HARNESS_PI: PiHarness,
+    HARNESS_CODEX: CodexHarness,
 }
+SUPPORTED_HARNESSES = tuple(_BUILDERS)
 
 
 class _NameResolver:

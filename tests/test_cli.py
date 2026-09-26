@@ -663,8 +663,11 @@ def test_start_pending_job_spawns_subprocess(runner, mock_config_dir, monkeypatc
     assert db.get_job(job.id).status == JobStatus.PENDING
 
 
-def test_start_job_passes_harness_and_model_to_subprocess(runner, mock_config_dir, monkeypatch):
-    """`job start --harness pi --model foo` forwards both flags to the spawned `_run` argv."""
+@pytest.mark.parametrize("harness", ["pi", "codex"])
+def test_start_job_passes_harness_and_model_to_subprocess(
+    harness, runner, mock_config_dir, monkeypatch
+):
+    """Supported harness/model flags are forwarded to the spawned `_run` argv."""
     import subprocess
     captured = {}
 
@@ -675,11 +678,22 @@ def test_start_job_passes_harness_and_model_to_subprocess(runner, mock_config_di
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
     db, job = _make_start_job(mock_config_dir, JobStatus.PENDING)
-    result = runner.invoke(mini, ["job", "start", job.id, "--harness", "pi", "--model", "openai/gpt-4o"])
+    result = runner.invoke(
+        mini,
+        [
+            "job",
+            "start",
+            job.id,
+            "--harness",
+            harness,
+            "--model",
+            "openai/gpt-4o",
+        ],
+    )
 
     assert result.exit_code == 0
     cmd = captured["cmd"]
-    assert "--harness" in cmd and "pi" in cmd
+    assert "--harness" in cmd and harness in cmd
     assert "--model" in cmd and "openai/gpt-4o" in cmd
 
 
@@ -2555,6 +2569,10 @@ def test_loop_start_with_harness_and_model_builds_factory(runner, mock_config_di
     assert result.exit_code == 0
     factory = captured["factory"]
     assert isinstance(factory, HarnessFactory)
+    monkeypatch.setattr(
+        "minimise.agents.harness.shutil.which",
+        lambda name: f"/usr/local/bin/{name}",
+    )
     harness = factory.for_worker(Worker())
     assert isinstance(harness, PiHarness)
     assert harness._model == "openai/gpt-4o"

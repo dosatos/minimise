@@ -922,6 +922,10 @@ def test_invoke_agent_resolves_pi_harness_from_task_harness(temp_db_dir, db, git
     """A task with harness='pi' resolves to PiHarness and shells out to the pi CLI."""
     from minimise.personas import Persona
 
+    monkeypatch.setattr(
+        "minimise.agents.harness.shutil.which",
+        lambda name: f"/usr/local/bin/{name}",
+    )
     git_tracker = GitTracker(git_repo)
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker,
                             personas={"reviewer": Persona(name="reviewer", system_prompt="x")})

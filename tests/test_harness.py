@@ -12,12 +12,17 @@ from minimise.agents.harness import (
     AgentHarness,
     ClaudeCodeHarness,
     PiHarness,
+    CodexHarness,
     HarnessFactory,
     HarnessNotFoundError,
+    HARNESS_CODEX,
+    SUPPORTED_HARNESSES,
     _NameResolver,
     _extract_text,
     _extract_text_pi_live,
     _extract_text_pi_final,
+    _extract_text_codex,
+    _extract_error_codex,
 )
 
 
@@ -39,6 +44,15 @@ def make_fake_popen(stdout_lines, *, returncode=0, stderr=""):
         proc.wait.return_value = returncode
         return proc
     return factory
+
+
+@pytest.fixture(autouse=True)
+def harness_binaries_available(monkeypatch):
+    """Unit tests construct adapters without requiring optional CLIs on PATH."""
+    monkeypatch.setattr(
+        "minimise.agents.harness.shutil.which",
+        lambda name: f"/usr/local/bin/{name}",
+    )
 
 
 # --- HarnessResult dataclass ---
@@ -76,6 +90,13 @@ def test_pi_harness_wrap_prompt_is_noop():
     guard rails yet (see comment in the source)."""
     from minimise.agents.harness import PiHarness
     assert PiHarness().wrap_prompt("x") == "x"
+
+
+def test_codex_harness_wrap_prompt_preserves_orchestrator_commit_ownership():
+    wrapped = CodexHarness().wrap_prompt("hello")
+    assert "hello" in wrapped
+    assert "Do not create git commits" in wrapped
+    assert "orchestrator commits your work" in wrapped
 
 
 # --- _build_env: Bedrock path ---
@@ -431,6 +452,15 @@ def test_run_generic_exception(mock_popen):
     assert result.error == "claude not found"
 
 
+@patch.object(ClaudeCodeHarness, "_build_env", side_effect=RuntimeError("bad env"))
+def test_run_environment_error_is_returned(mock_build_env):
+    result = ClaudeCodeHarness().run("hi")
+    assert result.success is False
+    assert result.output == ""
+    assert result.error == "bad env"
+    assert result.exit_reason == "agent_error"
+
+
 # --- _extract_text_pi_live (pi --mode json live streaming) ---
 
 def test_extract_text_pi_live_returns_delta_on_text_delta():
@@ -642,6 +672,166 @@ def test_pi_command_includes_system_prompt_only_when_given(mock_popen):
     assert cmd[cmd.index("--system-prompt") + 1] == "PERSONA"
 
 
+# --- CodexHarness ---
+
+
+def _codex_message_event(text):
+    return {
+        "type": "item.completed",
+        "item": {"id": "item_1", "type": "agent_message", "text": text},
+    }
+
+
+def _codex_error_event(message):
+    return {
+        "type": "item.completed",
+        "item": {"id": "item_1", "type": "error", "message": message},
+    }
+
+
+def test_extract_text_codex_returns_completed_agent_message():
+    assert _extract_text_codex(_codex_message_event("done")) == "done"
+
+
+@pytest.mark.parametrize("event", [
+    {"type": "item.started", "item": {"type": "agent_message", "text": "no"}},
+    {"type": "item.completed", "item": {"type": "command_execution", "text": "no"}},
+    {"type": "item.completed", "item": None},
+    {"type": "turn.completed"},
+])
+def test_extract_text_codex_ignores_non_agent_events(event):
+    assert _extract_text_codex(event) == ""
+
+
+def test_extract_error_codex_supports_stream_and_item_errors():
+    assert _extract_error_codex({"type": "error", "message": "stream failed"}) == "stream failed"
+    assert _extract_error_codex(_codex_error_event("item failed")) == "item failed"
+    assert _extract_error_codex(
+        {"type": "turn.failed", "error": {"message": "turn failed"}}
+    ) == "turn failed"
+
+
+@patch.dict(
+    os.environ,
+    {
+        "PATH": "/usr/bin",
+        "HOME": "/home/u",
+        "CODEX_HOME": "/custom/codex",
+        "CODEX_API_KEY": "codex-key",
+        "HTTPS_PROXY": "https://proxy.test",
+        "SOME_OTHER_SECRET": "nope",
+    },
+    clear=True,
+)
+def test_codex_build_env_includes_auth_config_and_network_plumbing():
+    env = CodexHarness()._build_env()
+    assert env["PATH"] == "/usr/bin"
+    assert env["HOME"] == "/home/u"
+    assert env["CODEX_HOME"] == "/custom/codex"
+    assert env["CODEX_API_KEY"] == "codex-key"
+    assert env["HTTPS_PROXY"] == "https://proxy.test"
+    assert "SOME_OTHER_SECRET" not in env
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_codex_command_is_ephemeral_read_only_by_default(mock_popen):
+    mock_popen.side_effect = make_fake_popen([])
+    CodexHarness().run("hi")
+    assert mock_popen.call_args.args[0] == [
+        "codex",
+        "exec",
+        "--json",
+        "--ephemeral",
+        "--color",
+        "never",
+        "--sandbox",
+        "read-only",
+        "-c",
+        'approval_policy="never"',
+        "-",
+    ]
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_codex_command_bypasses_permissions_and_sandbox_for_editing(mock_popen):
+    mock_popen.side_effect = make_fake_popen([])
+    CodexHarness().run("hi", allow_edits=True)
+    assert mock_popen.call_args.args[0] == [
+        "codex",
+        "exec",
+        "--json",
+        "--ephemeral",
+        "--color",
+        "never",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-",
+    ]
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_codex_command_translates_model_and_system_prompt(mock_popen):
+    mock_popen.side_effect = make_fake_popen([])
+    system_prompt = 'Review "carefully".\nReturn findings.'
+    CodexHarness(model="openai/gpt-5.5").run(
+        "hi", system_prompt=system_prompt
+    )
+    cmd = mock_popen.call_args.args[0]
+    assert cmd[cmd.index("--model") + 1] == "gpt-5.5"
+    assert f"developer_instructions={json.dumps(system_prompt)}" in cmd
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_codex_run_returns_last_agent_message_and_logs_all_messages(mock_popen, tmp_path):
+    mock_popen.side_effect = make_fake_popen([
+        json.dumps({"type": "thread.started", "thread_id": "thread_1"}),
+        json.dumps(_codex_message_event("progress")),
+        json.dumps(_codex_message_event("final")),
+        json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1}}),
+    ])
+    log = tmp_path / "codex.jsonl"
+    result = CodexHarness().run(
+        "hi", log_path=log, log_fields={"type": "task"}
+    )
+    assert result.success is True
+    assert result.output == "final"
+    records = [json.loads(line) for line in log.read_text().splitlines()]
+    assert [record["message"] for record in records] == ["progress", "final"]
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_codex_nonzero_uses_structured_error_when_stderr_is_empty(mock_popen):
+    mock_popen.side_effect = make_fake_popen(
+        [json.dumps(_codex_error_event("authentication failed"))],
+        returncode=1,
+    )
+    result = CodexHarness().run("hi")
+    assert result.success is False
+    assert result.error == "authentication failed"
+    assert result.exit_reason == "agent_error"
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_codex_item_error_warning_does_not_fail_successful_run(mock_popen):
+    mock_popen.side_effect = make_fake_popen([
+        json.dumps(_codex_error_event("ignored configuration setting")),
+        json.dumps(_codex_message_event("done")),
+    ])
+    result = CodexHarness().run("hi")
+    assert result.success is True
+    assert result.output == "done"
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_codex_turn_failed_is_failure_even_with_zero_exit(mock_popen):
+    mock_popen.side_effect = make_fake_popen([
+        json.dumps({"type": "turn.failed", "error": {"message": "turn failed"}}),
+    ])
+    result = CodexHarness().run("hi")
+    assert result.success is False
+    assert result.error == "turn failed"
+    assert result.exit_reason == "agent_error"
+
+
 # --- HarnessFactory.for_task() ---
 
 
@@ -794,10 +984,12 @@ def test_resolve_unknown_persona_raises():
 # --- HarnessFactory._instantiate / for_worker ---
 
 
-def test_instantiate_claude_and_pi():
+def test_instantiate_all_supported_harnesses():
     factory = HarnessFactory()
     assert isinstance(factory._instantiate("claude"), ClaudeCodeHarness)
     assert isinstance(factory._instantiate("pi"), PiHarness)
+    assert isinstance(factory._instantiate(HARNESS_CODEX), CodexHarness)
+    assert SUPPORTED_HARNESSES == ("claude", "pi", "codex")
 
 
 def test_instantiate_unknown_raises_value_error():
