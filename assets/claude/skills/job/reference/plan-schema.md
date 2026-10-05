@@ -24,6 +24,13 @@ plan:                              # top-level `plan:` key is optional; a bare m
       post_hooks: []               # optional, run after this task's commit
 ```
 
+**Estimates:** `estimated_duration_min` is the agent's time, not a person's. The job page uses
+it for projected bars, time remaining and the ETA, so a padded estimate makes all three wrong.
+Across 143 measured agent tasks, the total came to about a quarter of the human-style estimates
+(median task: 16%), so start from a quarter of what a person would need; most tasks land at
+5–30 min. Single tasks vary a lot, so put the safety margin in `timeout_min` (about 3× the
+estimate), not in the estimate.
+
 **Goal vs description:** goal is *what* (one line), description is *how* (the steps). Each task
 runs in a fresh agent session with the same plan name and non-blank briefing, plus only the
 previous task's persisted handoff as evolving context. The briefing aligns constraints,
@@ -72,10 +79,12 @@ pre_hooks:
 ```yaml
 post_hooks:
   - name: review-implementation
-    estimated_duration_min: 8
+    estimated_duration_min: 3       # measured median 2.7 min; 1 in 10 runs takes ~9 min
+    timeout_min: 15
     on_failure: retry
     shell: "claude -p '/minimise:review-implementation' --dangerously-skip-permissions | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
 ```
 
 Any command honoring the contract works — a linter, a `jq` policy check, `pytest -q`. It does not
-have to be an agent.
+have to be an agent. For a test-suite hook, time the suite once and use that as the estimate;
+measured test hooks have all finished in under a minute.

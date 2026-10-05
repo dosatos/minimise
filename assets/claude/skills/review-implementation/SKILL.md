@@ -123,7 +123,8 @@ that one task, correctly even though minimise has not marked it COMPLETED yet:
 ```yaml
     post_hooks:
       - name: review-implementation
-        estimated_duration_min: 8
+        estimated_duration_min: 3   # measured median 2.7 min; 1 in 10 runs takes ~9 min
+        timeout_min: 15
         on_failure: retry   # failing review re-runs the task with findings fed back
         shell: "claude -p --dangerously-skip-permissions '/minimise:review-implementation gantt-1' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
 ```
