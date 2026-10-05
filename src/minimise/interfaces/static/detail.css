@@ -182,8 +182,8 @@
 }
 .timeline-table .col-step { width: 32%; }
 .timeline-table .col-status { width: 7.5rem; }
-.timeline-table .col-started { width: 7rem; }
-.timeline-table .col-duration { width: 9.5rem; }
+.timeline-table .col-duration { width: 7.5rem; }
+.timeline-table .col-estimate { width: 7.5rem; }
 .timeline-table th small {
     margin-left: 0.5rem;
     color: var(--muted);
@@ -205,8 +205,7 @@
     display: block;
     overflow-wrap: anywhere;
 }
-.timeline-sub,
-.timeline-est {
+.timeline-sub {
     display: block;
     margin-top: 0.2rem;
     color: var(--muted);
@@ -252,14 +251,14 @@
 .timeline-row.timeline-pending td {
     color: var(--muted);
 }
+.timeline-estimate {
+    color: var(--muted);
+}
 .timeline-live {
     color: var(--status-running);
 }
 .timeline-over {
     color: var(--status-stopped);
-}
-.timeline-projected-text {
-    color: var(--muted);
 }
 
 .timeline-track {

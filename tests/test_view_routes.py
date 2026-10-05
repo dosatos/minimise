@@ -657,5 +657,6 @@ def test_job_detail_page_renders_timing_summary_and_timeline(client, mock_job_co
 
     for element_id in ("job-elapsed", "job-progress", "job-current", "job-remaining", "timeline-rows"):
         assert f'id="{element_id}"' in html
-    assert ">Started<" in html and ">Duration<" in html
+    assert ">Duration<" in html and ">Estimate<" in html
+    assert ">Started<" not in html
     assert "data-local-time" in html

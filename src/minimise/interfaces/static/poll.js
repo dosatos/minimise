@@ -249,24 +249,6 @@ function renderJobSummary(job) {
     }
 }
 
-// Wall time from a task's first step to its last (pre hooks, attempts, post
-// hooks), once every one of them has finished.
-function taskSpans(steps) {
-    const spans = {};
-    steps.forEach(s => {
-        if (!s.task_id) return;
-        const span = spans[s.task_id] ||= {start: Infinity, end: -Infinity, count: 0, finished: true};
-        span.count += 1;
-        if (s.start_offset == null || s.duration == null) {
-            span.finished = false;
-            return;
-        }
-        span.start = Math.min(span.start, s.start_offset);
-        span.end = Math.max(span.end, s.start_offset + s.duration);
-    });
-    return spans;
-}
-
 function renderTimelineRows(job) {
     const tbody = document.getElementById("timeline-rows");
     if (!tbody) return;
@@ -277,10 +259,8 @@ function renderTimelineRows(job) {
     }
     const live = ["running", "pending"].includes(job.status);
     const nowOff = tl.now_offset;
-    const jobStart = parseUtc(job.started_at);
     const pct = secs => `${Math.min(100, Math.max(0, (secs / tl.total_secs) * 100)).toFixed(2)}%`;
     const workers = Object.fromEntries((job.tasks || []).map(t => [t.id, t]));
-    const spans = taskSpans(tl.steps);
     const attempts = {};
     tl.steps.forEach(s => {
         if (s.kind === "task" && s.task_id) attempts[s.task_id] = (attempts[s.task_id] || 0) + 1;
@@ -309,16 +289,7 @@ function renderTimelineRows(job) {
             ? `<span class="timeline-sub">${escapeHtml(s.exit_reason)}</span>` : "";
         const status = `<span class="${statusClass(s.status)}">${s.status}</span>${reason}`;
 
-        let started = "—";
-        if (s.start_offset != null) {
-            const at = jobStart ? new Date(jobStart.getTime() + s.start_offset * 1000) : null;
-            started = `<span title="${at ? `Started ${at.toLocaleTimeString()}` : ""}">+${formatSecs(s.start_offset)}</span>`;
-        } else if (live && s.bar && nowOff != null) {
-            started = `<span class="timeline-projected-text" title="Projected start">≈ +${formatSecs(s.bar.start)}</span>`;
-        }
-
-        const est = s.estimate_secs ? `${formatSecs(s.estimate_secs)} est.` : "";
-        let duration;
+        let duration = "—";
         if (s.status === "running" && s.start_offset != null && nowOff != null) {
             const elapsed = nowOff - s.start_offset;
             const over = s.estimate_secs && elapsed > s.estimate_secs ? " timeline-over" : "";
@@ -328,14 +299,8 @@ function renderTimelineRows(job) {
             duration = `<span class="${over ? "timeline-over" : ""}"`
                 + `${over ? ` title="Over estimate by ${formatSecs(s.duration - s.estimate_secs)}"` : ""}>`
                 + `${formatSecs(s.duration)}</span>`;
-        } else {
-            duration = "—";
         }
-        const span = spans[s.task_id];
-        const total = !isHook && span && span.finished && span.count > 1
-            ? `<span class="timeline-sub">${formatSecs(span.end - span.start)} with hooks</span>` : "";
-        duration += est ? `<span class="timeline-est">${est}</span>` : "";
-        duration += total;
+        const estimate = s.estimate_secs ? formatSecs(s.estimate_secs) : "—";
 
         let track = '<div class="timeline-track">';
         if (s.bar) {
@@ -354,8 +319,8 @@ function renderTimelineRows(job) {
         return `<tr class="${classes.join(" ")}">
             <td class="timeline-step" data-label="Step">${step}</td>
             <td data-label="Status">${status}</td>
-            <td data-label="Started">${started}</td>
             <td data-label="Duration">${duration}</td>
+            <td class="timeline-estimate" data-label="Estimate">${estimate}</td>
             <td data-label="Timeline">${track}</td>
         </tr>`;
     }).join("");
