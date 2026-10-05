@@ -3,6 +3,7 @@
 import json
 import threading
 from collections import deque
+from datetime import datetime
 from typing import Optional
 
 import markdown
@@ -10,7 +11,8 @@ from flask import Flask, jsonify, request, render_template
 from flask_cors import CORS
 
 from minimise.interfaces.loop_views import register_loop_routes
-from minimise.models import Job, Plan
+from minimise.interfaces.timeline import build_steps, project_steps, steps_from_executions
+from minimise.models import Job, JobStatus, Plan, TaskStatus
 from minimise.storage.database import Database
 from minimise.storage.loop_store import LoopStore
 from minimise.orchestration.job_controller import JobController
@@ -51,6 +53,59 @@ def _plan_summary(plan: Plan) -> dict:
     }
 
 
+TERMINAL_JOB_STATUSES = (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.STOPPED)
+
+
+def _job_timeline(job: Job, steps: list, now: datetime) -> dict:
+    """Place every step on one timeline measured in seconds from job start.
+
+    The client renders bars from these offsets and ticks running durations
+    forward from ``now_offset``, so browser clock skew never matters. A job
+    that hasn't started is laid out from zero by estimates alone.
+    """
+    origin = job.started_at or now
+    finished = job.status in TERMINAL_JOB_STATUSES
+    end = (job.completed_at or now) if finished else now
+    placements, total = project_steps(steps, origin, end)
+
+    def offset(moment: Optional[datetime]) -> Optional[float]:
+        return round((moment - origin).total_seconds(), 1) if moment else None
+
+    rows = []
+    for step, (start, actual_end, projected_end) in zip(steps, placements):
+        ran = step.status != TaskStatus.PENDING
+        rows.append({
+            "name": step.name,
+            "phase": step.phase,
+            "kind": "hook" if step.is_hook else "task",
+            "task_id": step.task_id,
+            "attempt": step.attempt,
+            "status": step.status.value,
+            "assignee": step.assignee,
+            "exit_reason": step.exit_reason,
+            "estimate_secs": step.estimate * 60 if step.estimate else None,
+            "start_offset": offset(step.started_at),
+            "duration": (
+                round((step.ended_at - step.started_at).total_seconds(), 1)
+                if step.started_at and step.ended_at else None
+            ),
+            # A finished job never runs its pending steps, so don't project them.
+            "bar": None if finished and not ran else {
+                "start": round(start, 1),
+                "actual_end": round(actual_end, 1),
+                "projected_end": round(projected_end, 1),
+            },
+        })
+    if finished:
+        total = max([r["bar"]["projected_end"] for r in rows if r["bar"]] + [offset(end) or 0, 1])
+    return {
+        "now_offset": offset(end) if job.started_at else None,
+        "total_secs": round(total, 1),
+        "planned_secs": sum(r["estimate_secs"] or 0 for r in rows),
+        "steps": rows,
+    }
+
+
 def _persona_summary(system_prompt: str, width: int = 70) -> str:
     """First non-empty line of the prompt, truncated to width (mirrors cli/persona.py)."""
     line = next((ln.strip() for ln in system_prompt.splitlines() if ln.strip()), "")
@@ -88,6 +143,14 @@ class APIServer:
     def _load_job_with_tasks(self, job_id: str) -> Optional[Job]:
         """Fetch a job and attach its task list, or None if it doesn't exist."""
         return self.job_controller.store.load(job_id)
+
+    def _timeline_steps(self, job: Job, executions: list) -> list:
+        """Plan-ordered steps, or execution order if the cached plan is unreadable."""
+        try:
+            plan = self.job_controller.store.load_plan(job.id)
+        except Exception:
+            return steps_from_executions(job.tasks, executions)
+        return build_steps(plan, job.tasks, executions)
 
     def _load_page_with_tasks(self, page: int) -> tuple[list[Job], bool]:
         """List one page (1-indexed) of jobs with tasks attached; returns (jobs, has_next)."""
@@ -230,6 +293,9 @@ class APIServer:
                 ]
                 job_dict = job.to_dict()
                 job_dict["hooks"] = hooks
+                job_dict["timeline"] = _job_timeline(
+                    job, self._timeline_steps(job, executions), datetime.utcnow()
+                )
                 return jsonify(job_dict), 200
             except Exception as e:
                 return jsonify({"error": str(e)}), 500

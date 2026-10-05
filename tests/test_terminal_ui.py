@@ -693,7 +693,9 @@ def test_build_steps_plan_order_with_pending_hook():
                   started_at=datetime(2026,1,1,0,0,1), completed_at=datetime(2026,1,1,0,0,5)),
     ]
     steps = build_steps(plan, tasks, execs)
-    assert [s.name for s in steps] == ["setup", "Build  · try 1", "pytest"]
+    assert [s.label for s in steps] == ["setup", "Build  · try 1", "pytest"]
+    assert [s.phase for s in steps] == ["pre_task", "task", "post_task"]
+    assert steps[1].name == "Build" and steps[1].attempt == 1
     assert steps[0].status == TaskStatus.COMPLETED
     assert steps[2].status == TaskStatus.PENDING  # post-hook not run, drawn from plan
     assert steps[2].estimate == 2

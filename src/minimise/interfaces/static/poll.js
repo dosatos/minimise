@@ -124,12 +124,251 @@ function startJobListPolling(intervalMs) {
     intervalId = setInterval(refresh, intervalMs);
 }
 
+const HOOK_PHASES = {
+    pre_plan: "before all tasks",
+    pre_task: "before task",
+    post_task: "after task",
+    post_plan: "after all tasks",
+};
+
+// Compact duration matching the CLI's humanize_duration, minus zero units:
+// 42s, 7m 18s, 5m, 1h 15m, 2d 3h.
+function formatSecs(secs) {
+    if (secs == null || !isFinite(secs)) return "—";
+    const s = Math.max(0, Math.round(secs));
+    if (s < 60) return `${s}s`;
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const rest = s % 60;
+    if (d) return h ? `${d}d ${h}h` : `${d}d`;
+    if (h) return m ? `${h}h ${m}m` : `${h}h`;
+    return rest ? `${m}m ${rest}s` : `${m}m`;
+}
+
+// The API serializes naive UTC datetimes; read them as UTC.
+function parseUtc(iso) {
+    if (!iso) return null;
+    return new Date(/(Z|[+-]\d\d:\d\d)$/.test(iso) ? iso : iso + "Z");
+}
+
+function clockTime(date) {
+    return date ? date.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : "";
+}
+
+function localizeTimes(root = document) {
+    root.querySelectorAll("time[data-local-time]").forEach(el => {
+        const date = parseUtc(el.getAttribute("datetime"));
+        if (date && !isNaN(date)) {
+            el.textContent = date.toLocaleString([], {dateStyle: "medium", timeStyle: "short"});
+        }
+    });
+}
+
+// Server time as seconds from job start, advanced by the browser's monotonic
+// clock between polls so running timers tick without trusting the local clock.
+const jobClock = {nowOffset: null, fetchedAt: 0, live: false};
+
+function liveNowOffset() {
+    if (jobClock.nowOffset == null) return null;
+    const drift = jobClock.live ? (performance.now() - jobClock.fetchedAt) / 1000 : 0;
+    return jobClock.nowOffset + drift;
+}
+
+function tickLiveDurations() {
+    const now = liveNowOffset();
+    if (now == null) return;
+    document.querySelectorAll("[data-live-from]").forEach(el => {
+        el.textContent = formatSecs(now - Number(el.dataset.liveFrom));
+    });
+}
+
+function setText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+}
+
+function setHtml(id, html) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = html;
+}
+
+function renderJobSummary(job) {
+    const tl = job.timeline;
+    const running = job.status === "running";
+    const jobStart = parseUtc(job.started_at);
+    const jobEnd = parseUtc(job.completed_at);
+
+    if (tl.now_offset == null) {
+        setText("job-elapsed", "—");
+        setText("job-elapsed-note", "not started yet");
+    } else if (running) {
+        setHtml("job-elapsed", `<span data-live-from="0">${formatSecs(tl.now_offset)}</span>`);
+        setText("job-elapsed-note", `started ${clockTime(jobStart)}`);
+    } else {
+        setText("job-elapsed", formatSecs(tl.now_offset));
+        setText("job-elapsed-note", jobEnd
+            ? `${clockTime(jobStart)} → ${clockTime(jobEnd)}`
+            : `started ${clockTime(jobStart)}`);
+    }
+
+    const tasks = job.tasks || [];
+    const done = tasks.filter(t => t.status === "completed").length;
+    setText("job-progress", `${done}/${tasks.length}`);
+    const hooks = tl.steps.filter(s => s.kind === "hook");
+    const failed = tl.steps.filter(s => s.status === "failed").length;
+    const hooksDone = hooks.filter(s => s.status === "completed").length;
+    setText("job-progress-note", [
+        hooks.length ? `${hooksDone}/${hooks.length} hooks passed` : "",
+        failed ? `${failed} failed` : "",
+    ].filter(Boolean).join(" · "));
+
+    const current = tl.steps.filter(s => s.status === "running").pop();
+    if (current) {
+        setText("job-current", current.kind === "hook" ? `${current.name} (hook)` : current.name);
+        document.getElementById("job-current")?.setAttribute("title", current.name);
+        const est = current.estimate_secs ? ` of ${formatSecs(current.estimate_secs)} est.` : "";
+        setHtml("job-current-note", `for <span data-live-from="${current.start_offset}">`
+            + `${formatSecs(tl.now_offset - current.start_offset)}</span>${est}`);
+    } else {
+        setText("job-current", "—");
+        setText("job-current-note", running ? "between steps" : job.status);
+    }
+
+    if (running && tl.now_offset != null) {
+        const remaining = Math.max(0, tl.total_secs - tl.now_offset);
+        setText("job-remaining-label", "Remaining (est.)");
+        setText("job-remaining", `≈ ${formatSecs(remaining)}`);
+        setText("job-remaining-note", `ETA ${clockTime(new Date(Date.now() + remaining * 1000))}`);
+    } else {
+        setText("job-remaining-label", "Planned");
+        setText("job-remaining", formatSecs(tl.planned_secs));
+        setText("job-remaining-note", tl.now_offset != null && tl.planned_secs
+            ? `took ${Math.round((tl.now_offset / tl.planned_secs) * 100)}% of plan`
+            : "sum of estimates");
+    }
+}
+
+// Wall time from a task's first step to its last (pre hooks, attempts, post
+// hooks), once every one of them has finished.
+function taskSpans(steps) {
+    const spans = {};
+    steps.forEach(s => {
+        if (!s.task_id) return;
+        const span = spans[s.task_id] ||= {start: Infinity, end: -Infinity, count: 0, finished: true};
+        span.count += 1;
+        if (s.start_offset == null || s.duration == null) {
+            span.finished = false;
+            return;
+        }
+        span.start = Math.min(span.start, s.start_offset);
+        span.end = Math.max(span.end, s.start_offset + s.duration);
+    });
+    return spans;
+}
+
+function renderTimelineRows(job) {
+    const tbody = document.getElementById("timeline-rows");
+    if (!tbody) return;
+    const tl = job.timeline;
+    if (!tl.steps.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty">No tasks</td></tr>';
+        return;
+    }
+    const live = ["running", "pending"].includes(job.status);
+    const nowOff = tl.now_offset;
+    const jobStart = parseUtc(job.started_at);
+    const pct = secs => `${Math.min(100, Math.max(0, (secs / tl.total_secs) * 100)).toFixed(2)}%`;
+    const workers = Object.fromEntries((job.tasks || []).map(t => [t.id, t]));
+    const spans = taskSpans(tl.steps);
+    const attempts = {};
+    tl.steps.forEach(s => {
+        if (s.kind === "task" && s.task_id) attempts[s.task_id] = (attempts[s.task_id] || 0) + 1;
+    });
+
+    setText("timeline-scale", `0 → ${formatSecs(tl.total_secs)}${live && nowOff != null ? " projected" : ""}`);
+
+    tbody.innerHTML = tl.steps.map(s => {
+        const isHook = s.kind === "hook";
+        const classes = ["timeline-row", `timeline-${s.kind}`, `timeline-${s.status}`];
+        if (isHook && !s.task_id) classes.push("timeline-plan-hook");
+
+        let step;
+        if (isHook) {
+            step = `<span class="timeline-name">${escapeHtml(s.name)}`
+                + `<span class="timeline-sub">${HOOK_PHASES[s.phase] || s.phase}</span></span>`;
+        } else {
+            const task = workers[s.task_id];
+            const worker = task && (task.assignee || task.harness) ? ` · ${escapeHtml(workerLabel(task))}` : "";
+            const badge = attempts[s.task_id] > 1 && s.attempt ? `<span class="timeline-attempt">try ${s.attempt}</span>` : "";
+            step = `<span class="timeline-name">${escapeHtml(s.name)}${badge}</span>`
+                + `<span class="timeline-sub">${escapeHtml(s.task_id || "")}${worker}</span>`;
+        }
+
+        const reason = ["failed", "stopped"].includes(s.status) && s.exit_reason
+            ? `<span class="timeline-sub">${escapeHtml(s.exit_reason)}</span>` : "";
+        const status = `<span class="${statusClass(s.status)}">${s.status}</span>${reason}`;
+
+        let started = "—";
+        if (s.start_offset != null) {
+            const at = jobStart ? new Date(jobStart.getTime() + s.start_offset * 1000) : null;
+            started = `<span title="${at ? `Started ${at.toLocaleTimeString()}` : ""}">+${formatSecs(s.start_offset)}</span>`;
+        } else if (live && s.bar && nowOff != null) {
+            started = `<span class="timeline-projected-text" title="Projected start">≈ +${formatSecs(s.bar.start)}</span>`;
+        }
+
+        const est = s.estimate_secs ? `${formatSecs(s.estimate_secs)} est.` : "";
+        let duration;
+        if (s.status === "running" && s.start_offset != null && nowOff != null) {
+            const elapsed = nowOff - s.start_offset;
+            const over = s.estimate_secs && elapsed > s.estimate_secs ? " timeline-over" : "";
+            duration = `<span class="timeline-live${over}" data-live-from="${s.start_offset}">${formatSecs(elapsed)}</span>`;
+        } else if (s.duration != null) {
+            const over = s.estimate_secs && s.duration > s.estimate_secs;
+            duration = `<span class="${over ? "timeline-over" : ""}"`
+                + `${over ? ` title="Over estimate by ${formatSecs(s.duration - s.estimate_secs)}"` : ""}>`
+                + `${formatSecs(s.duration)}</span>`;
+        } else {
+            duration = "—";
+        }
+        const span = spans[s.task_id];
+        const total = !isHook && span && span.finished && span.count > 1
+            ? `<span class="timeline-sub">${formatSecs(span.end - span.start)} with hooks</span>` : "";
+        duration += est ? `<span class="timeline-est">${est}</span>` : "";
+        duration += total;
+
+        let track = '<div class="timeline-track">';
+        if (s.bar) {
+            if (s.bar.actual_end > s.bar.start) {
+                track += `<span class="timeline-actual status-${s.status}" `
+                    + `style="left:${pct(s.bar.start)};width:${pct(s.bar.actual_end - s.bar.start)}"></span>`;
+            }
+            if (live && s.bar.projected_end > s.bar.actual_end) {
+                track += `<span class="timeline-projected" `
+                    + `style="left:${pct(s.bar.actual_end)};width:${pct(s.bar.projected_end - s.bar.actual_end)}"></span>`;
+            }
+        }
+        if (live && nowOff != null) track += `<span class="timeline-now" style="left:${pct(nowOff)}"></span>`;
+        track += "</div>";
+
+        return `<tr class="${classes.join(" ")}">
+            <td class="timeline-step" data-label="Step">${step}</td>
+            <td data-label="Status">${status}</td>
+            <td data-label="Started">${started}</td>
+            <td data-label="Duration">${duration}</td>
+            <td data-label="Timeline">${track}</td>
+        </tr>`;
+    }).join("");
+}
+
 function startJobDetailPolling(jobId, intervalMs) {
     let intervalId = null;
+    let tickId = null;
     let stopped = false;
     function stopPolling() {
         stopped = true;
         if (intervalId !== null) clearInterval(intervalId);
+        if (tickId !== null) clearInterval(tickId);
     }
     async function refresh() {
         if (document.hidden) return;
@@ -141,35 +380,11 @@ function startJobDetailPolling(jobId, intervalMs) {
             statusEl.textContent = job.status;
             statusEl.className = statusClass(job.status);
         }
-        const tbody = document.getElementById("task-rows");
-        if (tbody) {
-            const taskRows = (job.tasks || []).map(t => ({
-                started_at: t.started_at,
-                html: `<tr>
-                <td data-label="ID">${t.id}</td><td data-label="Name">${t.name}</td>
-                <td data-label="Goal">${t.goal || ""}</td>
-                <td data-label="Worker">${workerLabel(t)}</td>
-                <td data-label="Status"><span class="${statusClass(t.status)}">${t.status}</span></td>
-                <td data-label="Retries">${t.retries}</td>
-                <td data-label="Type">task</td>
-            </tr>`,
-            }));
-            const hookRows = (job.hooks || []).map(h => ({
-                started_at: h.started_at,
-                html: `<tr>
-                <td data-label="ID">—</td><td data-label="Name">${h.hook_name}</td><td data-label="Goal">${h.execution_type}</td>
-                <td data-label="Worker">—</td><td data-label="Status"><span class="${statusClass(h.status)}">${h.status}</span></td>
-                <td data-label="Retries">—</td><td data-label="Type">hook</td>
-            </tr>`,
-            }));
-            const rows = taskRows.concat(hookRows).sort((a, b) => {
-                if (!a.started_at && !b.started_at) return 0;
-                if (!a.started_at) return 1;
-                if (!b.started_at) return -1;
-                return a.started_at < b.started_at ? -1 : a.started_at > b.started_at ? 1 : 0;
-            });
-            tbody.innerHTML = rows.map(r => r.html).join("") || '<tr><td colspan="7" class="empty">No tasks</td></tr>';
-        }
+        jobClock.nowOffset = job.timeline.now_offset;
+        jobClock.fetchedAt = performance.now();
+        jobClock.live = job.status === "running";
+        renderJobSummary(job);
+        renderTimelineRows(job);
         if (isTerminalStatus(job.status)) {
             stopPolling();
         }
@@ -177,8 +392,10 @@ function startJobDetailPolling(jobId, intervalMs) {
     document.addEventListener("visibilitychange", () => {
         if (!stopped && !document.hidden) refresh();
     });
+    localizeTimes();
     refresh();
     intervalId = setInterval(refresh, intervalMs);
+    tickId = setInterval(tickLiveDurations, 1000);
 }
 
 function escapeHtml(s) {

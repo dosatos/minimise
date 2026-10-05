@@ -522,3 +522,140 @@ def test_job_logs_handles_blank_and_malformed_lines(client, mock_job_controller)
     assert len(records) == 2
     malformed = [r for r in records if r["message"] == "not valid json {{{"]
     assert malformed and malformed[0]["task_id"] is None
+
+
+def _timeline_plan():
+    from minimise.models import Plan
+
+    return Plan.model_validate({
+        "name": "timed",
+        "pre_hooks": [{"name": "review-plan", "shell": "true", "estimated_duration_min": 5}],
+        "tasks": [
+            {"id": "t1", "name": "Build", "description": "d", "goal": "g",
+             "estimated_duration_min": 10,
+             "post_hooks": [{"name": "tests", "shell": "true", "estimated_duration_min": 2}]},
+            {"id": "t2", "name": "Docs", "description": "d", "goal": "g",
+             "estimated_duration_min": 20},
+        ],
+    })
+
+
+def test_job_timeline_times_each_step_from_job_start():
+    from datetime import datetime, timedelta
+    from minimise.interfaces.api_server import _job_timeline
+    from minimise.interfaces.timeline import build_steps
+    from minimise.models import Execution, Job, JobStatus, Task, TaskStatus
+
+    t0 = datetime(2026, 1, 1, 12, 0, 0)
+    at = lambda secs: t0 + timedelta(seconds=secs)
+    job = Job(id="j1", name="timed", status=JobStatus.RUNNING, started_at=t0)
+    tasks = [Task(id="task-1", job_id="j1", name="Build", description="d", estimated_duration_min=10),
+             Task(id="task-2", job_id="j1", name="Docs", description="d", estimated_duration_min=20)]
+    execs = [
+        Execution(job_id="j1", task_id=None, attempt=0, execution_type="pre_plan",
+                  hook_name="review-plan", status=TaskStatus.COMPLETED,
+                  started_at=at(0), completed_at=at(240)),
+        Execution(job_id="j1", task_id="task-1", attempt=0, status=TaskStatus.COMPLETED,
+                  started_at=at(240), completed_at=at(900)),
+        Execution(job_id="j1", task_id="task-1", attempt=0, execution_type="post_task",
+                  hook_name="tests", status=TaskStatus.RUNNING, started_at=at(900)),
+    ]
+
+    timeline = _job_timeline(job, build_steps(_timeline_plan(), tasks, execs), at(960))
+
+    steps = timeline["steps"]
+    assert [(s["name"], s["kind"], s["phase"]) for s in steps] == [
+        ("review-plan", "hook", "pre_plan"),
+        ("Build", "task", "task"),
+        ("tests", "hook", "post_task"),
+        ("Docs", "task", "task"),
+    ]
+    assert [s["start_offset"] for s in steps] == [0.0, 240.0, 900.0, None]
+    assert [s["duration"] for s in steps] == [240.0, 660.0, None, None]
+    assert steps[1]["attempt"] == 1 and steps[1]["estimate_secs"] == 600
+    assert timeline["now_offset"] == 960.0
+    # running hook projects to its 2 min estimate, then Docs chains after it
+    assert steps[2]["bar"] == {"start": 900.0, "actual_end": 960.0, "projected_end": 1020.0}
+    assert steps[3]["bar"] == {"start": 1020.0, "actual_end": 1020.0, "projected_end": 2220.0}
+    assert timeline["total_secs"] == 2220.0
+    assert timeline["planned_secs"] == (5 + 10 + 2 + 20) * 60
+
+
+def test_job_timeline_finished_job_does_not_project_unrun_steps():
+    from datetime import datetime, timedelta
+    from minimise.interfaces.api_server import _job_timeline
+    from minimise.interfaces.timeline import build_steps
+    from minimise.models import Execution, Job, JobStatus, Task, TaskStatus
+
+    t0 = datetime(2026, 1, 1, 12, 0, 0)
+    job = Job(id="j1", name="timed", status=JobStatus.FAILED,
+              started_at=t0, completed_at=t0 + timedelta(seconds=300))
+    tasks = [Task(id="task-1", job_id="j1", name="Build", description="d", estimated_duration_min=10)]
+    execs = [Execution(job_id="j1", task_id=None, attempt=0, execution_type="pre_plan",
+                       hook_name="review-plan", status=TaskStatus.FAILED,
+                       started_at=t0, completed_at=t0 + timedelta(seconds=300))]
+
+    timeline = _job_timeline(job, build_steps(_timeline_plan(), tasks, execs),
+                             t0 + timedelta(hours=5))
+
+    assert timeline["now_offset"] == 300.0  # frozen at completion, not "now"
+    assert timeline["total_secs"] == 300.0
+    assert [s["bar"] is None for s in timeline["steps"]] == [False, True, True, True]
+
+
+def test_job_timeline_unstarted_job_lays_out_estimates_from_zero():
+    from datetime import datetime
+    from minimise.interfaces.api_server import _job_timeline
+    from minimise.interfaces.timeline import build_steps
+    from minimise.models import Job
+
+    timeline = _job_timeline(Job(id="j1", name="timed"),
+                             build_steps(_timeline_plan(), [], []), datetime(2026, 1, 1))
+
+    assert timeline["now_offset"] is None
+    assert [s["bar"]["start"] for s in timeline["steps"]] == [0.0, 300.0, 900.0, 1020.0]
+    assert timeline["total_secs"] == 2220.0
+
+
+def test_get_job_includes_timeline_in_plan_order(client, mock_job_controller):
+    job = mock_job_controller.store.create(
+        _timeline_plan(), base_commit="abc123", plan_path="/tmp/plan.yaml"
+    )
+
+    resp = client.get(f"/jobs/{job.id}")
+
+    assert resp.status_code == 200
+    steps = resp.get_json()["timeline"]["steps"]
+    assert [s["name"] for s in steps] == ["review-plan", "Build", "tests", "Docs"]
+    assert [s["status"] for s in steps] == ["pending"] * 4
+    assert steps[1]["task_id"] == job.tasks[0].id
+
+
+def test_get_job_timeline_falls_back_to_executions_without_a_plan(
+    client, mock_job_controller, db
+):
+    from minimise.models import Execution, TaskStatus
+
+    job = _make_job(mock_job_controller)
+    (mock_job_controller.store.jobs_dir / job.id / "plan.yaml").write_text("name: [invalid")
+    db.save_execution(Execution(
+        job_id=job.id, task_id=None, attempt=0, execution_type="pre_plan",
+        hook_name="review-plan", status=TaskStatus.COMPLETED,
+    ))
+
+    resp = client.get(f"/jobs/{job.id}")
+
+    assert resp.status_code == 200
+    steps = resp.get_json()["timeline"]["steps"]
+    assert [(s["name"], s["kind"]) for s in steps] == [("review-plan", "hook"), ("T1", "task")]
+
+
+def test_job_detail_page_renders_timing_summary_and_timeline(client, mock_job_controller):
+    job = _make_job(mock_job_controller)
+
+    html = client.get(f"/jobs/{job.id}/view").get_data(as_text=True)
+
+    for element_id in ("job-elapsed", "job-progress", "job-current", "job-remaining", "timeline-rows"):
+        assert f'id="{element_id}"' in html
+    assert ">Started<" in html and ">Duration<" in html
+    assert "data-local-time" in html
