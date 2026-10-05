@@ -23,7 +23,7 @@
             <p class="eyebrow">Live state</p>
             <h3 id="execution-heading">Execution</h3>
         </div>
-        <p>Every task attempt and hook in plan order, with how long each took against its estimate.</p>
+        <p>Every task and its hooks in plan order, with how long each part took against its estimate.</p>
     </div>
     <div class="live-summary" aria-label="Job timing summary">
         <div>
@@ -50,7 +50,7 @@
     <div class="table-wrap">
         <table class="timeline-table">
             <colgroup>
-                <col class="col-step"><col class="col-status"><col class="col-duration"><col class="col-estimate"><col>
+                <col class="col-step"><col class="col-status"><col class="col-duration"><col class="col-estimate"><col class="col-timeout"><col>
             </colgroup>
             <thead>
                 <tr>
@@ -58,11 +58,12 @@
                     <th>Status</th>
                     <th>Duration</th>
                     <th>Estimate</th>
+                    <th>Timeout</th>
                     <th>Timeline<small id="timeline-scale"></small></th>
                 </tr>
             </thead>
             <tbody id="timeline-rows">
-                <tr><td colspan="5" class="empty">Loading timeline…</td></tr>
+                <tr><td colspan="6" class="empty">Loading timeline…</td></tr>
             </tbody>
         </table>
     </div>

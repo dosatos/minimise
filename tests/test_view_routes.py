@@ -563,7 +563,13 @@ def test_job_timeline_times_each_step_from_job_start():
 
     timeline = _job_timeline(job, build_steps(_timeline_plan(), tasks, execs), at(960))
 
-    steps = timeline["steps"]
+    groups = timeline["groups"]
+    assert [(g["kind"], g["name"], g["task_id"]) for g in groups] == [
+        ("plan_hooks", "Before all tasks", None),
+        ("task", "Build", "task-1"),
+        ("task", "Docs", "task-2"),
+    ]
+    steps = [s for g in groups for s in g["steps"]]
     assert [(s["name"], s["kind"], s["phase"]) for s in steps] == [
         ("review-plan", "hook", "pre_plan"),
         ("Build", "task", "task"),
@@ -600,7 +606,9 @@ def test_job_timeline_finished_job_does_not_project_unrun_steps():
 
     assert timeline["now_offset"] == 300.0  # frozen at completion, not "now"
     assert timeline["total_secs"] == 300.0
-    assert [s["bar"] is None for s in timeline["steps"]] == [False, True, True, True]
+    steps = [s for g in timeline["groups"] for s in g["steps"]]
+    assert [s["bar"] is None for s in steps] == [False, True, True, True]
+    assert [g["status"] for g in timeline["groups"]] == ["failed", "pending", "pending"]
 
 
 def test_job_timeline_unstarted_job_lays_out_estimates_from_zero():
@@ -612,8 +620,14 @@ def test_job_timeline_unstarted_job_lays_out_estimates_from_zero():
     timeline = _job_timeline(Job(id="j1", name="timed"),
                              build_steps(_timeline_plan(), [], []), datetime(2026, 1, 1))
 
-    assert timeline["now_offset"] is None
-    assert [s["bar"]["start"] for s in timeline["steps"]] == [0.0, 300.0, 900.0, 1020.0]
+    assert timeline["now_offset"] is None and timeline["run_start_offset"] is None
+    groups = timeline["groups"]
+    # no task rows yet, so steps carry no task_id: plan order still splits the tasks
+    assert [(g["name"], [s["name"] for s in g["steps"]]) for g in groups] == [
+        ("Before all tasks", ["review-plan"]), ("Build", ["Build", "tests"]), ("Docs", ["Docs"]),
+    ]
+    assert [s["bar"]["start"] for g in groups for s in g["steps"]] == [0.0, 300.0, 900.0, 1020.0]
+    assert [g["duration"] for g in groups] == [None, None, None]
     assert timeline["total_secs"] == 2220.0
 
 
@@ -625,10 +639,15 @@ def test_get_job_includes_timeline_in_plan_order(client, mock_job_controller):
     resp = client.get(f"/jobs/{job.id}")
 
     assert resp.status_code == 200
-    steps = resp.get_json()["timeline"]["steps"]
+    data = resp.get_json()
+    groups = data["timeline"]["groups"]
+    assert [g["name"] for g in groups] == ["Before all tasks", "Build", "Docs"]
+    assert [g["task_id"] for g in groups] == [None, job.tasks[0].id, job.tasks[1].id]
+    steps = [s for g in groups for s in g["steps"]]
     assert [s["name"] for s in steps] == ["review-plan", "Build", "tests", "Docs"]
     assert [s["status"] for s in steps] == ["pending"] * 4
     assert steps[1]["task_id"] == job.tasks[0].id
+    assert data["hooks"] == []
 
 
 def test_get_job_timeline_falls_back_to_executions_without_a_plan(
@@ -646,8 +665,13 @@ def test_get_job_timeline_falls_back_to_executions_without_a_plan(
     resp = client.get(f"/jobs/{job.id}")
 
     assert resp.status_code == 200
-    steps = resp.get_json()["timeline"]["steps"]
-    assert [(s["name"], s["kind"]) for s in steps] == [("review-plan", "hook"), ("T1", "task")]
+    groups = resp.get_json()["timeline"]["groups"]
+    assert [(g["kind"], g["name"]) for g in groups] == [
+        ("plan_hooks", "Before all tasks"), ("task", "T1"),
+    ]
+    assert [[(s["name"], s["kind"]) for s in g["steps"]] for g in groups] == [
+        [("review-plan", "hook")], [("T1", "task")],
+    ]
 
 
 def test_job_detail_page_renders_timing_summary_and_timeline(client, mock_job_controller):
@@ -657,6 +681,261 @@ def test_job_detail_page_renders_timing_summary_and_timeline(client, mock_job_co
 
     for element_id in ("job-elapsed", "job-progress", "job-current", "job-remaining", "timeline-rows"):
         assert f'id="{element_id}"' in html
-    assert ">Duration<" in html and ">Estimate<" in html
+    assert ">Duration<" in html and ">Estimate<" in html and ">Timeout<" in html
+    assert 'class="col-timeout"' in html
     assert ">Started<" not in html
     assert "data-local-time" in html
+
+
+def _at(secs):
+    """A naive-UTC moment ``secs`` seconds after the test job's start."""
+    from datetime import datetime, timedelta
+    return datetime(2026, 1, 1, 12, 0, 0) + timedelta(seconds=secs)
+
+
+def _grouped_timeline(plan_dict, tasks, execs, job_kwargs, now_secs):
+    """Build a job timeline from a plan dict at ``now_secs``."""
+    from minimise.interfaces.api_server import _job_timeline
+    from minimise.interfaces.timeline import build_steps
+    from minimise.models import Job, Plan
+
+    job = Job(id="j1", name="timed", tasks=tasks, **job_kwargs)
+    return _job_timeline(job, build_steps(Plan.model_validate(plan_dict), tasks, execs),
+                         _at(now_secs))
+
+
+def _task(task_id, name, estimate, status=None, **kwargs):
+    from minimise.models import Task, TaskStatus
+    return Task(id=task_id, job_id="j1", name=name, description="d",
+                estimated_duration_min=estimate, status=status or TaskStatus.PENDING, **kwargs)
+
+
+def _hooked_plan(**task_extra):
+    return {
+        "name": "timed",
+        "tasks": [{
+            "id": "t1", "name": "Pictures by id", "description": "d", "goal": "g",
+            "estimated_duration_min": 75, "timeout_min": 150,
+            "post_hooks": [
+                {"name": "tests", "shell": "true", "estimated_duration_min": 3, "timeout_min": 10},
+                {"name": "review-implementation", "shell": "true", "estimated_duration_min": 8},
+            ],
+            **task_extra,
+        }],
+    }
+
+
+def test_job_timeline_task_group_spans_first_start_to_last_end():
+    """a) attempt + two post_task hooks back to back (job-214b37, task-dfc8ce)."""
+    from minimise.models import Execution, JobStatus, TaskStatus
+
+    tasks = [_task("task-dfc8ce", "Pictures by id", 75, TaskStatus.COMPLETED)]
+    execs = [
+        Execution(job_id="j1", task_id="task-dfc8ce", attempt=0, status=TaskStatus.COMPLETED,
+                  started_at=_at(0), completed_at=_at(926.8)),
+        Execution(job_id="j1", task_id="task-dfc8ce", attempt=0, execution_type="post_task",
+                  hook_name="tests", status=TaskStatus.COMPLETED,
+                  started_at=_at(926.8), completed_at=_at(926.8 + 38.3)),
+        Execution(job_id="j1", task_id="task-dfc8ce", attempt=0, execution_type="post_task",
+                  hook_name="review-implementation", status=TaskStatus.COMPLETED,
+                  started_at=_at(926.8 + 38.3), completed_at=_at(926.8 + 38.3 + 152.9)),
+    ]
+
+    timeline = _grouped_timeline(_hooked_plan(), tasks, execs,
+                                 {"status": JobStatus.COMPLETED, "started_at": _at(0),
+                                  "completed_at": _at(1118.0)}, 5000)
+
+    [group] = timeline["groups"]
+    assert (group["kind"], group["name"], group["task_id"], group["status"]) == (
+        "task", "Pictures by id", "task-dfc8ce", "completed")
+    assert [s["duration"] for s in group["steps"]] == [926.8, 38.3, 152.9]
+    assert group["start_offset"] == 0.0
+    assert group["duration"] == 1118.0  # wall time, first start to last end
+    assert group["estimate_secs"] == (75 + 3 + 8) * 60
+    assert "bar" not in group and "timeout_secs" not in group
+    assert timeline["planned_secs"] == (75 + 3 + 8) * 60
+
+
+def test_job_timeline_retried_task_counts_its_estimate_once():
+    """b) two attempts of one task: the task estimate is summed once."""
+    from minimise.models import Execution, JobStatus, TaskStatus
+
+    tasks = [_task("task-1", "Pictures by id", 75, TaskStatus.COMPLETED, retries=1)]
+    execs = [
+        Execution(job_id="j1", task_id="task-1", attempt=0, status=TaskStatus.FAILED,
+                  started_at=_at(0), completed_at=_at(100), exit_reason="hook_retry"),
+        Execution(job_id="j1", task_id="task-1", attempt=1, status=TaskStatus.COMPLETED,
+                  started_at=_at(150), completed_at=_at(300)),
+        Execution(job_id="j1", task_id="task-1", attempt=0, execution_type="post_task",
+                  hook_name="tests", status=TaskStatus.COMPLETED,
+                  started_at=_at(300), completed_at=_at(340)),
+        Execution(job_id="j1", task_id="task-1", attempt=0, execution_type="post_task",
+                  hook_name="review-implementation", status=TaskStatus.COMPLETED,
+                  started_at=_at(340), completed_at=_at(400)),
+    ]
+
+    timeline = _grouped_timeline(_hooked_plan(), tasks, execs,
+                                 {"status": JobStatus.COMPLETED, "started_at": _at(0),
+                                  "completed_at": _at(400)}, 500)
+
+    [group] = timeline["groups"]
+    assert [(s["kind"], s["attempt"]) for s in group["steps"]] == [
+        ("task", 1), ("task", 2), ("hook", None), ("hook", None)]
+    assert group["estimate_secs"] == (75 + 3 + 8) * 60  # not (75 * 2 + 3 + 8)
+    assert group["duration"] == 400.0
+    assert timeline["planned_secs"] == (75 + 3 + 8) * 60
+
+
+def test_job_timeline_plan_hooks_form_before_and_after_groups():
+    """c) plan-level hooks land in their own groups, around the tasks."""
+    from minimise.models import Execution, JobStatus, TaskStatus
+
+    plan = _timeline_plan().model_dump()
+    plan["post_hooks"] = [
+        {"name": "review-all", "shell": "true", "estimated_duration_min": 4},
+        {"name": "notify", "shell": "true", "estimated_duration_min": 1},
+    ]
+    tasks = [_task("task-1", "Build", 10, TaskStatus.COMPLETED),
+             _task("task-2", "Docs", 20, TaskStatus.COMPLETED)]
+    execs = [
+        Execution(job_id="j1", task_id=None, attempt=0, execution_type="pre_plan",
+                  hook_name="review-plan", status=TaskStatus.COMPLETED,
+                  started_at=_at(0), completed_at=_at(60)),
+        Execution(job_id="j1", task_id=None, attempt=0, execution_type="post_plan",
+                  hook_name="review-all", status=TaskStatus.COMPLETED,
+                  started_at=_at(900), completed_at=_at(960)),
+        Execution(job_id="j1", task_id=None, attempt=0, execution_type="post_plan",
+                  hook_name="notify", status=TaskStatus.FAILED,
+                  started_at=_at(960), completed_at=_at(970), exit_reason="exit_1"),
+    ]
+
+    timeline = _grouped_timeline(plan, tasks, execs,
+                                 {"status": JobStatus.FAILED, "started_at": _at(0),
+                                  "completed_at": _at(970)}, 1000)
+
+    groups = timeline["groups"]
+    assert [(g["kind"], g["name"], g["task_id"]) for g in groups] == [
+        ("plan_hooks", "Before all tasks", None),
+        ("task", "Build", "task-1"),
+        ("task", "Docs", "task-2"),
+        ("plan_hooks", "After all tasks", None),
+    ]
+    before, after = groups[0], groups[-1]
+    assert [s["name"] for s in before["steps"]] == ["review-plan"]
+    assert [s["name"] for s in after["steps"]] == ["review-all", "notify"]
+    assert (before["status"], before["duration"], before["estimate_secs"]) == (
+        "completed", 60.0, 5 * 60)
+    assert (after["status"], after["start_offset"], after["duration"], after["estimate_secs"]) == (
+        "failed", 900.0, 70.0, 5 * 60)
+
+
+def test_job_timeline_running_group_has_no_duration():
+    """d) a group with a running part reports running and leaves duration to the client."""
+    from minimise.models import Execution, JobStatus, TaskStatus
+
+    tasks = [_task("task-1", "Pictures by id", 75, TaskStatus.RUNNING)]
+    execs = [
+        Execution(job_id="j1", task_id="task-1", attempt=0, status=TaskStatus.COMPLETED,
+                  started_at=_at(0), completed_at=_at(600)),
+        Execution(job_id="j1", task_id="task-1", attempt=0, execution_type="post_task",
+                  hook_name="tests", status=TaskStatus.RUNNING, started_at=_at(600)),
+    ]
+
+    timeline = _grouped_timeline(_hooked_plan(), tasks, execs,
+                                 {"status": JobStatus.RUNNING, "started_at": _at(0)}, 630)
+
+    [group] = timeline["groups"]
+    assert group["status"] == "running"
+    assert group["start_offset"] == 0.0
+    assert group["duration"] is None
+    assert [s["status"] for s in group["steps"]] == ["completed", "running", "pending"]
+
+
+def test_job_timeline_parts_carry_plan_timeouts():
+    """e) timeout_secs comes from the plan's timeout_min, None when unset."""
+    from minimise.models import JobStatus
+
+    timeline = _grouped_timeline(_hooked_plan(), [_task("task-1", "Pictures by id", 75)], [],
+                                 {"status": JobStatus.PENDING}, 0)
+
+    [group] = timeline["groups"]
+    assert [(s["name"], s["timeout_secs"]) for s in group["steps"]] == [
+        ("Pictures by id", 150 * 60), ("tests", 10 * 60), ("review-implementation", None),
+    ]
+
+
+def test_build_steps_and_fallback_carry_timeouts():
+    from minimise.interfaces.timeline import build_steps, steps_from_executions
+    from minimise.models import Plan
+
+    plan = Plan.model_validate(_hooked_plan())
+    steps = build_steps(plan, [_task("task-1", "Pictures by id", 75)], [])
+    assert [s.timeout for s in steps] == [150, 10, None]
+
+    fallback = steps_from_executions([_task("task-1", "P", 75, timeout_min=90)], [])
+    assert [s.timeout for s in fallback] == [90]
+
+
+def test_get_job_timeline_fallback_groups_parts_by_task(client, mock_job_controller, db):
+    """f) the unparseable-plan fallback still groups every part under its task."""
+    from minimise.models import Execution, TaskStatus
+
+    job = _make_job(mock_job_controller)
+    task_id = job.tasks[0].id
+    (mock_job_controller.store.jobs_dir / job.id / "plan.yaml").write_text("name: [invalid")
+    for ex in (
+        Execution(job_id=job.id, task_id=None, attempt=0, execution_type="pre_plan",
+                  hook_name="review-plan", status=TaskStatus.COMPLETED,
+                  started_at=_at(0), completed_at=_at(60)),
+        Execution(job_id=job.id, task_id=task_id, attempt=0, status=TaskStatus.COMPLETED,
+                  started_at=_at(60), completed_at=_at(300)),
+        Execution(job_id=job.id, task_id=task_id, attempt=0, execution_type="post_task",
+                  hook_name="tests", status=TaskStatus.COMPLETED,
+                  started_at=_at(300), completed_at=_at(330)),
+        Execution(job_id=job.id, task_id=None, attempt=0, execution_type="post_plan",
+                  hook_name="review-all", status=TaskStatus.COMPLETED,
+                  started_at=_at(330), completed_at=_at(400)),
+    ):
+        db.save_execution(ex)
+
+    resp = client.get(f"/jobs/{job.id}")
+
+    assert resp.status_code == 200
+    groups = resp.get_json()["timeline"]["groups"]
+    assert [(g["kind"], g["name"], g["task_id"]) for g in groups] == [
+        ("plan_hooks", "Before all tasks", None),
+        ("task", "T1", task_id),
+        ("plan_hooks", "After all tasks", None),
+    ]
+    assert [(s["name"], s["kind"]) for s in groups[1]["steps"]] == [("T1", "task"), ("tests", "hook")]
+    assert groups[1]["duration"] == 270.0
+    assert groups[1]["estimate_secs"] == 5 * 60  # fallback hooks have no estimate
+    assert all(s["timeout_secs"] is None for g in groups for s in g["steps"])
+
+
+def test_job_timeline_resumed_job_measures_from_its_earliest_step():
+    """h) started_at resets on resume: earlier steps never get negative offsets."""
+    from minimise.models import Execution, JobStatus, TaskStatus
+
+    tasks = [_task("task-1", "Build", 10, TaskStatus.RUNNING),
+             _task("task-2", "Docs", 20)]
+    execs = [  # review-plan ran in the first run; the job was resumed at 600s
+        Execution(job_id="j1", task_id=None, attempt=0, execution_type="pre_plan",
+                  hook_name="review-plan", status=TaskStatus.COMPLETED,
+                  started_at=_at(0), completed_at=_at(240)),
+        Execution(job_id="j1", task_id="task-1", attempt=0, status=TaskStatus.RUNNING,
+                  started_at=_at(610)),
+    ]
+
+    timeline = _grouped_timeline(_timeline_plan().model_dump(), tasks, execs,
+                                 {"status": JobStatus.RUNNING, "started_at": _at(600)}, 700)
+
+    steps = [s for g in timeline["groups"] for s in g["steps"]]
+    assert all(s["start_offset"] >= 0 for s in steps if s["start_offset"] is not None)
+    assert all(g["start_offset"] >= 0 for g in timeline["groups"] if g["start_offset"] is not None)
+    assert timeline["run_start_offset"] == 600.0  # job.started_at - origin
+    assert timeline["now_offset"] == 700.0
+    review, build = steps[0], steps[1]
+    assert review["start_offset"] == 0.0 and build["start_offset"] == 610.0
+    assert review["bar"] == {"start": 0.0, "actual_end": 240.0, "projected_end": 240.0}
+    assert build["bar"]["start"] == 610.0 >= review["bar"]["projected_end"]

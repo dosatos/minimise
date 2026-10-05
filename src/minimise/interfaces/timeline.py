@@ -27,6 +27,7 @@ class Step:
     phase: str = "task"  # execution_type: pre_plan / pre_task / task / post_task / post_plan
     task_id: Optional[str] = None
     attempt: Optional[int] = None  # 1-based; set only on task attempts that ran
+    timeout: Optional[int] = None  # minutes, from the plan's timeout_min; None = unbounded
 
     @property
     def label(self) -> str:
@@ -44,7 +45,7 @@ def _hook_steps(hooks, execs, execution_type, task_id):
     for hook in hooks:
         ex = _match_hook(execs, execution_type, task_id, hook.name)
         steps.append(Step(
-            name=hook.name, estimate=hook.estimated_duration_min,
+            name=hook.name, estimate=hook.estimated_duration_min, timeout=hook.timeout_min,
             status=ex.status if ex else TaskStatus.PENDING,
             started_at=ex.started_at if ex else None,
             ended_at=ex.completed_at if ex else None,
@@ -70,12 +71,14 @@ def build_steps(plan: Plan, tasks: list, executions: list) -> list:
         if attempts:
             for e in attempts:
                 steps.append(Step(name=ptask.name, attempt=e.attempt + 1,
-                                  estimate=ptask.estimated_duration_min, status=e.status,
+                                  estimate=ptask.estimated_duration_min,
+                                  timeout=ptask.timeout_min, status=e.status,
                                   started_at=e.started_at, ended_at=e.completed_at,
                                   exit_reason=e.exit_reason or "", assignee=assignee,
                                   task_id=task_id))
         else:
             steps.append(Step(name=ptask.name, estimate=ptask.estimated_duration_min,
+                              timeout=ptask.timeout_min,
                               status=TaskStatus.PENDING, assignee=assignee,
                               task_id=task_id))
 
@@ -137,6 +140,7 @@ def steps_from_executions(tasks: list, executions: list) -> list:
             steps.append(Step(name=task.name if task else ex.task_id or "",
                               attempt=ex.attempt + 1,
                               estimate=task.estimated_duration_min if task else None,
+                              timeout=task.timeout_min if task else None,
                               status=ex.status, started_at=ex.started_at,
                               ended_at=ex.completed_at, exit_reason=ex.exit_reason or "",
                               assignee=(task.assignee or "") if task else "",
@@ -149,6 +153,7 @@ def steps_from_executions(tasks: list, executions: list) -> list:
     for task in tasks:
         if task.id not in started:
             steps.append(Step(name=task.name, estimate=task.estimated_duration_min,
+                              timeout=task.timeout_min,
                               status=TaskStatus.PENDING, assignee=task.assignee or "",
                               task_id=task.id))
     return steps

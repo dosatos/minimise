@@ -54,16 +54,87 @@ def _plan_summary(plan: Plan) -> dict:
 
 
 TERMINAL_JOB_STATUSES = (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.STOPPED)
+PLAN_HOOK_GROUPS = {"pre_plan": "Before all tasks", "post_plan": "After all tasks"}
+_TASK_PHASE_ORDER = {"pre_task": 0, "task": 1, "post_task": 2}
+
+
+def _group_steps(steps: list) -> list:
+    """Split step indices into groups: plan pre hooks, one group per task (its
+    pre hooks, attempts and post hooks), then plan post hooks.
+
+    Task steps join their task_id's group wherever they appear, so the
+    execution-ordered fallback groups too. Steps without a task_id (the job's
+    task rows are missing) start a new group where the plan order starts a new
+    task. Returns (phase, indices) pairs; empty plan-hook groups are dropped.
+    """
+    before, after, tasks, by_task = [], [], [], {}
+    prev = None
+    for i, step in enumerate(steps):
+        if step.phase in PLAN_HOOK_GROUPS:
+            (before if step.phase == "pre_plan" else after).append(i)
+        elif step.task_id is not None:
+            if step.task_id not in by_task:
+                by_task[step.task_id] = []
+                tasks.append(by_task[step.task_id])
+            by_task[step.task_id].append(i)
+        else:
+            same_task = (prev is not None and prev.task_id is None
+                         and prev.phase in _TASK_PHASE_ORDER
+                         and _TASK_PHASE_ORDER.get(step.phase, 1) >= _TASK_PHASE_ORDER[prev.phase]
+                         and not step.phase == prev.phase == "task")
+            if not same_task:
+                tasks.append([])
+            tasks[-1].append(i)
+        prev = step
+    return ([("pre_plan", before)] if before else []) + [("task", t) for t in tasks] \
+        + ([("post_plan", after)] if after else [])
+
+
+def _rollup_status(parts: list) -> str:
+    statuses = {p["status"] for p in parts}
+    for status in ("running", "failed", "stopped"):
+        if status in statuses:
+            return status
+    return "completed" if statuses == {"completed"} else "pending"
+
+
+def _timeline_group(kind: str, name: str, task_id: Optional[str], status: str,
+                    parts: list) -> dict:
+    """Aggregate row over a group's parts: wall time from the first start to the
+    last end (parts can overlap or leave gaps, so never a sum), and estimates
+    summed with the task's own estimate counted once however many attempts ran."""
+    start = min((p["start_offset"] for p in parts if p["start_offset"] is not None),
+                default=None)
+    ends = [p["start_offset"] + p["duration"] for p in parts
+            if p["start_offset"] is not None and p["duration"] is not None]
+    task_estimate = next((p["estimate_secs"] for p in parts if p["kind"] == "task"), None)
+    estimates = [p["estimate_secs"] for p in parts if p["kind"] == "hook"] + [task_estimate]
+    return {
+        "kind": kind,
+        "name": name,
+        "task_id": task_id,
+        "status": status,
+        "start_offset": start,
+        # A running group has no fixed duration; the client ticks it from start.
+        "duration": round(max(ends) - start, 1) if ends and status != "running" else None,
+        "estimate_secs": sum(e for e in estimates if e) or None,
+        "steps": parts,
+    }
 
 
 def _job_timeline(job: Job, steps: list, now: datetime) -> dict:
-    """Place every step on one timeline measured in seconds from job start.
+    """Group every step by task (and plan hooks by phase) on one timeline
+    measured in seconds from its origin.
 
-    The client renders bars from these offsets and ticks running durations
-    forward from ``now_offset``, so browser clock skew never matters. A job
-    that hasn't started is laid out from zero by estimates alone.
+    started_at resets on every run, so a resumed job's earlier steps began
+    before it: the origin is whichever came first, and ``run_start_offset``
+    marks where the current run began. The client renders bars from these
+    offsets and ticks running durations forward from ``now_offset``, so
+    browser clock skew never matters. A job that hasn't started is laid out
+    from zero by estimates alone.
     """
-    origin = job.started_at or now
+    origin = min([t for t in (job.started_at, *(s.started_at for s in steps)) if t],
+                 default=now)
     finished = job.status in TERMINAL_JOB_STATUSES
     end = (job.completed_at or now) if finished else now
     placements, total = project_steps(steps, origin, end)
@@ -84,6 +155,7 @@ def _job_timeline(job: Job, steps: list, now: datetime) -> dict:
             "assignee": step.assignee,
             "exit_reason": step.exit_reason,
             "estimate_secs": step.estimate * 60 if step.estimate else None,
+            "timeout_secs": step.timeout * 60 if step.timeout else None,
             "start_offset": offset(step.started_at),
             "duration": (
                 round((step.ended_at - step.started_at).total_seconds(), 1)
@@ -98,11 +170,30 @@ def _job_timeline(job: Job, steps: list, now: datetime) -> dict:
         })
     if finished:
         total = max([r["bar"]["projected_end"] for r in rows if r["bar"]] + [offset(end) or 0, 1])
+
+    tasks = {t.id: t for t in job.tasks}
+    groups = []
+    for phase, indices in _group_steps(steps):
+        parts = [rows[i] for i in indices]
+        if phase in PLAN_HOOK_GROUPS:
+            groups.append(_timeline_group("plan_hooks", PLAN_HOOK_GROUPS[phase], None,
+                                          _rollup_status(parts), parts))
+            continue
+        task_id = parts[0]["task_id"]
+        task = tasks.get(task_id)
+        name = task.name if task else next(
+            (p["name"] for p in parts if p["kind"] == "task"), task_id or "")
+        # pre_task hooks run while the task is still PENDING, so a running part wins
+        status = "running" if any(p["status"] == "running" for p in parts) else (
+            task.status.value if task else _rollup_status(parts))
+        groups.append(_timeline_group("task", name, task_id, status, parts))
+
     return {
         "now_offset": offset(end) if job.started_at else None,
+        "run_start_offset": offset(job.started_at),
         "total_secs": round(total, 1),
-        "planned_secs": sum(r["estimate_secs"] or 0 for r in rows),
-        "steps": rows,
+        "planned_secs": sum(g["estimate_secs"] or 0 for g in groups),
+        "groups": groups,
     }
 
 

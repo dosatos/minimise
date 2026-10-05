@@ -124,13 +124,6 @@ function startJobListPolling(intervalMs) {
     intervalId = setInterval(refresh, intervalMs);
 }
 
-const HOOK_PHASES = {
-    pre_plan: "before all tasks",
-    pre_task: "before task",
-    post_task: "after task",
-    post_plan: "after all tasks",
-};
-
 // Compact duration matching the CLI's humanize_duration, minus zero units:
 // 42s, 7m 18s, 5m, 1h 15m, 2d 3h.
 function formatSecs(secs) {
@@ -198,15 +191,19 @@ function renderJobSummary(job) {
     const running = job.status === "running";
     const jobStart = parseUtc(job.started_at);
     const jobEnd = parseUtc(job.completed_at);
+    const steps = tl.groups.flatMap(g => g.steps);
+    // Elapsed covers the current run only: a resumed job's timeline starts
+    // earlier, at its first step, so tick from where this run began.
+    const runStart = tl.run_start_offset ?? 0;
 
     if (tl.now_offset == null) {
         setText("job-elapsed", "—");
         setText("job-elapsed-note", "not started yet");
     } else if (running) {
-        setHtml("job-elapsed", `<span data-live-from="0">${formatSecs(tl.now_offset)}</span>`);
+        setHtml("job-elapsed", `<span data-live-from="${runStart}">${formatSecs(tl.now_offset - runStart)}</span>`);
         setText("job-elapsed-note", `started ${clockTime(jobStart)}`);
     } else {
-        setText("job-elapsed", formatSecs(tl.now_offset));
+        setText("job-elapsed", formatSecs(tl.now_offset - runStart));
         setText("job-elapsed-note", jobEnd
             ? `${clockTime(jobStart)} → ${clockTime(jobEnd)}`
             : `started ${clockTime(jobStart)}`);
@@ -215,15 +212,15 @@ function renderJobSummary(job) {
     const tasks = job.tasks || [];
     const done = tasks.filter(t => t.status === "completed").length;
     setText("job-progress", `${done}/${tasks.length}`);
-    const hooks = tl.steps.filter(s => s.kind === "hook");
-    const failed = tl.steps.filter(s => s.status === "failed").length;
+    const hooks = steps.filter(s => s.kind === "hook");
+    const failed = steps.filter(s => s.status === "failed").length;
     const hooksDone = hooks.filter(s => s.status === "completed").length;
     setText("job-progress-note", [
         hooks.length ? `${hooksDone}/${hooks.length} hooks passed` : "",
         failed ? `${failed} failed` : "",
     ].filter(Boolean).join(" · "));
 
-    const current = tl.steps.filter(s => s.status === "running").pop();
+    const current = steps.filter(s => s.status === "running").pop();
     if (current) {
         setText("job-current", current.kind === "hook" ? `${current.name} (hook)` : current.name);
         document.getElementById("job-current")?.setAttribute("title", current.name);
@@ -249,58 +246,67 @@ function renderJobSummary(job) {
     }
 }
 
+// Duration cell for a group or a part: ticks from its start while running,
+// amber once it runs past its estimate.
+function timelineDuration(item, nowOff) {
+    if (item.status === "running" && item.start_offset != null && nowOff != null) {
+        const elapsed = nowOff - item.start_offset;
+        const over = item.estimate_secs && elapsed > item.estimate_secs ? " timeline-over" : "";
+        return `<span class="timeline-live${over}" data-live-from="${item.start_offset}">${formatSecs(elapsed)}</span>`;
+    }
+    if (item.duration != null) {
+        const over = item.estimate_secs && item.duration > item.estimate_secs;
+        return `<span class="${over ? "timeline-over" : ""}"`
+            + `${over ? ` title="Over estimate by ${formatSecs(item.duration - item.estimate_secs)}"` : ""}>`
+            + `${formatSecs(item.duration)}</span>`;
+    }
+    return "—";
+}
+
 function renderTimelineRows(job) {
     const tbody = document.getElementById("timeline-rows");
     if (!tbody) return;
     const tl = job.timeline;
-    if (!tl.steps.length) {
-        tbody.innerHTML = '<tr><td colspan="5" class="empty">No tasks</td></tr>';
+    if (!tl.groups.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty">No tasks</td></tr>';
         return;
     }
     const live = ["running", "pending"].includes(job.status);
     const nowOff = tl.now_offset;
     const pct = secs => `${Math.min(100, Math.max(0, (secs / tl.total_secs) * 100)).toFixed(2)}%`;
     const workers = Object.fromEntries((job.tasks || []).map(t => [t.id, t]));
-    const attempts = {};
-    tl.steps.forEach(s => {
-        if (s.kind === "task" && s.task_id) attempts[s.task_id] = (attempts[s.task_id] || 0) + 1;
-    });
 
     setText("timeline-scale", `0 → ${formatSecs(tl.total_secs)}${live && nowOff != null ? " projected" : ""}`);
 
-    tbody.innerHTML = tl.steps.map(s => {
-        const isHook = s.kind === "hook";
-        const classes = ["timeline-row", `timeline-${s.kind}`, `timeline-${s.status}`];
-        if (isHook && !s.task_id) classes.push("timeline-plan-hook");
+    // The aggregate row: wall-time duration and summed estimate, no bar or timeout.
+    function groupRow(g) {
+        const sub = g.kind === "task" && g.task_id
+            ? `<span class="timeline-sub">${escapeHtml(g.task_id)}</span>` : "";
+        return `<tr class="timeline-row timeline-group timeline-${g.status}">
+            <td class="timeline-step" data-label="Step"><span class="timeline-name">${escapeHtml(g.name)}</span>${sub}</td>
+            <td data-label="Status"><span class="${statusClass(g.status)}">${g.status}</span></td>
+            <td data-label="Duration">${timelineDuration(g, nowOff)}</td>
+            <td class="timeline-estimate" data-label="Estimate">${g.estimate_secs ? formatSecs(g.estimate_secs) : "—"}</td>
+            <td data-label="Timeout"></td>
+            <td data-label="Timeline"></td>
+        </tr>`;
+    }
 
+    function partRow(s, attempts) {
         let step;
-        if (isHook) {
-            step = `<span class="timeline-name">${escapeHtml(s.name)}`
-                + `<span class="timeline-sub">${HOOK_PHASES[s.phase] || s.phase}</span></span>`;
+        if (s.kind === "hook") {
+            step = `<span class="timeline-name">${escapeHtml(s.name)}</span><span class="timeline-tag">hook</span>`;
         } else {
             const task = workers[s.task_id];
-            const worker = task && (task.assignee || task.harness) ? ` · ${escapeHtml(workerLabel(task))}` : "";
-            const badge = attempts[s.task_id] > 1 && s.attempt ? `<span class="timeline-attempt">try ${s.attempt}</span>` : "";
-            step = `<span class="timeline-name">${escapeHtml(s.name)}${badge}</span>`
-                + `<span class="timeline-sub">${escapeHtml(s.task_id || "")}${worker}</span>`;
+            const worker = task && (task.assignee || task.harness)
+                ? `<span class="timeline-sub">${escapeHtml(workerLabel(task))}</span>` : "";
+            const attempt = attempts > 1 && s.attempt ? `<span class="timeline-attempt"> · try ${s.attempt}</span>` : "";
+            step = `<span class="timeline-name">implementation${attempt}</span><span class="timeline-tag">agent</span>${worker}`;
         }
 
         const reason = ["failed", "stopped"].includes(s.status) && s.exit_reason
             ? `<span class="timeline-sub">${escapeHtml(s.exit_reason)}</span>` : "";
         const status = `<span class="${statusClass(s.status)}">${s.status}</span>${reason}`;
-
-        let duration = "—";
-        if (s.status === "running" && s.start_offset != null && nowOff != null) {
-            const elapsed = nowOff - s.start_offset;
-            const over = s.estimate_secs && elapsed > s.estimate_secs ? " timeline-over" : "";
-            duration = `<span class="timeline-live${over}" data-live-from="${s.start_offset}">${formatSecs(elapsed)}</span>`;
-        } else if (s.duration != null) {
-            const over = s.estimate_secs && s.duration > s.estimate_secs;
-            duration = `<span class="${over ? "timeline-over" : ""}"`
-                + `${over ? ` title="Over estimate by ${formatSecs(s.duration - s.estimate_secs)}"` : ""}>`
-                + `${formatSecs(s.duration)}</span>`;
-        }
-        const estimate = s.estimate_secs ? formatSecs(s.estimate_secs) : "—";
 
         let track = '<div class="timeline-track">';
         if (s.bar) {
@@ -316,13 +322,19 @@ function renderTimelineRows(job) {
         if (live && nowOff != null) track += `<span class="timeline-now" style="left:${pct(nowOff)}"></span>`;
         track += "</div>";
 
-        return `<tr class="${classes.join(" ")}">
+        return `<tr class="timeline-row timeline-part timeline-${s.status}">
             <td class="timeline-step" data-label="Step">${step}</td>
             <td data-label="Status">${status}</td>
-            <td data-label="Duration">${duration}</td>
-            <td class="timeline-estimate" data-label="Estimate">${estimate}</td>
+            <td data-label="Duration">${timelineDuration(s, nowOff)}</td>
+            <td class="timeline-estimate" data-label="Estimate">${s.estimate_secs ? formatSecs(s.estimate_secs) : "—"}</td>
+            <td class="timeline-estimate" data-label="Timeout">${s.timeout_secs ? formatSecs(s.timeout_secs) : "—"}</td>
             <td data-label="Timeline">${track}</td>
         </tr>`;
+    }
+
+    tbody.innerHTML = tl.groups.map(g => {
+        const attempts = g.steps.filter(s => s.kind === "task").length;
+        return groupRow(g) + g.steps.map(s => partRow(s, attempts)).join("");
     }).join("");
 }
 
