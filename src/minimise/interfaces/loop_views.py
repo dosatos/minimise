@@ -2,6 +2,7 @@
 
 import json
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -55,6 +56,103 @@ def _serialize_step(step: LoopStep) -> dict:
     }
 
 
+_FINISHED_STEP_STATUSES = (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.STOPPED)
+
+
+def _iteration_status(steps: list[LoopStep]) -> str:
+    if any(step.status == TaskStatus.RUNNING for step in steps):
+        return "running"
+    started = [step for step in steps if step.started_at]
+    if started:
+        # Parallel evaluators can share the latest start, so any of them counts as last.
+        last = max(step.started_at for step in started)
+        if any(step.status == TaskStatus.FAILED and step.started_at == last for step in started):
+            return "failed"
+    if all(step.status in _FINISHED_STEP_STATUSES for step in steps):
+        return "completed"
+    return "pending"
+
+
+def _loop_timeline(loop: Loop, steps: list[LoopStep], now: datetime) -> dict:
+    """Group a loop's steps by iteration on one timeline measured in seconds
+    from its origin.
+
+    started_at resets on every run, so a resumed loop's earlier steps began
+    before it: the origin is whichever came first, and ``run_start_offset``
+    marks where the current run began. Evaluators within an iteration run in
+    parallel, so an iteration's duration is its wall time, never a sum. A
+    running iteration has no duration; the client ticks it from start_offset.
+    """
+    origin = min(
+        [t for t in (loop.started_at, *(step.started_at for step in steps)) if t],
+        default=None,
+    )
+    if loop.status == JobStatus.RUNNING:
+        end = now
+    else:
+        end = loop.completed_at or max(
+            (step.completed_at for step in steps if step.completed_at), default=now
+        )
+
+    def offset(moment: Optional[datetime]) -> Optional[float]:
+        if moment is None or origin is None:
+            return None
+        return round((moment - origin).total_seconds(), 1)
+
+    def timed(step: LoopStep) -> dict:
+        start = offset(step.started_at)
+        return {
+            **_serialize_step(step),
+            "start_offset": start,
+            "duration": (
+                round((step.completed_at - step.started_at).total_seconds(), 1)
+                if step.started_at and step.completed_at else None
+            ),
+            "bar": None if start is None else {
+                "start": start,
+                "end": max(start, offset(step.completed_at or end)),
+            },
+        }
+
+    by_iteration: dict[int, list[LoopStep]] = {}
+    for step in steps:
+        by_iteration.setdefault(step.iteration, []).append(step)
+
+    groups = []
+    for iteration in sorted(by_iteration):
+        members = by_iteration[iteration]
+        status = _iteration_status(members)
+        first = min((step.started_at for step in members if step.started_at), default=None)
+        last = max(
+            (step.completed_at for step in members if step.started_at and step.completed_at),
+            default=None,
+        )
+        groups.append({
+            "iteration": iteration,
+            "status": status,
+            "start_offset": offset(first),
+            "duration": (
+                round((last - first).total_seconds(), 1)
+                if first and last and status != "running" else None
+            ),
+            "steps": [timed(step) for step in members],
+        })
+
+    durations = [g["duration"] for g in groups
+                 if g["status"] != "running" and g["duration"] is not None]
+    now_offset = offset(end)
+    bar_ends = [s["bar"]["end"] for g in groups for s in g["steps"] if s["bar"]]
+    return {
+        "now_offset": now_offset,
+        "run_start_offset": offset(loop.started_at),
+        "total_secs": round(max(bar_ends + [now_offset or 0, 1]), 1),
+        "avg_iteration_secs": (
+            round(sum(durations) / len(durations), 1) if durations else None
+        ),
+        "groups": groups,
+    }
+
+
 def _serialize_loop(
     loop: Loop,
     steps: list[LoopStep],
@@ -83,6 +181,7 @@ def _serialize_loop(
     }
     if include_steps:
         result["steps"] = [_serialize_step(step) for step in steps]
+        result["timeline"] = _loop_timeline(loop, steps, datetime.utcnow())
     return result
 
 

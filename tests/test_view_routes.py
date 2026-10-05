@@ -939,3 +939,184 @@ def test_job_timeline_resumed_job_measures_from_its_earliest_step():
     assert review["start_offset"] == 0.0 and build["start_offset"] == 610.0
     assert review["bar"] == {"start": 0.0, "actual_end": 240.0, "projected_end": 240.0}
     assert build["bar"]["start"] == 610.0 >= review["bar"]["projected_end"]
+
+
+def _loop_step(step_id, iteration, step_type, start, end=None, status=None, dimension=None):
+    """A loop step that started ``start`` secs and ended ``end`` secs after _at(0)."""
+    from minimise.models import LoopStep, TaskStatus
+    return LoopStep(
+        step_id=step_id, loop_id="loop-1", iteration=iteration, step_type=step_type,
+        dimension=dimension,
+        status=status or (TaskStatus.COMPLETED if end is not None else TaskStatus.RUNNING),
+        started_at=_at(start) if start is not None else None,
+        completed_at=_at(end) if end is not None else None,
+    )
+
+
+def _timed_loop(status, started=None, completed=None):
+    from minimise.models import Loop
+    return Loop(loop_id="loop-1", name="timed", status=status,
+                started_at=_at(started) if started is not None else None,
+                completed_at=_at(completed) if completed is not None else None)
+
+
+def test_loop_timeline_iteration_spans_parallel_evaluators():
+    """a) evaluators overlap (loop-4adaca): wall time from first start to last end."""
+    from minimise.interfaces.loop_views import _loop_timeline
+    from minimise.models import JobStatus
+
+    steps = [
+        _loop_step("plan", 1, "plan", 0, 20),
+        _loop_step("impl", 1, "implement", 20, 80),
+        _loop_step("eval-a", 1, "evaluate", 80, 111.6, dimension="clarity"),
+        _loop_step("eval-b", 1, "evaluate", 80, 202, dimension="accuracy"),
+    ]
+
+    timeline = _loop_timeline(_timed_loop(JobStatus.COMPLETED, 0, 205), steps, _at(999))
+
+    [group] = timeline["groups"]
+    assert group["iteration"] == 1 and group["status"] == "completed"
+    assert group["start_offset"] == 0.0
+    assert group["duration"] == 202.0  # not the sum, 233.6
+    assert sum(s["duration"] for s in group["steps"]) == pytest.approx(233.6)
+    eval_a = group["steps"][2]
+    assert eval_a["dimension"] == "clarity" and eval_a["stage"] == "Evaluate"
+    assert eval_a["start_offset"] == 80.0 and eval_a["duration"] == 31.6
+    assert eval_a["bar"] == {"start": 80.0, "end": 111.6}
+    assert timeline["now_offset"] == 205.0  # a finished loop ends at completed_at
+    assert timeline["run_start_offset"] == 0.0
+    assert timeline["total_secs"] == 205.0
+    assert timeline["avg_iteration_secs"] == 202.0
+
+
+def test_loop_timeline_resumed_loop_measures_from_its_earliest_step():
+    """b) the first Plan attempt started before loop.started_at (loop-4adaca)."""
+    from minimise.interfaces.loop_views import _loop_timeline
+    from minimise.models import JobStatus, TaskStatus
+
+    steps = [  # 15:58:20 first run; resumed at 16:01:59 (+219s)
+        _loop_step("plan-0", 1, "plan", 0, 60, TaskStatus.FAILED),
+        _loop_step("plan-1", 1, "plan", 225, 260),
+        _loop_step("impl", 1, "implement", 260),
+    ]
+
+    timeline = _loop_timeline(_timed_loop(JobStatus.RUNNING, 219), steps, _at(400))
+
+    parts = timeline["groups"][0]["steps"]
+    assert all(s["start_offset"] >= 0 for s in parts)
+    assert [s["start_offset"] for s in parts] == [0.0, 225.0, 260.0]
+    assert timeline["groups"][0]["start_offset"] == 0.0
+    assert timeline["run_start_offset"] == 219.0  # loop.started_at - origin
+    assert timeline["now_offset"] == 400.0
+
+
+def test_loop_timeline_running_step_ticks_to_now():
+    """c) a running step and its iteration have no fixed duration."""
+    from minimise.interfaces.loop_views import _loop_timeline
+    from minimise.models import JobStatus
+
+    steps = [
+        _loop_step("plan-1", 1, "plan", 0, 30),
+        _loop_step("impl-1", 1, "implement", 30, 100),
+        _loop_step("plan-2", 2, "plan", 100, 120),
+        _loop_step("impl-2", 2, "implement", 120),
+    ]
+
+    timeline = _loop_timeline(_timed_loop(JobStatus.RUNNING, 0), steps, _at(300))
+
+    first, second = timeline["groups"]
+    running = second["steps"][1]
+    assert running["status"] == "running"
+    assert running["duration"] is None
+    assert running["bar"] == {"start": 120.0, "end": 300.0}
+    assert running["bar"]["end"] == timeline["now_offset"]
+    assert second["status"] == "running" and second["duration"] is None
+    assert second["start_offset"] == 100.0
+    assert first["status"] == "completed" and first["duration"] == 100.0
+    assert timeline["total_secs"] == 300.0
+
+
+def test_loop_timeline_averages_only_finished_iterations():
+    """d) the running iteration stays out of the average."""
+    from minimise.interfaces.loop_views import _loop_timeline
+    from minimise.models import JobStatus
+
+    steps = [
+        _loop_step("plan-1", 1, "plan", 0, 100),
+        _loop_step("plan-2", 2, "plan", 100, 300),
+        _loop_step("plan-3", 3, "plan", 300),
+    ]
+
+    timeline = _loop_timeline(_timed_loop(JobStatus.RUNNING, 0), steps, _at(1000))
+
+    assert [g["duration"] for g in timeline["groups"]] == [100.0, 200.0, None]
+    assert timeline["avg_iteration_secs"] == 150.0  # not (100 + 200 + 700) / 3
+
+
+def test_loop_timeline_iteration_status_follows_its_last_step():
+    from minimise.interfaces.loop_views import _loop_timeline
+    from minimise.models import JobStatus, TaskStatus
+
+    steps = [
+        _loop_step("plan-1", 1, "plan", 0, 10, TaskStatus.FAILED),  # retried below
+        _loop_step("plan-1b", 1, "plan", 10, 20),
+        _loop_step("plan-2", 2, "plan", 20, 30),
+        _loop_step("impl-2", 2, "implement", 30, 50, TaskStatus.FAILED),
+        _loop_step("plan-3", 3, "plan", None, status=TaskStatus.PENDING),
+    ]
+
+    timeline = _loop_timeline(_timed_loop(JobStatus.FAILED, 0, 50), steps, _at(999))
+
+    assert [g["status"] for g in timeline["groups"]] == ["completed", "failed", "pending"]
+    assert timeline["groups"][1]["duration"] == 30.0
+    assert timeline["avg_iteration_secs"] == 25.0
+
+
+def test_loop_timeline_unstarted_loop_has_no_origin():
+    """e) nothing started: no offsets and no bars."""
+    from minimise.interfaces.loop_views import _loop_timeline
+    from minimise.models import JobStatus, TaskStatus
+
+    steps = [_loop_step("plan-1", 1, "plan", None, status=TaskStatus.PENDING)]
+
+    timeline = _loop_timeline(_timed_loop(JobStatus.PENDING), steps, _at(500))
+
+    assert timeline["now_offset"] is None
+    assert timeline["run_start_offset"] is None
+    assert timeline["avg_iteration_secs"] is None
+    assert timeline["total_secs"] == 1
+    [group] = timeline["groups"]
+    assert group["status"] == "pending"
+    assert group["start_offset"] is None and group["duration"] is None
+    assert all(s["bar"] is None and s["start_offset"] is None for s in group["steps"])
+    assert _loop_timeline(_timed_loop(JobStatus.PENDING), [], _at(500))["groups"] == []
+
+
+def test_get_loop_api_includes_timeline_and_list_is_unchanged(client, api_server, db):
+    """f) the detail API gains "timeline"; the list API stays as it was."""
+    from minimise.models import JobStatus, LoopStep, TaskStatus
+
+    loop = _make_loop(api_server)
+    db.update_loop_status(loop.loop_id, status=JobStatus.COMPLETED,
+                          started_at=_at(0), completed_at=_at(8))
+    db.create_loop_step(LoopStep(
+        step_id="step-plan", loop_id=loop.loop_id, iteration=1, step_type="plan",
+        status=TaskStatus.COMPLETED, started_at=_at(0), completed_at=_at(2),
+    ))
+
+    data = client.get(f"/api/loops/{loop.loop_id}").get_json()
+
+    assert {"loop_id", "name", "status", "iteration", "max_iterations", "stage",
+            "plan_version", "evaluator_count", "created_at", "started_at",
+            "completed_at", "elapsed", "steps", "timeline"} <= set(data)
+    assert data["elapsed"] == "8.0s"
+    assert data["steps"][0]["duration"] == "2.0s"  # the old step list keeps its labels
+    [group] = data["timeline"]["groups"]
+    assert group["iteration"] == 1 and group["duration"] == 2.0
+    assert group["steps"][0]["bar"] == {"start": 0.0, "end": 2.0}
+    assert data["timeline"]["now_offset"] == 8.0
+
+    [listed] = client.get("/api/loops").get_json()
+    assert set(listed) == {"loop_id", "name", "status", "iteration", "max_iterations",
+                           "stage", "plan_version", "evaluator_count", "created_at",
+                           "started_at", "completed_at", "elapsed"}
