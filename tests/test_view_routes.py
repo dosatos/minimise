@@ -214,6 +214,27 @@ def test_loop_detail_page_404_for_unknown_loop(client):
     assert response.status_code == 404
 
 
+def test_loop_detail_page_renders_timeline_table_and_summary(client, api_server):
+    """The step table became a timeline that loop.js fills from the API."""
+    import re
+
+    loop = _make_loop(api_server)
+
+    html = client.get(f"/loops/{loop.loop_id}/view").get_data(as_text=True)
+
+    table = html[html.index('<table class="timeline-table">'):html.index("</table>")]
+    assert re.findall(r"<th>(\w+)", table) == ["Step", "Status", "Duration", "Timeline"]
+    assert '<tbody id="loop-step-rows">' in table
+    assert '<td colspan="4" class="empty">Loading timeline…</td>' in table
+    assert "loop-step-table" not in html and ">Retries<" not in html
+    summary = html[html.index('class="live-summary"'):html.index('<div class="table-wrap">')]
+    assert re.findall(r"<span>([^<]+)</span>", summary) == [
+        "Iteration", "Latest stage", "Plan version", "Elapsed", "Avg / iteration",
+    ]
+    assert 'id="loop-avg-iteration"' in summary and 'id="loop-avg-iteration-note"' in summary
+    assert f'<time datetime="{loop.created_at.isoformat()}Z" data-local-time>' in html
+
+
 def test_job_detail_page_renders(client, mock_job_controller):
     from minimise.models import Plan, PlanTask
 

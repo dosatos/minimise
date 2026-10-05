@@ -39,15 +39,72 @@ function startLoopListPolling(intervalMs) {
     intervalId = setInterval(tick, intervalMs);
 }
 
-function loopStepRow(step) {
-    return `<tr>
-        <td data-label="Iteration">${escapeHtml(step.iteration)}</td>
-        <td data-label="Stage">${escapeHtml(step.stage)}</td>
-        <td data-label="Dimension">${escapeHtml(step.dimension || "-")}</td>
-        <td data-label="Status"><span class="${statusClass(step.status)}">${escapeHtml(step.status)}</span></td>
-        <td data-label="Retries">${escapeHtml(step.retries)}</td>
-        <td data-label="Duration">${escapeHtml(step.duration)}</td>
-    </tr>`;
+// Elapsed covers the current run only: a resumed loop's timeline starts
+// earlier, at its first step, so tick from where this run began. Once
+// finished, the server's elapsed is measured from the same started_at.
+function renderLoopSummary(loop) {
+    const tl = loop.timeline;
+    const runStart = tl.run_start_offset;
+    if (loop.status === "running" && runStart != null && tl.now_offset != null) {
+        setHtml("loop-elapsed", `<span data-live-from="${runStart}">${formatSecs(tl.now_offset - runStart)}</span>`);
+    } else {
+        setText("loop-elapsed", loop.elapsed);
+    }
+
+    const finished = tl.groups.filter(g => g.status !== "running" && g.duration != null).length;
+    setText("loop-avg-iteration", formatSecs(tl.avg_iteration_secs));
+    setText("loop-avg-iteration-note", finished
+        ? `over ${finished} finished iteration${finished === 1 ? "" : "s"}`
+        : "no finished iterations yet");
+}
+
+// Iterations are the groups and their steps the sub-lines. Evaluators run in
+// parallel, so a group's duration is its wall time, and group rows get no bar.
+function renderLoopTimelineRows(loop) {
+    const tbody = document.getElementById("loop-step-rows");
+    if (!tbody) return;
+    const tl = loop.timeline;
+    if (!tl.groups.length) {
+        tbody.innerHTML = '<tr><td colspan="4" class="empty">No loop steps yet</td></tr>';
+        return;
+    }
+    const live = loop.status === "running";
+    const nowOff = tl.now_offset;
+    const pct = secs => `${Math.min(100, Math.max(0, (secs / tl.total_secs) * 100)).toFixed(2)}%`;
+
+    setText("loop-timeline-scale", nowOff != null ? `0 → ${formatSecs(tl.total_secs)}` : "");
+
+    function groupRow(g) {
+        return `<tr class="timeline-row timeline-group timeline-${g.status}">
+            <td class="timeline-step" data-label="Step"><span class="timeline-name">Iteration ${escapeHtml(g.iteration)}</span></td>
+            <td data-label="Status"><span class="${statusClass(g.status)}">${escapeHtml(g.status)}</span></td>
+            <td data-label="Duration">${timelineDuration(g, nowOff)}</td>
+            <td data-label="Timeline"></td>
+        </tr>`;
+    }
+
+    function stepRow(s) {
+        const label = s.dimension ? `${s.stage} · ${s.dimension}` : s.stage;
+        const retries = s.retries > 0
+            ? `<span class="timeline-sub">${s.retries} ${s.retries === 1 ? "retry" : "retries"}</span>` : "";
+
+        let track = '<div class="timeline-track">';
+        if (s.bar && s.bar.end > s.bar.start) {
+            track += `<span class="timeline-actual status-${s.status}" `
+                + `style="left:${pct(s.bar.start)};width:${pct(s.bar.end - s.bar.start)}"></span>`;
+        }
+        if (live && nowOff != null) track += `<span class="timeline-now" style="left:${pct(nowOff)}"></span>`;
+        track += "</div>";
+
+        return `<tr class="timeline-row timeline-part timeline-${s.status}">
+            <td class="timeline-step" data-label="Step"><span class="timeline-name">${escapeHtml(label)}</span></td>
+            <td data-label="Status"><span class="${statusClass(s.status)}">${escapeHtml(s.status)}</span>${retries}</td>
+            <td data-label="Duration">${timelineDuration(s, nowOff)}</td>
+            <td data-label="Timeline">${track}</td>
+        </tr>`;
+    }
+
+    tbody.innerHTML = tl.groups.map(g => groupRow(g) + g.steps.map(stepRow).join("")).join("");
 }
 
 async function refreshLoopDetail(loopId) {
@@ -64,35 +121,43 @@ async function refreshLoopDetail(loopId) {
         "loop-iteration": `${loop.iteration}/${loop.max_iterations}`,
         "loop-stage": loop.stage,
         "loop-plan-version": loop.plan_version ? `v${loop.plan_version}` : "-",
-        "loop-elapsed": loop.elapsed,
     };
     Object.entries(values).forEach(([id, value]) => {
         const element = document.getElementById(id);
         if (element) element.textContent = value;
     });
 
-    const rows = document.getElementById("loop-step-rows");
-    if (rows) {
-        rows.innerHTML = loop.steps.map(loopStepRow).join("")
-            || '<tr><td colspan="6" class="empty">No loop steps yet</td></tr>';
-    }
+    jobClock.nowOffset = loop.timeline.now_offset;
+    jobClock.fetchedAt = performance.now();
+    jobClock.live = loop.status === "running";
+    renderLoopSummary(loop);
+    renderLoopTimelineRows(loop);
     return loop;
 }
 
 function startLoopDetailPolling(loopId, intervalMs) {
     let intervalId = null;
+    let tickId = null;
+    let stopped = false;
+    function stopPolling() {
+        stopped = true;
+        if (intervalId !== null) clearInterval(intervalId);
+        if (tickId !== null) clearInterval(tickId);
+    }
     async function tick() {
         if (document.hidden) return;
         const loop = await refreshLoopDetail(loopId);
         if (loop && isTerminalStatus(loop.status)) {
-            clearInterval(intervalId);
+            stopPolling();
         }
     }
     document.addEventListener("visibilitychange", () => {
-        if (!document.hidden) tick();
+        if (!stopped && !document.hidden) tick();
     });
+    localizeTimes();
     tick();
     intervalId = setInterval(tick, intervalMs);
+    tickId = setInterval(tickLiveDurations, 1000);
 }
 
 function loopJournalEntry(entry) {

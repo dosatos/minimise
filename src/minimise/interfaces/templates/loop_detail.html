@@ -15,7 +15,9 @@
         </div>
         <p class="detail-meta">
             <code>{{ loop_view.loop_id }}</code>
-            <span>Created {{ loop_view.created_at }}</span>
+            {% if loop_view.created_at %}
+            <span>Created <time datetime="{{ loop_view.created_at }}Z" data-local-time>{{ loop_view.created_at[:16]|replace("T", " ") }} UTC</time></span>
+            {% endif %}
         </p>
     </header>
 
@@ -25,7 +27,7 @@
                 <p class="eyebrow">Live state</p>
                 <h3 id="loop-execution-heading">Iteration execution</h3>
             </div>
-            <p>Current cycle position and every dispatched loop step.</p>
+            <p>Every iteration and its steps in order, with how long each took.</p>
         </div>
 
         <div class="live-summary" aria-label="Loop execution summary">
@@ -45,26 +47,28 @@
                 <span>Elapsed</span>
                 <strong id="loop-elapsed">{{ loop_view.elapsed }}</strong>
             </div>
+            <div>
+                <span>Avg / iteration</span>
+                <strong id="loop-avg-iteration">—</strong>
+                <small id="loop-avg-iteration-note"></small>
+            </div>
         </div>
 
         <div class="table-wrap">
-            <table class="loop-step-table">
+            <table class="timeline-table">
+                <colgroup>
+                    <col class="col-step"><col class="col-status"><col class="col-duration"><col>
+                </colgroup>
                 <thead>
-                    <tr><th>Iteration</th><th>Stage</th><th>Dimension</th><th>Status</th><th>Retries</th><th>Duration</th></tr>
+                    <tr>
+                        <th>Step</th>
+                        <th>Status</th>
+                        <th>Duration</th>
+                        <th>Timeline<small id="loop-timeline-scale"></small></th>
+                    </tr>
                 </thead>
                 <tbody id="loop-step-rows">
-                    {% for step in loop_view.steps %}
-                    <tr>
-                        <td data-label="Iteration">{{ step.iteration }}</td>
-                        <td data-label="Stage">{{ step.stage }}</td>
-                        <td data-label="Dimension">{{ step.dimension or "-" }}</td>
-                        <td data-label="Status"><span class="status status-{{ step.status }}">{{ step.status }}</span></td>
-                        <td data-label="Retries">{{ step.retries }}</td>
-                        <td data-label="Duration">{{ step.duration }}</td>
-                    </tr>
-                    {% else %}
-                    <tr><td colspan="6" class="empty">No loop steps yet</td></tr>
-                    {% endfor %}
+                    <tr><td colspan="4" class="empty">Loading timeline…</td></tr>
                 </tbody>
             </table>
         </div>
