@@ -27,24 +27,24 @@
     </div>
     <div class="live-summary" aria-label="Job timing summary">
         <div>
-            <span>Elapsed</span>
-            <strong id="job-elapsed">—</strong>
-            <small id="job-elapsed-note"></small>
-        </div>
-        <div>
-            <span>Tasks done</span>
-            <strong id="job-progress">{{ job.tasks|selectattr("status.value", "equalto", "completed")|list|length }}/{{ job.tasks|length }}</strong>
-            <small id="job-progress-note"></small>
-        </div>
-        <div>
             <span>Running now</span>
             <strong id="job-current" class="live-summary-name">—</strong>
             <small id="job-current-note"></small>
         </div>
         <div>
+            <span>Elapsed</span>
+            <strong id="job-elapsed">—</strong>
+            <small id="job-elapsed-note"></small>
+        </div>
+        <div>
             <span id="job-remaining-label">Remaining</span>
             <strong id="job-remaining">—</strong>
             <small id="job-remaining-note"></small>
+        </div>
+        <div>
+            <span>Tasks done</span>
+            <strong id="job-progress">{{ job.tasks|selectattr("status.value", "equalto", "completed")|list|length }}/{{ job.tasks|length }}</strong>
+            <small id="job-progress-note"></small>
         </div>
     </div>
     <div class="table-wrap">
