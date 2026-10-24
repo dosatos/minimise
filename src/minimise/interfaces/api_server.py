@@ -11,6 +11,7 @@ from flask import Flask, jsonify, request, render_template
 from flask_cors import CORS
 
 from minimise.interfaces.loop_views import register_loop_routes
+from minimise.interfaces.prompt_preview import persona_preview
 from minimise.interfaces.timeline import build_steps, project_steps, steps_from_executions
 from minimise.models import Job, JobStatus, Plan, TaskStatus
 from minimise.storage.database import Database
@@ -51,6 +52,22 @@ def _plan_summary(plan: Plan) -> dict:
         "hook_count": len(hooks),
         "total_minutes": task_minutes + hook_minutes,
     }
+
+
+def _task_prompts(plan: Plan) -> dict:
+    """Persona prompt previews keyed by task id, for tasks with an assignee."""
+    assigned = [task for task in plan.tasks if task.assignee]
+    if not assigned:
+        return {}
+    import minimise.interfaces.cli as _cli  # lazy: avoids circular import (cli.view imports us)
+
+    personas, load_error = None, None
+    try:
+        personas = load_personas(_cli.CONFIG_DIR)
+    except Exception as exc:
+        load_error = str(exc)
+    return {task.id: persona_preview(task.assignee, personas, load_error)
+            for task in assigned}
 
 
 TERMINAL_JOB_STATUSES = (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.STOPPED)
@@ -278,6 +295,7 @@ class APIServer:
             plan_error = None
             plan_summary = None
             plan_briefing = None
+            task_prompts = {}
             plan_yaml_path = self.job_controller.store.jobs_dir / job_id / "plan.yaml"
             try:
                 plan_raw = plan_yaml_path.read_text()
@@ -290,6 +308,7 @@ class APIServer:
                     plan = self.job_controller.store.load_plan(job_id)
                     plan_summary = _plan_summary(plan)
                     plan_briefing = plan.briefing
+                    task_prompts = _task_prompts(plan)
                 except Exception as e:
                     # A historical plan can become invalid after a schema change.
                     # Keep operational status and logs available in that case.
@@ -303,6 +322,7 @@ class APIServer:
                 plan_error=plan_error,
                 plan_summary=plan_summary,
                 plan_briefing=plan_briefing,
+                task_prompts=task_prompts,
             )
 
         @self.app.route("/personas", methods=["GET"])

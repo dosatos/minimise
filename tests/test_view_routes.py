@@ -541,6 +541,103 @@ def test_job_detail_page_preserves_raw_yaml_when_cached_plan_is_invalid(
     assert b"name: [invalid" in resp.data
 
 
+def _make_assigned_job(mock_job_controller, *assignees):
+    """A job with one task per assignee (None = no assignee), ids t1, t2, ..."""
+    from minimise.models import Plan
+
+    tasks = [{
+        "id": f"t{index}", "name": f"Task {index}", "description": "d", "goal": "g",
+        "estimated_duration_min": 5,
+        "post_hooks": [{"name": "tests", "shell": "true", "estimated_duration_min": 3}],
+        **({"assignee": assignee} if assignee else {}),
+    } for index, assignee in enumerate(assignees, start=1)]
+    plan = Plan.model_validate({"name": "Assigned", "tasks": tasks})
+    return mock_job_controller.store.create(plan, base_commit="abc123", plan_path="/tmp/plan.yaml")
+
+
+def _task_blocks(client, job):
+    """Split the job page's plan into one HTML block per task card."""
+    response = client.get(f"/jobs/{job.id}/view")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    # Not "</ol>": a rendered persona prompt can hold its own ordered list.
+    end = html.index('<details class="plan-raw">')
+    return html[:end].split('<li class="plan-task-item">')[1:]
+
+
+def test_job_detail_page_folds_assignee_persona_prompt(client, mock_job_controller, config_dir):
+    import re
+    from minimise.interfaces.prompt_preview import render_prompt_markdown
+    from minimise.personas import load_builtin_personas
+
+    name = "mini:doc-review:clarity"
+    job = _make_assigned_job(mock_job_controller, name, None)
+
+    assigned, unassigned = _task_blocks(client, job)
+
+    expected = render_prompt_markdown(load_builtin_personas()[name].system_prompt)
+    assert re.findall(r'<details class="prompt-fold[^>]*>', assigned) == ['<details class="prompt-fold">']
+    assert '<span class="prompt-fold-label">Persona prompt</span>' in assigned
+    assert f'<span class="prompt-fold-name">{name}</span>' in assigned
+    assert expected in assigned
+    assert f'href="/personas/{name}">Open persona page</a>' in assigned
+    assert f"Persona · {name}" in assigned
+    fold_at = assigned.index('<details class="prompt-fold">')
+    assert assigned.index("<h5>Instructions</h5>") < fold_at < assigned.index("<h5>After this task</h5>")
+    assert "prompt-fold" not in unassigned
+
+
+def test_job_detail_page_folds_user_persona_prompt(client, mock_job_controller, config_dir):
+    (config_dir / "personas.yaml").write_text(
+        "migration-owner:\n  prompt: |\n    # Owner brief\n\n    Ship **safely**.\n"
+    )
+    job = _make_assigned_job(mock_job_controller, "migration-owner")
+
+    (task,) = _task_blocks(client, job)
+
+    assert '<details class="prompt-fold">' in task
+    assert "<h1>Owner brief</h1>" in task
+    assert "<strong>safely</strong>" in task
+    assert 'href="/personas/migration-owner">Open persona page</a>' in task
+
+
+def test_job_detail_page_shows_notice_for_unknown_assignee(client, mock_job_controller, config_dir):
+    job = _make_assigned_job(mock_job_controller, "ghost")
+
+    (task,) = _task_blocks(client, job)
+
+    assert '<details class="prompt-fold">' in task
+    assert '<p class="prompt-fold-error" role="status">' in task
+    assert "Unknown persona &#39;ghost&#39;" in task
+    assert "prompt-fold-body" not in task
+
+
+def test_job_detail_page_survives_malformed_personas_yaml(client, mock_job_controller, config_dir):
+    (config_dir / "personas.yaml").write_text("writer: [unclosed\n")
+    job = _make_assigned_job(mock_job_controller, "mini:doc-review:clarity", "writer", None)
+
+    first, second, unassigned = _task_blocks(client, job)
+
+    for task in (first, second):
+        assert '<p class="prompt-fold-error" role="status">' in task
+        assert "Personas could not be loaded: " in task
+    assert "prompt-fold" not in unassigned
+
+
+def test_prompt_fold_markup_lives_only_in_its_macro():
+    from pathlib import Path
+    import minimise.interfaces as interfaces
+
+    templates = Path(interfaces.__file__).parent / "templates"
+    with_markup = sorted(path.name for path in templates.glob("*.html")
+                         if 'class="prompt-fold' in path.read_text())
+    assert with_markup == ["_prompt_fold.html"]
+    for name in ("_loop_spec_detail.html", "_plan_detail.html"):
+        source = (templates / name).read_text()
+        assert '{% from "_prompt_fold.html" import render_prompt_fold %}' in source
+        assert "render_prompt_fold(" in source.split("import render_prompt_fold", 1)[1]
+
+
 def test_job_detail_page_404_for_unknown_job(client):
     resp = client.get("/jobs/nonexistent/view")
     assert resp.status_code == 404

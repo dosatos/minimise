@@ -1,3 +1,5 @@
+{% from "_prompt_fold.html" import render_prompt_fold %}
+
 {% macro render_hook(hook, phase) %}
 <article class="plan-hook">
     <div class="plan-hook-heading">
@@ -124,6 +126,10 @@
                             <h5>Instructions</h5>
                             <div class="plan-prose">{{ task.description }}</div>
                         </section>
+
+                        {% if task.id in task_prompts %}
+                        {{ render_prompt_fold(task_prompts[task.id]) }}
+                        {% endif %}
 
                         {% if task.pre_hooks or task.post_hooks %}
                         <div class="plan-task-hooks">
