@@ -1,4 +1,6 @@
-{% macro render_worker(worker) %}
+{% from "_prompt_fold.html" import render_prompt_fold %}
+
+{% macro render_worker(worker, preview) %}
 <div class="loop-worker">
     <div class="loop-worker-pills">
         {% if worker.persona %}
@@ -22,11 +24,8 @@
         <span>Prompt</span>
         <p>{{ worker.prompt }}</p>
     </div>
-    {% elif worker.prompt_file %}
-    <div class="loop-worker-copy">
-        <span>Prompt file</span>
-        <code>{{ worker.prompt_file }}</code>
-    </div>
+    {% elif preview %}
+    {{ render_prompt_fold(preview) }}
     {% endif %}
 </div>
 {% endmacro %}
@@ -65,7 +64,7 @@
                         <h4>Plan</h4>
                     </div>
                 </div>
-                {{ render_worker(spec.loop.plan) }}
+                {{ render_worker(spec.loop.plan, worker_prompts.plan) }}
             </article>
 
             <article class="loop-stage-card">
@@ -76,7 +75,7 @@
                         <h4>Implement</h4>
                     </div>
                 </div>
-                {{ render_worker(spec.loop.implement) }}
+                {{ render_worker(spec.loop.implement, worker_prompts.implement) }}
             </article>
 
             <article class="loop-stage-card loop-evaluate-card">
@@ -95,7 +94,7 @@
                             <h5>{{ dimension.name }}</h5>
                         </div>
                         <p>{{ dimension.rubric }}</p>
-                        {{ render_worker(dimension) }}
+                        {{ render_worker(dimension, worker_prompts.dimensions[loop.index0]) }}
                     </section>
                     {% endfor %}
                 </div>

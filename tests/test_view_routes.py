@@ -235,6 +235,170 @@ def test_loop_detail_page_renders_timeline_table_and_summary(client, api_server)
     assert f'<time datetime="{loop.created_at.isoformat()}Z" data-local-time>' in html
 
 
+@pytest.fixture
+def config_dir(tmp_path, monkeypatch):
+    """Point persona loading at an empty tmp config dir (built-ins only)."""
+    path = tmp_path / "config"
+    path.mkdir()
+    monkeypatch.setattr("minimise.interfaces.cli.CONFIG_DIR", path)
+    return path
+
+
+def _make_prompt_loop(api_server, plan=None, implement=None, dimension=None):
+    from minimise.models import LoopSpec
+
+    spec = LoopSpec.model_validate({
+        "version": "1",
+        "name": "Prompt previews",
+        "goal": "Show every worker's prompt.",
+        "max_iterations": 2,
+        "loop": {
+            "plan": plan or {"prompt": "Inline plan prompt."},
+            "implement": implement or {"prompt": "Inline implement prompt."},
+            "evaluate": {"dimensions": [{
+                "name": "clarity",
+                "rubric": "Is it clear?",
+                **(dimension or {"prompt": "Inline evaluate prompt."}),
+            }]},
+        },
+    })
+    return api_server.loop_store.create(spec, plan_path="/tmp/loop.yaml")
+
+
+def _stage_blocks(html):
+    """Split the loop spec into its plan, implement and evaluate cards."""
+    plan_at = html.index("<h4>Plan</h4>")
+    implement_at = html.index("<h4>Implement</h4>")
+    evaluate_at = html.index("<h4>Evaluate</h4>")
+    end = html.index('<footer class="loop-spec-footer">')
+    return {
+        "plan": html[plan_at:implement_at],
+        "implement": html[implement_at:evaluate_at],
+        "evaluate": html[evaluate_at:end],
+    }
+
+
+def _get_loop_page(client, loop):
+    response = client.get(f"/loops/{loop.loop_id}/view")
+    assert response.status_code == 200
+    return _stage_blocks(response.get_data(as_text=True))
+
+
+def test_loop_detail_page_folds_prompt_file_collapsed(client, api_server, tmp_path):
+    import re
+
+    path = tmp_path / "planner.md"
+    path.write_text("# Planner heading\n\nPlan carefully.\n")
+    loop = _make_prompt_loop(api_server, plan={"prompt_file": str(path)})
+
+    plan = _get_loop_page(client, loop)["plan"]
+
+    assert re.findall(r"<details[^>]*>", plan) == ['<details class="prompt-fold">']
+    assert "<h1>Planner heading</h1>" in plan
+    assert f"<code>{path}</code>" in plan
+    assert '<span class="prompt-fold-label">Prompt file</span>' in plan
+    assert '<span class="prompt-fold-name">planner.md</span>' in plan
+    assert '<span class="prompt-fold-size">' in plan
+
+
+def test_loop_detail_page_folds_persona_prompt_with_link(client, api_server, config_dir):
+    from minimise.interfaces.prompt_preview import render_prompt_markdown
+    from minimise.personas import load_builtin_personas
+
+    name = "mini:doc-review:clarity"
+    loop = _make_prompt_loop(api_server, dimension={"persona": name})
+
+    evaluate = _get_loop_page(client, loop)["evaluate"]
+
+    expected = render_prompt_markdown(load_builtin_personas()[name].system_prompt)
+    assert '<details class="prompt-fold">' in evaluate
+    assert '<span class="prompt-fold-label">Persona prompt</span>' in evaluate
+    assert expected in evaluate
+    assert f'href="/personas/{name}">Open persona page</a>' in evaluate
+
+
+def test_loop_detail_page_folds_built_in_default(client, api_server):
+    loop = _make_prompt_loop(api_server, implement={"harness": "codex"})
+
+    implement = _get_loop_page(client, loop)["implement"]
+
+    assert '<details class="prompt-fold">' in implement
+    assert '<span class="prompt-fold-label">Built-in default prompt</span>' in implement
+    assert '<span class="prompt-fold-name">implement</span>' in implement
+    assert "You are the IMPLEMENTER" in implement
+
+
+def test_loop_detail_page_inline_prompt_has_no_fold(client, api_server):
+    loop = _make_prompt_loop(api_server, plan={"prompt": "Choose the next gap."})
+
+    plan = _get_loop_page(client, loop)["plan"]
+
+    assert "<span>Prompt</span>\n        <p>Choose the next gap.</p>" in plan
+    assert "prompt-fold" not in plan
+
+
+@pytest.mark.parametrize("kind, notice", [
+    ("missing", "Prompt file not found: "),
+    ("relative", "Relative path: the loop&#39;s working directory isn&#39;t recorded"),
+    ("too_large", "Prompt file is too large to preview (300 KB)."),
+    ("unknown_persona", "Unknown persona &#39;ghost&#39;"),
+])
+def test_loop_detail_page_shows_notice_for_bad_prompt_sources(
+    client, api_server, config_dir, tmp_path, kind, notice
+):
+    big = tmp_path / "big.md"
+    big.write_bytes(b"a" * (300 * 1024))
+    worker = {
+        "missing": {"prompt_file": str(tmp_path / "gone.md")},
+        "relative": {"prompt_file": "prompts/implement.md"},
+        "too_large": {"prompt_file": str(big)},
+        "unknown_persona": {"persona": "ghost"},
+    }[kind]
+    loop = _make_prompt_loop(api_server, dimension=worker)
+
+    evaluate = _get_loop_page(client, loop)["evaluate"]
+
+    assert '<details class="prompt-fold">' in evaluate
+    assert '<p class="prompt-fold-error" role="status">' in evaluate
+    assert notice in evaluate
+    assert "prompt-fold-body" not in evaluate
+
+
+def test_loop_detail_page_survives_malformed_personas_yaml(
+    client, api_server, config_dir, tmp_path
+):
+    (config_dir / "personas.yaml").write_text("writer: [unclosed\n")
+    path = tmp_path / "planner.md"
+    path.write_text("# Planner heading")
+    loop = _make_prompt_loop(
+        api_server,
+        plan={"prompt_file": str(path)},
+        dimension={"persona": "mini:doc-review:clarity"},
+    )
+
+    blocks = _get_loop_page(client, loop)
+
+    assert "Personas could not be loaded: " in blocks["evaluate"]
+    assert '<p class="prompt-fold-error" role="status">' in blocks["evaluate"]
+    assert "<h1>Planner heading</h1>" in blocks["plan"]
+
+
+def test_detail_css_styles_prompt_fold_with_theme_variables():
+    import re
+    from pathlib import Path
+    import minimise.interfaces as interfaces
+
+    css = (Path(interfaces.__file__).parent / "static" / "detail.css").read_text()
+    rules = re.findall(r"(\.prompt-fold[^{]*)\{([^}]*)\}", css)
+
+    assert rules
+    declarations = "".join(body for _, body in rules)
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", declarations)
+    body = next(b for selector, b in rules if selector.strip() == ".prompt-fold-body")
+    assert "max-height: 32rem" in body
+    assert "overflow: auto" in body
+
+
 def test_job_detail_page_renders(client, mock_job_controller):
     from minimise.models import Plan, PlanTask
 

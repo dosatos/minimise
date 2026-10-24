@@ -9,8 +9,10 @@ from typing import Callable, Optional
 from flask import Flask, jsonify, render_template, request
 
 from minimise.interfaces.formatting import format_duration
+from minimise.interfaces.prompt_preview import worker_prompt_preview
 from minimise.models import JobStatus, Loop, LoopSpec, LoopStep, TaskStatus
 from minimise.orchestration import loop_journal
+from minimise.personas import load_personas
 from minimise.storage.database import Database
 from minimise.storage.loop_store import LoopStore
 
@@ -201,6 +203,29 @@ def _load_spec(
         return store.load_spec(loop_id), raw, None
     except Exception as exc:
         return None, raw, f"The cached loop spec could not be parsed: {exc}"
+
+
+def _worker_prompts(spec: LoopSpec) -> dict:
+    """Prompt previews for the plan, implement and evaluate workers."""
+    workers = [spec.loop.plan, spec.loop.implement, *spec.loop.evaluate.dimensions]
+    personas, load_error = None, None
+    if any(worker.persona for worker in workers):
+        import minimise.interfaces.cli as _cli  # lazy: avoids circular import (cli.view imports us)
+
+        try:
+            personas = load_personas(_cli.CONFIG_DIR)
+        except Exception as exc:
+            load_error = str(exc)
+
+    def preview(worker, step_type: str) -> Optional[dict]:
+        return worker_prompt_preview(worker, step_type, personas, load_error)
+
+    return {
+        "plan": preview(spec.loop.plan, "plan"),
+        "implement": preview(spec.loop.implement, "implement"),
+        "dimensions": [preview(dimension, "evaluate")
+                       for dimension in spec.loop.evaluate.dimensions],
+    }
 
 
 def _load_loop_page(
@@ -399,6 +424,7 @@ def register_loop_routes(app: Flask, db: Database, store: LoopStore) -> None:
             spec=spec,
             spec_raw=spec_raw,
             spec_error=spec_error,
+            worker_prompts=_worker_prompts(spec) if spec else None,
             journal_entries=_journal_entries(store, loop_id, ARTIFACT_LIMIT),
             log_entries=_loop_log_entries(store, loop_id, ARTIFACT_LIMIT),
             log_filter_options=_loop_log_filter_options(spec, steps),

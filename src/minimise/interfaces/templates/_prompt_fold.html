@@ -1,0 +1,26 @@
+{% macro render_prompt_fold(preview) %}
+<details class="prompt-fold">
+    <summary>
+        <span class="prompt-fold-label">{{ preview.label }}</span>
+        <span class="prompt-fold-name">{{ preview.name }}</span>
+        {% if preview.size_label %}
+        <span class="prompt-fold-size">{{ preview.size_label }}</span>
+        {% endif %}
+    </summary>
+    {% if preview.error %}
+    <p class="prompt-fold-error" role="status">{{ preview.error }}</p>
+    {% else %}
+    <div class="markdown-body prompt-fold-body">{{ preview.html|safe }}</div>
+    <p class="prompt-fold-source">
+        {% if preview.kind == "persona" %}
+        <span>{{ preview.source }}</span> &middot;
+        <a href="{{ url_for('persona_detail_page', name=preview.source) }}">Open persona page</a>
+        {% elif preview.kind == "file" %}
+        <code>{{ preview.source }}</code> &middot; {{ preview.size_label }}
+        {% else %}
+        {{ preview.source }}
+        {% endif %}
+    </p>
+    {% endif %}
+</details>
+{% endmacro %}
