@@ -75,7 +75,62 @@ def _iteration_status(steps: list[LoopStep]) -> str:
     return "pending"
 
 
-def _loop_timeline(loop: Loop, steps: list[LoopStep], now: datetime) -> dict:
+_VERDICTS = ("pass", "fail", "blocked")
+
+
+def _normalize_verdict(value) -> Optional[str]:
+    """verdict is agent convention, not schema: keep only pass, fail or blocked."""
+    if not isinstance(value, str):
+        return None
+    verdict = value.strip().lower()
+    return verdict if verdict in _VERDICTS else None
+
+
+def _evaluate_verdicts(steps: list[LoopStep], journal_records) -> dict[str, Optional[str]]:
+    """Map evaluate step_id -> verdict from the journal; the last matching record wins.
+
+    The engine stamps step_id on every record; older records without one
+    fall back to (iteration, dimension), resolved to that slot's latest step.
+    """
+    evaluate = [step for step in steps if step.step_type == "evaluate"]
+    step_ids = {step.step_id for step in evaluate}
+    by_slot = {(step.iteration, step.dimension): step.step_id for step in evaluate}
+    verdicts: dict[str, Optional[str]] = {}
+    for record in journal_records:
+        if record.get("step_type") != "evaluate":
+            continue
+        step_id = record.get("step_id")
+        if not step_id:
+            step_id = by_slot.get((record.get("iteration"), record.get("dimension")))
+        if step_id in step_ids:
+            verdicts[step_id] = _normalize_verdict(record.get("verdict"))
+    return verdicts
+
+
+def _iteration_passing(members: list[dict], dimension_count: int) -> Optional[dict]:
+    """An iteration's passed/total evaluators, or None when none has a verdict.
+
+    A dimension counts once, by its latest verdict, so a re-run evaluator
+    can't push N past M.
+    """
+    latest = {s["dimension"]: s["verdict"] for s in members if s["verdict"]}
+    if not latest:
+        return None
+    dimensions = {s["dimension"] for s in members if s["step_type"] == "evaluate"}
+    return {
+        "passed": sum(verdict == "pass" for verdict in latest.values()),
+        "total": max(dimension_count, len(dimensions)),
+    }
+
+
+def _loop_timeline(
+    loop: Loop,
+    steps: list[LoopStep],
+    now: datetime,
+    *,
+    journal_records=(),
+    dimension_count: int = 0,
+) -> dict:
     """Group a loop's steps by iteration on one timeline measured in seconds
     from its origin.
 
@@ -84,11 +139,15 @@ def _loop_timeline(loop: Loop, steps: list[LoopStep], now: datetime) -> dict:
     marks where the current run began. Evaluators within an iteration run in
     parallel, so an iteration's duration is its wall time, never a sum. A
     running iteration has no duration; the client ticks it from start_offset.
+
+    A finished evaluate step carries its journaled ``verdict``, and an
+    iteration with any verdict gets ``passing`` out of ``dimension_count``.
     """
     origin = min(
         [t for t in (loop.started_at, *(step.started_at for step in steps)) if t],
         default=None,
     )
+    verdicts = _evaluate_verdicts(steps, journal_records)
     if loop.status == JobStatus.RUNNING:
         end = now
     else:
@@ -114,6 +173,11 @@ def _loop_timeline(loop: Loop, steps: list[LoopStep], now: datetime) -> dict:
                 "start": start,
                 "end": max(start, offset(step.completed_at or end)),
             },
+            "verdict": (
+                verdicts.get(step.step_id)
+                if step.step_type == "evaluate" and step.status != TaskStatus.RUNNING
+                else None
+            ),
         }
 
     by_iteration: dict[int, list[LoopStep]] = {}
@@ -129,6 +193,7 @@ def _loop_timeline(loop: Loop, steps: list[LoopStep], now: datetime) -> dict:
             (step.completed_at for step in members if step.started_at and step.completed_at),
             default=None,
         )
+        parts = [timed(step) for step in members]
         groups.append({
             "iteration": iteration,
             "status": status,
@@ -137,7 +202,8 @@ def _loop_timeline(loop: Loop, steps: list[LoopStep], now: datetime) -> dict:
                 round((last - first).total_seconds(), 1)
                 if first and last and status != "running" else None
             ),
-            "steps": [timed(step) for step in members],
+            "passing": _iteration_passing(parts, dimension_count),
+            "steps": parts,
         })
 
     durations = [g["duration"] for g in groups
@@ -160,6 +226,7 @@ def _serialize_loop(
     steps: list[LoopStep],
     spec: Optional[LoopSpec] = None,
     include_steps: bool = True,
+    journal_records=(),
 ) -> dict:
     current_iteration = max((step.iteration for step in steps), default=0)
     max_iterations = spec.max_iterations if spec else loop.max_iterations
@@ -183,7 +250,13 @@ def _serialize_loop(
     }
     if include_steps:
         result["steps"] = [_serialize_step(step) for step in steps]
-        result["timeline"] = _loop_timeline(loop, steps, datetime.utcnow())
+        result["timeline"] = _loop_timeline(
+            loop,
+            steps,
+            datetime.utcnow(),
+            journal_records=journal_records,
+            dimension_count=len(spec.loop.evaluate.dimensions) if spec else 0,
+        )
     return result
 
 
@@ -304,8 +377,11 @@ def _journal_entry(record: dict) -> dict:
     }
 
 
-def _journal_entries(store: LoopStore, loop_id: str, limit: int) -> list[dict]:
-    records = loop_journal.read(store.journal_path(loop_id))
+def _read_journal(store: LoopStore, loop_id: str) -> list[dict]:
+    return loop_journal.read(store.journal_path(loop_id))
+
+
+def _journal_entries(records: list[dict], limit: int) -> list[dict]:
     return [_journal_entry(record) for record in records[-limit:]]
 
 
@@ -418,14 +494,15 @@ def register_loop_routes(app: Flask, db: Database, store: LoopStore) -> None:
 
         spec, spec_raw, spec_error = _load_spec(store, loop_id)
         steps = db.list_loop_steps(loop_id)
+        journal = _read_journal(store, loop_id)
         return render_template(
             "loop_detail.html",
-            loop_view=_serialize_loop(loop, steps, spec),
+            loop_view=_serialize_loop(loop, steps, spec, journal_records=journal),
             spec=spec,
             spec_raw=spec_raw,
             spec_error=spec_error,
             worker_prompts=_worker_prompts(spec) if spec else None,
-            journal_entries=_journal_entries(store, loop_id, ARTIFACT_LIMIT),
+            journal_entries=_journal_entries(journal, ARTIFACT_LIMIT),
             log_entries=_loop_log_entries(store, loop_id, ARTIFACT_LIMIT),
             log_filter_options=_loop_log_filter_options(spec, steps),
         )
@@ -444,16 +521,19 @@ def register_loop_routes(app: Flask, db: Database, store: LoopStore) -> None:
         if loop is None:
             return jsonify({"error": "Loop not found"}), 404
         spec, _, _ = _load_spec(store, loop_id)
-        return jsonify(
-            _serialize_loop(loop, db.list_loop_steps(loop_id), spec)
-        ), 200
+        return jsonify(_serialize_loop(
+            loop,
+            db.list_loop_steps(loop_id),
+            spec,
+            journal_records=_read_journal(store, loop_id),
+        )), 200
 
     @app.route("/api/loops/<loop_id>/journal", methods=["GET"])
     def get_loop_journal_api(loop_id: str):
         if store.load(loop_id) is None:
             return jsonify({"error": "Loop not found"}), 404
         return jsonify({
-            "records": _journal_entries(store, loop_id, _artifact_limit()),
+            "records": _journal_entries(_read_journal(store, loop_id), _artifact_limit()),
         }), 200
 
     @app.route("/api/loops/<loop_id>/logs", methods=["GET"])

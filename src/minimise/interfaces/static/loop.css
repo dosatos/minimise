@@ -258,6 +258,15 @@
     font-size: 0.7rem;
     line-height: 1.5;
 }
+/* An evaluator's journaled verdict replaces "completed" in the timeline. */
+.verdict { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
+.verdict-pass { color: var(--status-completed); }
+.verdict-fail { color: var(--status-failed); }
+.verdict-blocked { color: var(--status-stopped); }
+.timeline-actual.verdict-pass { background: var(--status-completed); }
+.timeline-actual.verdict-fail { background: var(--status-failed); }
+.timeline-actual.verdict-blocked { background: var(--status-stopped); }
+
 .loop-log-message {
     min-width: 22rem;
     line-height: 1.5;

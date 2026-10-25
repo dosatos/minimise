@@ -1402,3 +1402,181 @@ def test_get_loop_api_includes_timeline_and_list_is_unchanged(client, api_server
     assert set(listed) == {"loop_id", "name", "status", "iteration", "max_iterations",
                            "stage", "plan_version", "evaluator_count", "created_at",
                            "started_at", "completed_at", "elapsed"}
+
+
+def _verdict(step_id, verdict):
+    """An evaluate journal record as the engine stamps it."""
+    return {"step_type": "evaluate", "step_id": step_id, "verdict": verdict, "control": "done"}
+
+
+def _verdict_timeline(steps, records, dimension_count=0):
+    from minimise.interfaces.loop_views import _loop_timeline
+    from minimise.models import JobStatus
+    return _loop_timeline(
+        _timed_loop(JobStatus.RUNNING, 0), steps, _at(500),
+        journal_records=records, dimension_count=dimension_count,
+    )
+
+
+def test_loop_timeline_evaluate_steps_carry_journaled_verdicts():
+    steps = [
+        _loop_step("plan", 1, "plan", 0, 10),
+        _loop_step("impl", 1, "implement", 10, 20),
+        _loop_step("eval-a", 1, "evaluate", 20, 30, dimension="clarity"),
+        _loop_step("eval-b", 1, "evaluate", 20, 40, dimension="accuracy"),
+        _loop_step("eval-c", 1, "evaluate", 20, 50, dimension="tone"),
+    ]
+    records = [
+        _verdict("eval-a", "fail"),  # an earlier attempt: the last record wins
+        _verdict("eval-a", " PASS "),
+        _verdict("eval-b", "fail"),
+        _verdict("eval-c", "Blocked"),
+    ]
+
+    [group] = _verdict_timeline(steps, records)["groups"]
+
+    assert [s["verdict"] for s in group["steps"]] == [None, None, "pass", "fail", "blocked"]
+
+
+def test_loop_timeline_ignores_unknown_verdicts_and_non_evaluate_steps():
+    steps = [
+        _loop_step("plan", 1, "plan", 0, 10),
+        _loop_step("impl", 1, "implement", 10, 20),
+        _loop_step("eval-a", 1, "evaluate", 20, 30, dimension="clarity"),
+        _loop_step("eval-b", 1, "evaluate", 20, 30, dimension="accuracy"),
+        _loop_step("eval-c", 1, "evaluate", 20, 30, dimension="tone"),
+    ]
+    records = [
+        {"step_type": "plan", "step_id": "plan", "verdict": "pass"},
+        {"step_type": "implement", "step_id": "impl", "verdict": "pass"},
+        _verdict("impl", "pass"),  # mislabeled: impl is still not an evaluate step
+        _verdict("eval-a", "maybe"),
+        {"step_type": "evaluate", "step_id": "eval-b", "control": "done"},  # no verdict
+        _verdict("eval-c", 3),  # not a string
+    ]
+
+    [group] = _verdict_timeline(steps, records)["groups"]
+
+    assert [s["verdict"] for s in group["steps"]] == [None] * 5
+    assert group["passing"] is None
+
+
+def test_loop_timeline_running_evaluator_has_no_verdict_yet():
+    steps = [_loop_step("eval-a", 1, "evaluate", 0, dimension="clarity")]
+
+    [group] = _verdict_timeline(steps, [_verdict("eval-a", "pass")])["groups"]
+
+    [step] = group["steps"]
+    assert step["status"] == "running" and step["verdict"] is None
+    assert group["passing"] is None
+
+
+def test_loop_timeline_matches_records_without_step_id_by_iteration_and_dimension():
+    steps = [
+        _loop_step("eval-1", 1, "evaluate", 0, 10, dimension="clarity"),
+        _loop_step("eval-2a", 2, "evaluate", 10, 20, dimension="clarity"),
+        _loop_step("eval-2b", 2, "evaluate", 10, 20, dimension="accuracy"),
+    ]
+    records = [
+        {"step_type": "evaluate", "iteration": 2, "dimension": "clarity", "verdict": "pass"},
+        {"step_type": "evaluate", "iteration": 1, "dimension": "accuracy", "verdict": "fail"},
+    ]
+
+    first, second = _verdict_timeline(steps, records)["groups"]
+
+    assert [s["verdict"] for s in first["steps"]] == [None]
+    assert [s["verdict"] for s in second["steps"]] == ["pass", None]
+
+
+def test_loop_timeline_iteration_passing_counts_verdicts_out_of_all_dimensions():
+    steps = [
+        _loop_step("plan-1", 1, "plan", 0, 10),
+        _loop_step("eval-1a", 1, "evaluate", 10, 20, dimension="clarity"),
+        _loop_step("eval-1b", 1, "evaluate", 10, 20, dimension="accuracy"),
+        _loop_step("eval-1c", 1, "evaluate", 10, 20, dimension="tone"),
+        _loop_step("plan-2", 2, "plan", 20, 30),
+        _loop_step("eval-2a", 2, "evaluate", 30, 40, dimension="clarity"),
+        _loop_step("eval-2b", 2, "evaluate", 30, 40, dimension="accuracy"),
+        _loop_step("plan-3", 3, "plan", 40, 50),
+    ]
+    records = [
+        _verdict("eval-1a", "pass"),
+        _verdict("eval-1b", "fail"),
+        _verdict("eval-1c", "blocked"),
+        _verdict("eval-2a", "pass"),
+    ]
+
+    first, second, third = _verdict_timeline(steps, records, dimension_count=3)["groups"]
+    assert first["passing"] == {"passed": 1, "total": 3}
+    assert second["passing"] == {"passed": 1, "total": 3}
+    assert third["passing"] is None  # no verdicts, no sub-line
+
+    _, second = _verdict_timeline(steps[:7], records, dimension_count=7)["groups"]
+    assert second["passing"] == {"passed": 1, "total": 7}  # 2 evaluate steps, 7 dimensions
+
+    first, _ = _verdict_timeline(steps[:7], records)["groups"]
+    assert first["passing"] == {"passed": 1, "total": 3}  # no spec: count the steps' dimensions
+
+
+def test_loop_timeline_rerun_evaluator_counts_once_by_its_latest_verdict():
+    from minimise.models import TaskStatus
+
+    steps = [
+        _loop_step("eval-old", 1, "evaluate", 0, 10, TaskStatus.FAILED, dimension="clarity"),
+        _loop_step("eval-new", 1, "evaluate", 20, 30, dimension="clarity"),
+    ]
+    records = [_verdict("eval-old", "pass"), _verdict("eval-new", "fail")]
+
+    [group] = _verdict_timeline(steps, records, dimension_count=1)["groups"]
+
+    assert group["passing"] == {"passed": 0, "total": 1}
+
+
+def test_get_loop_api_serves_evaluate_verdicts_from_the_journal(client, api_server, db):
+    from minimise.models import JobStatus, LoopStep, TaskStatus
+    from minimise.orchestration import loop_journal
+
+    loop = _make_loop(api_server)  # one evaluate dimension: clarity
+    db.update_loop_status(loop.loop_id, status=JobStatus.COMPLETED,
+                          started_at=_at(0), completed_at=_at(8))
+    db.create_loop_step(LoopStep(
+        step_id="step-plan", loop_id=loop.loop_id, iteration=1, step_type="plan",
+        status=TaskStatus.COMPLETED, started_at=_at(0), completed_at=_at(2),
+    ))
+    db.create_loop_step(LoopStep(
+        step_id="step-eval", loop_id=loop.loop_id, iteration=1, step_type="evaluate",
+        dimension="clarity", status=TaskStatus.COMPLETED,
+        started_at=_at(3), completed_at=_at(5),
+    ))
+    loop_journal.append(api_server.loop_store.journal_path(loop.loop_id), {
+        "step_type": "evaluate", "step_id": "step-eval", "iteration": 1,
+        "dimension": "clarity", "verdict": "fail", "score": 5,
+        "findings": ["Step 3 skips the install."], "control": "done",
+    })
+
+    data = client.get(f"/api/loops/{loop.loop_id}").get_json()
+
+    [group] = data["timeline"]["groups"]
+    verdicts = {s["step_id"]: s["verdict"] for s in group["steps"]}
+    assert verdicts == {"step-plan": None, "step-eval": "fail"}
+    assert group["passing"] == {"passed": 0, "total": 1}
+
+
+def test_loop_journal_is_read_once_by_detail_views_and_never_by_the_list(
+    client, api_server, monkeypatch
+):
+    from minimise.orchestration import loop_journal
+
+    loop = _make_loop(api_server)
+    reads = []
+    real_read = loop_journal.read
+    monkeypatch.setattr(loop_journal, "read", lambda path: reads.append(path) or real_read(path))
+
+    assert client.get("/loops").status_code == 200
+    assert client.get("/api/loops").status_code == 200
+    assert reads == []
+
+    assert client.get(f"/api/loops/{loop.loop_id}").status_code == 200
+    assert len(reads) == 1
+    assert client.get(f"/loops/{loop.loop_id}/view").status_code == 200
+    assert len(reads) == 2

@@ -58,6 +58,8 @@ function renderLoopSummary(loop) {
         : "no finished iterations yet");
 }
 
+const VERDICT_LABELS = {pass: "✓ pass", fail: "✗ fail", blocked: "⛔ blocked"};
+
 // Iterations are the groups and their steps the sub-lines. Evaluators run in
 // parallel, so a group's duration is its wall time, and group rows get no bar.
 function renderLoopTimelineRows(loop) {
@@ -75,22 +77,29 @@ function renderLoopTimelineRows(loop) {
     setText("loop-timeline-scale", nowOff != null ? `0 → ${formatSecs(tl.total_secs)}` : "");
 
     function groupRow(g) {
+        const passing = g.passing
+            ? `<span class="timeline-sub">${escapeHtml(`${g.passing.passed}/${g.passing.total} passing`)}</span>` : "";
         return `<tr class="timeline-row timeline-group timeline-${g.status}">
             <td class="timeline-step" data-label="Step"><span class="timeline-name">Iteration ${escapeHtml(g.iteration)}</span></td>
-            <td data-label="Status"><span class="${statusClass(g.status)}">${escapeHtml(g.status)}</span></td>
+            <td data-label="Status"><span class="${statusClass(g.status)}">${escapeHtml(g.status)}</span>${passing}</td>
             <td data-label="Duration">${timelineDuration(g, nowOff)}</td>
             <td data-label="Timeline"></td>
         </tr>`;
     }
 
+    // A finished evaluator shows its journaled verdict in place of "completed".
     function stepRow(s) {
         const label = s.dimension ? `${s.stage} · ${s.dimension}` : s.stage;
         const retries = s.retries > 0
             ? `<span class="timeline-sub">${s.retries} ${s.retries === 1 ? "retry" : "retries"}</span>` : "";
+        const status = s.verdict
+            ? `<span class="verdict verdict-${s.verdict}">${VERDICT_LABELS[s.verdict]}</span>`
+            : `<span class="${statusClass(s.status)}">${escapeHtml(s.status)}</span>`;
+        const barClass = s.verdict ? `verdict-${s.verdict}` : `status-${s.status}`;
 
         let track = '<div class="timeline-track">';
         if (s.bar && s.bar.end > s.bar.start) {
-            track += `<span class="timeline-actual status-${s.status}" `
+            track += `<span class="timeline-actual ${barClass}" `
                 + `style="left:${pct(s.bar.start)};width:${pct(s.bar.end - s.bar.start)}"></span>`;
         }
         if (live && nowOff != null) track += `<span class="timeline-now" style="left:${pct(nowOff)}"></span>`;
@@ -98,7 +107,7 @@ function renderLoopTimelineRows(loop) {
 
         return `<tr class="timeline-row timeline-part timeline-${s.status}">
             <td class="timeline-step" data-label="Step"><span class="timeline-name">${escapeHtml(label)}</span></td>
-            <td data-label="Status"><span class="${statusClass(s.status)}">${escapeHtml(s.status)}</span>${retries}</td>
+            <td data-label="Status">${status}${retries}</td>
             <td data-label="Duration">${timelineDuration(s, nowOff)}</td>
             <td data-label="Timeline">${track}</td>
         </tr>`;
