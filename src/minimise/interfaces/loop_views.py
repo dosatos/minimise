@@ -326,7 +326,10 @@ def _text_value(value) -> str:
         return ""
     if isinstance(value, str):
         return value
-    return json.dumps(value, sort_keys=True)
+    # Evaluators write findings as a list of strings: one paragraph each.
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return "\n\n".join(value)
+    return json.dumps(value, sort_keys=True, ensure_ascii=False)
 
 
 def _outcome_tone(outcome: str) -> str:
@@ -373,7 +376,7 @@ def _journal_entry(record: dict) -> dict:
         "outcome": outcome,
         "tone": _outcome_tone(outcome),
         "message": message or "No summary provided.",
-        "raw": json.dumps(record, indent=2, sort_keys=True),
+        "raw": json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False),
     }
 
 

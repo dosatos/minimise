@@ -1580,3 +1580,20 @@ def test_loop_journal_is_read_once_by_detail_views_and_never_by_the_list(
     assert len(reads) == 1
     assert client.get(f"/loops/{loop.loop_id}/view").status_code == 200
     assert len(reads) == 2
+
+
+def test_loop_journal_api_renders_findings_list_as_readable_text(client, api_server):
+    """A findings list showed as a JSON array with \\u-escaped Cyrillic."""
+    from minimise.orchestration import loop_journal
+
+    loop = _make_loop(api_server)
+    loop_journal.append(api_server.loop_store.journal_path(loop.loop_id), {
+        "step_type": "evaluate", "step_id": "step-eval", "iteration": 1,
+        "dimension": "scene", "verdict": "fail",
+        "findings": ["[low] сцена (s1): «Никто, никогда»", "[high] второй пункт"],
+    })
+
+    [entry] = client.get(f"/api/loops/{loop.loop_id}/journal").get_json()["records"]
+
+    assert entry["message"] == "[low] сцена (s1): «Никто, никогда»\n\n[high] второй пункт"
+    assert "\\u" not in entry["raw"] and "«Никто, никогда»" in entry["raw"]
