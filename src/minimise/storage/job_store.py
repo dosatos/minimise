@@ -108,7 +108,8 @@ class JobStore:
         return result
 
     def mark_job_running(self, job_id: str) -> None:
-        self.db.update_job_status(job_id, JobStatus.RUNNING, started_at=datetime.utcnow(), pid=os.getpid())
+        # Starting again clears the reason a previous run stopped on its own.
+        self.db.update_job_status(job_id, JobStatus.RUNNING, started_at=datetime.utcnow(), pid=os.getpid(), stop_reason=None)
 
     def mark_job_completed(self, job_id: str) -> None:
         self.db.update_job_status(job_id, JobStatus.COMPLETED, completed_at=datetime.utcnow())

@@ -62,6 +62,7 @@ def test_harness_result_defaults():
     assert result.success is True
     assert result.output == "hello"
     assert result.error is None
+    assert result.usage_limit is None
 
 
 # --- AgentHarness abstract interface ---
@@ -461,6 +462,88 @@ def test_run_environment_error_is_returned(mock_build_env):
     assert result.exit_reason == "agent_error"
 
 
+# --- usage limit: Claude Code's one-line reply when the subscription limit is hit ---
+
+LIMIT_LINE = "You've hit your session limit · resets 4:40am (America/Los_Angeles)"  # verbatim, loop-ed36ab
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_claude_usage_limit_reply_sets_usage_limit_to_the_reset_text(mock_popen, returncode):
+    mock_popen.side_effect = make_fake_popen([
+        json.dumps(_assistant_event(LIMIT_LINE)),
+        json.dumps({"type": "result", "is_error": True, "result": LIMIT_LINE}),
+    ], returncode=returncode)
+    result = ClaudeCodeHarness().run("hi")
+    assert result.usage_limit == "resets 4:40am (America/Los_Angeles)"
+    assert result.output == LIMIT_LINE
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_claude_older_usage_limit_form_sets_usage_limit_without_reset_text(mock_popen):
+    mock_popen.side_effect = make_fake_popen(
+        [json.dumps(_assistant_event("Claude AI usage limit reached|1761300000"))], returncode=1,
+    )
+    assert ClaudeCodeHarness().run("hi").usage_limit == ""
+
+
+@pytest.mark.parametrize("text", [
+    "You've hit your weekly limit · resets Oct 30, 9am (Europe/London)",
+    "You've hit your Opus limit · resets 6pm",
+    "you've HIT YOUR usage LIMIT",
+])
+def test_claude_usage_limit_variants_match(text):
+    from minimise.agents.harness import _usage_limit_reset
+    assert _usage_limit_reset(text) is not None
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_claude_long_reply_mentioning_limits_is_not_a_usage_limit(mock_popen):
+    reply = (
+        "I checked the retry path. When callers hit your rate limit the client backs off, "
+        "and the usage limit reached warning is logged once. " * 4
+        + '\n{"control":"done","verdict":"pass","findings":"ok"}'
+    )
+    mock_popen.side_effect = make_fake_popen([
+        json.dumps(_assistant_event(reply)),
+        json.dumps({"type": "result", "result": reply}),
+    ])
+    assert ClaudeCodeHarness().run("hi").usage_limit is None
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_claude_short_control_line_mentioning_a_limit_is_not_a_usage_limit(mock_popen):
+    reply = '{"control":"done","verdict":"fail","findings":"users hit your API limit"}'
+    mock_popen.side_effect = make_fake_popen([json.dumps(_assistant_event(reply))])
+    assert ClaudeCodeHarness().run("hi").usage_limit is None
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_claude_long_session_ending_in_the_limit_line_sets_usage_limit(mock_popen):
+    work = [json.dumps(_assistant_event(f"Step {i}: edited the parser and ran the tests. " * 20))
+            for i in range(5)]
+    mock_popen.side_effect = make_fake_popen(
+        work + [json.dumps(_assistant_event(LIMIT_LINE))], returncode=1,
+    )
+    result = ClaudeCodeHarness().run("hi")
+    assert len(result.output) > 1000  # the joined output is long; only the last message counts
+    assert result.usage_limit == "resets 4:40am (America/Los_Angeles)"
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_claude_limit_only_in_result_event_sets_usage_limit(mock_popen):
+    mock_popen.side_effect = make_fake_popen([
+        json.dumps({"type": "result", "is_error": True, "result": LIMIT_LINE}),
+    ], returncode=1)
+    assert ClaudeCodeHarness().run("hi").usage_limit == "resets 4:40am (America/Los_Angeles)"
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_claude_normal_reply_has_no_usage_limit(mock_popen):
+    mock_popen.side_effect = make_fake_popen([json.dumps(_assistant_event('{"control":"done"}'))])
+    assert ClaudeCodeHarness().run("hi").usage_limit is None
+
+
 # --- _extract_text_pi_live (pi --mode json live streaming) ---
 
 def test_extract_text_pi_live_returns_delta_on_text_delta():
@@ -571,6 +654,16 @@ def test_pi_run_extracts_text_via_final_event(mock_popen):
     result = PiHarness().run("hi")
     assert result.success is True
     assert result.output == "Hello world"
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_pi_never_sets_usage_limit(mock_popen):
+    mock_popen.side_effect = make_fake_popen([
+        json.dumps(_pi_delta_event(LIMIT_LINE)), json.dumps(_pi_final_event(LIMIT_LINE)),
+    ])
+    result = PiHarness().run("hi")
+    assert result.output == LIMIT_LINE
+    assert result.usage_limit is None
 
 
 @patch("minimise.agents.harness.subprocess.Popen")
@@ -796,6 +889,14 @@ def test_codex_run_returns_last_agent_message_and_logs_all_messages(mock_popen, 
     assert result.output == "final"
     records = [json.loads(line) for line in log.read_text().splitlines()]
     assert [record["message"] for record in records] == ["progress", "final"]
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_codex_never_sets_usage_limit(mock_popen):
+    mock_popen.side_effect = make_fake_popen([json.dumps(_codex_message_event(LIMIT_LINE))])
+    result = CodexHarness().run("hi")
+    assert result.output == LIMIT_LINE
+    assert result.usage_limit is None
 
 
 @patch("minimise.agents.harness.subprocess.Popen")

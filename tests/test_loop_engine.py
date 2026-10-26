@@ -38,7 +38,8 @@ class StubHarness(AgentHarness):
     """Route each call by (step_type, iteration, dimension) from log_fields.
 
     `script` maps that key -> a list of canned outputs consumed in order (the
-    last repeats once exhausted, so a key hit again just re-emits it). A missing
+    last repeats once exhausted, so a key hit again just re-emits it); an output
+    that is already a HarnessResult is returned as is. A missing
     key falls back to `default`. `on_call(key)` runs before returning, so a
     scenario can flip external state (e.g. loops.status) mid-run. Every routed
     key is recorded in `calls` for assertions.
@@ -62,7 +63,8 @@ class StubHarness(AgentHarness):
             return HarnessResult(success=True, output=self.default)
         i = min(self._idx[key], len(outs) - 1)
         self._idx[key] += 1
-        return HarnessResult(success=True, output=outs[i])
+        out = outs[i]
+        return out if isinstance(out, HarnessResult) else HarnessResult(success=True, output=out)
 
 
 class _FixedHarnessFactory(HarnessFactory):
@@ -225,6 +227,126 @@ def test_external_stop_halts_and_stays_stopped(tmp_path):
     # Halted before implement — the in-flight plan step was the last agent call.
     assert ("implement", 1, None) not in h.calls
     assert journal.last_committed_iteration(store.journal_path(lid)) == 0
+
+
+# --- 6b) usage limit -> no retry, step + loop STOPPED with the reason, resumable --
+
+RESET = "resets 4:40am (America/Los_Angeles)"
+REASON = f"usage limit: {RESET}"
+
+
+def _limit(reset=RESET):
+    """What the Claude harness returns when the subscription limit ends the run."""
+    return HarnessResult(success=False, output=f"You've hit your session limit · {reset}",
+                         exit_reason="agent_error", usage_limit=reset)
+
+
+def _steps(db, lid, **match):
+    return [st for st in db.list_loop_steps(lid)
+            if all(getattr(st, k) == v for k, v in match.items())]
+
+
+@pytest.mark.parametrize("key", [("plan", 1, None), ("implement", 1, None)])
+def test_usage_limit_stops_the_loop_without_retrying(tmp_path, key):
+    h = StubHarness({("plan", 1, None): ['{"control":"continue"}'], key: [_limit()]})
+    status, db, store, lid = _run(tmp_path, h)
+
+    assert status == JobStatus.STOPPED
+    loop = db.get_loop(lid)
+    assert loop.status == JobStatus.STOPPED and loop.stop_reason == REASON
+    assert h.calls.count(key) == 1  # no gate retry
+    assert h.calls[-1] == key  # no later step ran
+    [step] = _steps(db, lid, step_type=key[0])
+    assert step.status == TaskStatus.STOPPED and step.retries == 0
+    assert step.completed_at is not None
+    # Nothing journaled for the limited step, so resume re-runs it.
+    assert not [r for r in journal.read(store.journal_path(lid)) if r.get("step_type") == key[0]]
+
+
+def test_usage_limit_without_reset_text_is_just_usage_limit(tmp_path):
+    h = StubHarness({("plan", 1, None): [_limit(reset="")]})
+    status, db, store, lid = _run(tmp_path, h)
+    assert status == JobStatus.STOPPED
+    assert db.get_loop(lid).stop_reason == "usage limit"
+
+
+def _limited_eval_wave(tmp_path):
+    """Iteration 1, max_concurrent 1: a passes, b hits the limit, c is queued behind it."""
+    spec = _select_spec(dims=("a", "b", "c"), select=None, max_concurrent=1)
+    db, store, lid = _build(tmp_path, spec)
+    h = StubHarness({
+        ("plan", 1, None): ['{"control":"continue"}'],
+        ("evaluate", 1, "a"): [_verdict_line("pass")],
+        ("evaluate", 1, "b"): [_limit()],
+    })
+    status = LoopEngine(factory=_fixed(h), store=store, db=db).run(lid)
+    return status, h, db, store, lid
+
+
+def test_usage_limit_in_evaluate_wave_dispatches_no_later_dimension(tmp_path):
+    status, h, db, store, lid = _limited_eval_wave(tmp_path)
+
+    assert status == JobStatus.STOPPED
+    assert db.get_loop(lid).stop_reason == REASON
+    assert _eval_calls(h, 1) == [("evaluate", 1, "a"), ("evaluate", 1, "b")]
+    assert not _steps(db, lid, dimension="c")  # never started: no step row either
+    [b] = _steps(db, lid, dimension="b")
+    assert b.status == TaskStatus.STOPPED and b.retries == 0
+    assert not _steps(db, lid, status=TaskStatus.RUNNING)
+    # The stopped iteration is not closed, or resume would skip b and c.
+    assert journal.last_committed_iteration(store.journal_path(lid)) == 0
+
+
+def test_resume_after_usage_limit_reruns_only_the_stopped_and_undispatched_dimensions(tmp_path):
+    _, _, db, store, lid = _limited_eval_wave(tmp_path)
+
+    h = StubHarness({("plan", 2, None): ['{"control":"done"}']})
+    status = LoopEngine(factory=_fixed(h), store=store, db=db).run(lid)
+
+    assert status == JobStatus.COMPLETED
+    assert db.get_loop(lid).stop_reason is None  # starting again cleared it
+    # b (stopped) and c (never dispatched) re-ran; a, plan and implement did not.
+    assert _eval_calls(h, 1) == [("evaluate", 1, "b"), ("evaluate", 1, "c")]
+    assert ("plan", 1, None) not in h.calls and ("implement", 1, None) not in h.calls
+    assert journal.last_committed_iteration(store.journal_path(lid)) == 1
+    assert _one_valid_record_per_dimension(store, lid, 1, "abc")
+
+
+def test_start_clears_stop_reason_before_running(tmp_path):
+    db, store, lid = _build(tmp_path)
+    db.update_loop_status(lid, status=JobStatus.STOPPED, stop_reason=REASON)
+    seen = []
+    h = StubHarness({}, on_call=lambda key: seen.append(db.get_loop(lid).stop_reason))
+    LoopEngine(factory=_fixed(h), store=store, db=db).run(lid)
+    assert seen and seen[0] is None
+
+
+def test_external_stop_during_evaluate_wave_leaves_the_iteration_open(tmp_path):
+    db, store, lid = _build(tmp_path)  # select: all, both dimensions run at once
+
+    def flip(key):
+        if key == ("evaluate", 1, "a"):
+            db.update_loop_status(lid, status=JobStatus.STOPPED)
+
+    h = StubHarness({("plan", 1, None): ['{"control":"continue"}']}, on_call=flip)
+    status = LoopEngine(factory=_fixed(h), store=store, db=db).run(lid)
+    assert status == JobStatus.STOPPED
+    assert journal.last_committed_iteration(store.journal_path(lid)) == 0
+    assert db.get_loop(lid).stop_reason is None  # a manual stop gives no reason
+
+
+def test_stop_during_a_step_spends_no_retry(tmp_path):
+    db, store, lid = _build(tmp_path)
+
+    def flip(key):
+        db.update_loop_status(lid, status=JobStatus.STOPPED)
+
+    h = StubHarness({("plan", 1, None): ["not json", '{"control":"done"}']}, on_call=flip)
+    status = LoopEngine(factory=_fixed(h), store=store, db=db).run(lid)
+    assert status == JobStatus.STOPPED
+    assert h.calls == [("plan", 1, None)]
+    [step] = db.list_loop_steps(lid)
+    assert step.status == TaskStatus.STOPPED and step.completed_at is not None
 
 
 # --- 7) engine stamps metadata onto every non-marker journal line ---------------

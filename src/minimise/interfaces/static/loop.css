@@ -11,6 +11,9 @@
     --loop-blue: #246db0;
     --loop-blue-soft: #edf5fc;
 }
+/* Why the loop stopped on its own (a usage limit); .detail-meta's flex beats [hidden]. */
+#loop-stop-reason { color: var(--status-stopped); }
+#loop-stop-reason[hidden] { display: none; }
 /* The loop strip has a fifth tile, "Avg / iteration"; the job page keeps four. */
 .loop-page .live-summary {
     grid-template-columns: repeat(5, minmax(0, 1fr));

@@ -119,6 +119,7 @@ class Job:
     completed_at: Optional[datetime] = None
     tasks: list[Task] = field(default_factory=list)
     pid: Optional[int] = None
+    stop_reason: Optional[str] = None  # why it stopped on its own, e.g. "usage limit: resets 4am"
 
     def to_dict(self) -> dict:
         """Convert Job object to dictionary for JSON serialization."""
@@ -315,6 +316,7 @@ class Loop:
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     pid: Optional[int] = None
+    stop_reason: Optional[str] = None  # why it stopped on its own, e.g. "usage limit: resets 4am"
 
 
 @dataclass

@@ -133,6 +133,11 @@ async function refreshLoopDetail(loopId) {
         status.textContent = loop.status;
         status.className = statusClass(loop.status);
     }
+    const stopReason = document.getElementById("loop-stop-reason");
+    if (stopReason) {
+        stopReason.hidden = !loop.stop_reason;
+        stopReason.textContent = loop.stop_reason ? `Stopped: ${loop.stop_reason}` : "";
+    }
     const values = {
         "loop-iteration": `${loop.iteration}/${loop.max_iterations}`,
         "loop-stage": loop.stage,

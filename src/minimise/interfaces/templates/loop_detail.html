@@ -13,6 +13,7 @@
             <h2>{{ loop_view.name }}</h2>
             <span id="loop-status" class="status status-{{ loop_view.status }}">{{ loop_view.status }}</span>
         </div>
+        <p id="loop-stop-reason" class="detail-meta"{% if not loop_view.stop_reason %} hidden{% endif %}>{% if loop_view.stop_reason %}Stopped: {{ loop_view.stop_reason }}{% endif %}</p>
         <p class="detail-meta">
             <code>{{ loop_view.loop_id }}</code>
             {% if loop_view.created_at %}

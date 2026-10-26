@@ -15,6 +15,7 @@ from typing import Optional
 
 import click
 import pydantic
+from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
@@ -401,6 +402,7 @@ def loop_status(loop_id: str, format: str):
                 "loop_id": loop_obj.loop_id,
                 "name": loop_obj.name,
                 "status": loop_obj.status.value,
+                "stop_reason": loop_obj.stop_reason,
                 "iteration": iteration,
                 "max_iterations": loop_obj.max_iterations,
                 "eval_max_concurrent": max_concurrent,
@@ -416,6 +418,8 @@ def loop_status(loop_id: str, format: str):
             console.print(f"[bold]ID:[/bold] {loop_obj.loop_id}")
             console.print(f"[bold]Name:[/bold] {loop_obj.name}")
             console.print(f"[bold]Status:[/bold] {loop_obj.status.value}")
+            if loop_obj.stop_reason:
+                console.print(f"[bold]Stopped:[/bold] {escape(loop_obj.stop_reason)}")
             console.print(f"[bold]Iteration:[/bold] {iteration}/{loop_obj.max_iterations}")
             if plan_version is not None:
                 console.print(f"[bold]Plan version:[/bold] {plan_version}")

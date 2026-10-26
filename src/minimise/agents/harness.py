@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -46,6 +47,31 @@ class HarnessResult:
     output: str
     error: Optional[str] = None
     exit_reason: str = ""
+    # None: no usage limit hit. Otherwise the agent's subscription limit ended
+    # the run, and this is the reset text from its message
+    # ("resets 4:40am (America/Los_Angeles)"), or "" when it gave none.
+    usage_limit: Optional[str] = None
+
+
+# Claude Code's whole reply when the subscription limit is hit, e.g.
+# "You've hit your session limit · resets 4:40am (America/Los_Angeles)" or the
+# older "Claude AI usage limit reached|<epoch>".
+_USAGE_LIMIT_RE = re.compile(r"hit your\b.*?\blimit|usage limit reached", re.IGNORECASE)
+_USAGE_LIMIT_RESETS_RE = re.compile(r"\bresets\b.*", re.IGNORECASE)
+_USAGE_LIMIT_MAX_CHARS = 300  # the limit message is one short line
+
+
+def _usage_limit_reset(message: Optional[str]) -> Optional[str]:
+    """The reset text of a usage-limit message ("" if none), or None if it isn't one.
+
+    Only a short final message counts: a real reply that merely mentions limits
+    is long, or ends with its JSON control line.
+    """
+    text = (message or "").strip()
+    if len(text) >= _USAGE_LIMIT_MAX_CHARS or "{" in text or not _USAGE_LIMIT_RE.search(text):
+        return None
+    resets = _USAGE_LIMIT_RESETS_RE.search(text)
+    return resets.group(0).strip() if resets else ""
 
 
 def _extract_text(event: dict) -> str:
@@ -248,6 +274,11 @@ class _JsonlCapture(ABC):
     def fatal_error(self) -> Optional[str]:
         return self.state.fatal_error
 
+    @property
+    def usage_limit(self) -> Optional[str]:
+        """HarnessResult.usage_limit; only harnesses that detect it override this."""
+        return None
+
     def _append(self, text: str, *, record: bool = True) -> None:
         self.state.chunks.append(text)
         if record:
@@ -270,10 +301,27 @@ class _JsonlCapture(ABC):
 
 
 class _ClaudeCapture(_JsonlCapture):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._result_text: Optional[str] = None
+
     def consume(self, event: dict) -> None:
         text = _extract_text(event)
         if text:
             self._append(text)
+        elif event.get("type") == "result" and isinstance(event.get("result"), str):
+            self._result_text = event["result"]
+
+    @property
+    def usage_limit(self) -> Optional[str]:
+        # The FINAL message only, never the joined output: an agent that hits
+        # the limit late in a long run has long output but a one-line last message.
+        last_chunk = self.state.chunks[-1] if self.state.chunks else None
+        for message in (self._result_text, last_chunk):
+            reset = _usage_limit_reset(message)
+            if reset is not None:
+                return reset
+        return None
 
 
 class _PiCapture(_JsonlCapture):
@@ -362,6 +410,11 @@ def _kill_and_reap(proc: "subprocess.Popen") -> None:
         pass
 
 
+def _capture_result(capture: _JsonlCapture, **fields) -> HarnessResult:
+    """A HarnessResult carrying what the capture saw: its output and usage_limit."""
+    return HarnessResult(output=capture.output, usage_limit=capture.usage_limit, **fields)
+
+
 def _run_jsonl_subprocess(
     cmd: list[str],
     prompt: str,
@@ -405,9 +458,9 @@ def _run_jsonl_subprocess(
         if reader.is_alive():
             _kill_and_reap(proc)
             reader.join(timeout=10)
-            return HarnessResult(
+            return _capture_result(
+                capture,
                 success=False,
-                output=capture.output,
                 error=f"timeout after {timeout}s",
                 exit_reason="timeout",
             )
@@ -419,37 +472,35 @@ def _run_jsonl_subprocess(
         stderr_thread.join(timeout=10)
 
         if reader_errors:
-            return HarnessResult(
+            return _capture_result(
+                capture,
                 success=False,
-                output=capture.output,
                 error=reader_errors[0],
                 exit_reason="agent_error",
             )
         if capture.fatal_error is not None:
-            return HarnessResult(
+            return _capture_result(
+                capture,
                 success=False,
-                output=capture.output,
                 error=capture.fatal_error,
                 exit_reason="agent_error",
             )
         if proc.returncode == 0:
-            return HarnessResult(
-                success=True, output=capture.output, exit_reason="success"
-            )
+            return _capture_result(capture, success=True, exit_reason="success")
 
         stderr = stderr_capture[0] if stderr_capture else ""
-        return HarnessResult(
+        return _capture_result(
+            capture,
             success=False,
-            output=capture.output,
             error=stderr or capture.error,
             exit_reason="agent_error",
         )
     except Exception as e:
         if proc is not None:
             _kill_and_reap(proc)
-        return HarnessResult(
+        return _capture_result(
+            capture,
             success=False,
-            output=capture.output,
             error=str(e),
             exit_reason="agent_error",
         )

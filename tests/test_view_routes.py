@@ -1354,6 +1354,23 @@ def test_loop_timeline_iteration_status_follows_its_last_step():
     assert timeline["avg_iteration_secs"] == 25.0
 
 
+def test_loop_timeline_iteration_stopped_by_its_last_step_until_resumed():
+    from minimise.interfaces.loop_views import _loop_timeline
+    from minimise.models import JobStatus, TaskStatus
+
+    stopped = [
+        _loop_step("plan-1", 1, "plan", 0, 10),
+        _loop_step("eval-a", 1, "evaluate", 10, 20),
+        _loop_step("eval-b", 1, "evaluate", 20, 21, TaskStatus.STOPPED),  # hit the usage limit
+    ]
+    timeline = _loop_timeline(_timed_loop(JobStatus.STOPPED, 0, 21), stopped, _at(999))
+    assert [g["status"] for g in timeline["groups"]] == ["stopped"]
+
+    resumed = stopped + [_loop_step("eval-b2", 1, "evaluate", 100, 110)]
+    timeline = _loop_timeline(_timed_loop(JobStatus.COMPLETED, 100, 110), resumed, _at(999))
+    assert [g["status"] for g in timeline["groups"]] == ["completed"]
+
+
 def test_loop_timeline_unstarted_loop_has_no_origin():
     """e) nothing started: no offsets and no bars."""
     from minimise.interfaces.loop_views import _loop_timeline
@@ -1402,6 +1419,28 @@ def test_get_loop_api_includes_timeline_and_list_is_unchanged(client, api_server
     assert set(listed) == {"loop_id", "name", "status", "iteration", "max_iterations",
                            "stage", "plan_version", "evaluator_count", "created_at",
                            "started_at", "completed_at", "elapsed"}
+
+
+def test_loop_page_and_api_show_the_usage_limit_stop_reason(client, api_server, db):
+    from minimise.models import JobStatus
+
+    loop = _make_loop(api_server)
+    reason = "usage limit: resets 4:40am (America/Los_Angeles)"
+    db.update_loop_status(loop.loop_id, status=JobStatus.STOPPED, stop_reason=reason)
+
+    data = client.get(f"/api/loops/{loop.loop_id}").get_json()
+    assert data["status"] == "stopped" and data["stop_reason"] == reason
+
+    html = client.get(f"/loops/{loop.loop_id}/view").get_data(as_text=True)
+    assert f'<p id="loop-stop-reason" class="detail-meta">Stopped: {reason}</p>' in html
+
+
+def test_loop_page_hides_the_stop_reason_when_there_is_none(client, api_server):
+    loop = _make_loop(api_server)
+
+    assert client.get(f"/api/loops/{loop.loop_id}").get_json()["stop_reason"] is None
+    html = client.get(f"/loops/{loop.loop_id}/view").get_data(as_text=True)
+    assert '<p id="loop-stop-reason" class="detail-meta" hidden></p>' in html
 
 
 def _verdict(step_id, verdict):

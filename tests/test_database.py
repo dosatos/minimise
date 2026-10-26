@@ -746,3 +746,72 @@ def test_assignee_survives_both_rebuild_paths(tmp_path):
                 description="", status=TaskStatus.PENDING, assignee="carol")
     db.create_task(task)  # must NOT raise OperationalError: no such column: assignee
     assert db.get_task("t2").assignee == "carol"
+
+
+def test_v8_db_migrates_to_v9_with_rows_intact_and_stop_reason_null(tmp_path):
+    """v9 adds loops.stop_reason and jobs.stop_reason; existing rows keep their data."""
+    db_path = tmp_path / "v8.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+        CREATE TABLE jobs (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL,
+            plan_path TEXT, base_commit TEXT, created_at TEXT NOT NULL,
+            started_at TEXT, completed_at TEXT, pid INTEGER
+        );
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY, job_id TEXT NOT NULL, name TEXT NOT NULL,
+            description TEXT, status TEXT NOT NULL, retries INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT,
+            diff_path TEXT, base_commit TEXT, goal TEXT, assignee TEXT, harness TEXT,
+            model TEXT, estimated_duration_min INTEGER NOT NULL DEFAULT 5,
+            FOREIGN KEY(job_id) REFERENCES jobs(id)
+        );
+        CREATE TABLE loops (
+            loop_id TEXT PRIMARY KEY, name TEXT, status TEXT, plan_path TEXT,
+            max_iterations INTEGER, created_at TEXT, started_at TEXT,
+            completed_at TEXT, pid INTEGER
+        );
+        CREATE TABLE loop_steps (
+            step_id TEXT PRIMARY KEY, loop_id TEXT, iteration INTEGER, step_type TEXT,
+            dimension TEXT, status TEXT, retries INTEGER, started_at TEXT,
+            completed_at TEXT, FOREIGN KEY(loop_id) REFERENCES loops(loop_id)
+        );
+        INSERT INTO jobs (id, name, status, plan_path, created_at, pid)
+            VALUES ('j1', 'job', 'stopped', '/p.yaml', '2026-10-01T00:00:00', 7);
+        INSERT INTO tasks (id, job_id, name, description, status, retries, created_at, goal)
+            VALUES ('t1', 'j1', 'task', 'd', 'stopped', 2, '2026-10-01T00:00:00', 'g');
+        INSERT INTO loops (loop_id, name, status, plan_path, max_iterations, created_at, pid)
+            VALUES ('l1', 'loop', 'stopped', '/l.yaml', 5, '2026-10-01T00:00:00', 9);
+        INSERT INTO loop_steps (step_id, loop_id, iteration, step_type, dimension, status, retries)
+            VALUES ('s1', 'l1', 2, 'evaluate', 'clarity', 'stopped', 0);
+        PRAGMA user_version = 8;
+    """)
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path)
+    db.init_db()
+
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 9 == Database.SCHEMA_VERSION
+    conn.close()
+    job, loop = db.get_job("j1"), db.get_loop("l1")
+    assert (job.name, job.status, job.plan_path, job.pid) == ("job", JobStatus.STOPPED, "/p.yaml", 7)
+    assert (loop.name, loop.status, loop.max_iterations, loop.pid) == ("loop", JobStatus.STOPPED, 5, 9)
+    assert job.stop_reason is None and loop.stop_reason is None
+    task = db.get_task("t1")
+    assert (task.status, task.retries, task.goal) == (TaskStatus.STOPPED, 2, "g")
+    [step] = db.list_loop_steps("l1")
+    assert (step.iteration, step.dimension, step.status) == (2, "clarity", TaskStatus.STOPPED)
+
+
+def test_stop_reason_is_kept_until_cleared(db):
+    db.create_loop(Loop(loop_id="l1", name="n"))
+    db.create_job(Job(id="j1", name="n"))
+    for update, get, key in ((db.update_loop_status, db.get_loop, "l1"),
+                             (db.update_job_status, db.get_job, "j1")):
+        update(key, status=JobStatus.STOPPED, stop_reason="usage limit: resets 4am")
+        update(key, status=JobStatus.STOPPED, completed_at=datetime.utcnow())  # not passed: kept
+        assert get(key).stop_reason == "usage limit: resets 4am"
+        update(key, status=JobStatus.RUNNING, stop_reason=None)
+        assert get(key).stop_reason is None

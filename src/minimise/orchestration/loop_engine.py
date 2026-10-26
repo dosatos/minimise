@@ -14,7 +14,8 @@ work (e.g. run tests), so it is NOT read-only.
 State/status/timing live in the DB (loops + loop_steps); content lives in the
 journal. Terminal loops.status mapping: planner stop/done -> completed;
 max_iterations ceiling -> failed; gate-exhausted/crash -> failed; external
-`mini loop stop` -> stopped.
+`mini loop stop` -> stopped; an agent's usage limit -> stopped, with
+loops.stop_reason set (resume by hand with `mini loop start`).
 """
 
 import json
@@ -94,6 +95,11 @@ class StepGateExhausted(Exception):
     """A step never emitted a valid control line within the retries cap."""
 
 
+class LoopStopped(Exception):
+    """The loop is stopped: a step hit the agent's usage limit, or a stop landed
+    before the step (or its next retry) could start."""
+
+
 class LoopEngine:
     MAX_RETRIES = 3  # validation-gate retries, mirrors Task.retries
     MAX_REPLANS = 3  # inner implement-fail -> re-plan cycles before giving up (FAILED)
@@ -130,7 +136,8 @@ class LoopEngine:
         spec = self.store.load_spec(loop_id)
         jpath = self.store.journal_path(loop_id)
         self.db.update_loop_status(
-            loop_id, status=JobStatus.RUNNING, started_at=datetime.utcnow(), pid=os.getpid()
+            loop_id, status=JobStatus.RUNNING, started_at=datetime.utcnow(), pid=os.getpid(),
+            stop_reason=None,  # starting again clears why the last run stopped
         )
 
         anchor = journal.last_committed_iteration(jpath)  # iterations 1..anchor done
@@ -152,8 +159,11 @@ class LoopEngine:
                 if iteration >= spec.max_iterations:  # backstop — the only stop code owns
                     status = JobStatus.FAILED
                     break
+        except LoopStopped:
+            status = JobStatus.STOPPED
         except StepGateExhausted:
-            status = JobStatus.FAILED
+            # An evaluator beside it may have stopped the loop (usage limit): stay STOPPED.
+            status = JobStatus.STOPPED if self._stopped(loop_id) else JobStatus.FAILED
         except Exception:
             status = JobStatus.FAILED
             self.db.update_loop_status(loop_id, status=status, completed_at=datetime.utcnow())
@@ -222,6 +232,10 @@ class LoopEngine:
                 return JobStatus.STOPPED
             self._settle_carried(loop_id, spec, jpath, iteration, carry)
 
+        # Never close a stopped iteration: resume trusts the marker and would
+        # skip the evaluators the stop cut off.
+        if self._stopped(loop_id):
+            return JobStatus.STOPPED
         journal.write_commit_marker(jpath, iteration)  # journal-only, closes the iteration
         return None
 
@@ -240,7 +254,7 @@ class LoopEngine:
                 for dim in dims
             ]
             for f in futures:
-                f.result()  # re-raises StepGateExhausted -> engine maps to FAILED
+                f.result()  # re-raises StepGateExhausted (-> FAILED) or LoopStopped (-> STOPPED)
 
     def _settle_carried(self, loop_id, spec, jpath, iteration, carry):
         """Re-check the carried passes when everything that ran passed; else record
@@ -286,7 +300,15 @@ class LoopEngine:
     def _run_step(self, loop_id, spec, jpath, step_type, worker, iteration,
                   dimension=None, rubric=None, allow_edits=False,
                   recheck: bool = False) -> str:
-        """Dispatch one step, gate its control line with bounded retries, return control."""
+        """Dispatch one step, gate its control line with bounded retries, return control.
+
+        Raises LoopStopped without dispatching once the loop is stopped (an
+        evaluator queued behind one that hit the usage limit never starts), and
+        when the agent hits its usage limit: that is no malformed reply, so it
+        is not retried, and with no record journaled resume re-runs the step.
+        """
+        if self._stopped(loop_id):
+            raise LoopStopped(f"{step_type} step not started: loop {loop_id} is stopped")
         system_prompt = self._resolve_worker_prompt(step_type, worker)
         harness = self._factory.for_worker(worker)
         context = self._step_context(jpath, step_type)
@@ -301,6 +323,9 @@ class LoopEngine:
 
         feedback = ""
         for attempt in range(self.MAX_RETRIES + 1):
+            if attempt and self._stopped(loop_id):  # spend no retry on a stopped loop
+                self._stop_step(loop_id, step_id)
+                raise LoopStopped(f"{step_type} step {step_id}: loop {loop_id} is stopped")
             prompt = harness.wrap_prompt(self._build_prompt(spec, step_type, context, rubric, feedback))
             result = harness.run(
                 prompt, cwd=self.cwd, allow_edits=allow_edits,
@@ -313,6 +338,10 @@ class LoopEngine:
                 },
                 log_filter=journal.strip_control_line,  # journal owns the control line; keep logs reasoning-only
             )
+            if result.usage_limit is not None:
+                reason = f"usage limit: {result.usage_limit}" if result.usage_limit else "usage limit"
+                self._stop_step(loop_id, step_id, stop_reason=reason)
+                raise LoopStopped(f"{step_type} step {step_id}: {reason}")
             line = journal.extract_last_json(result.output)
             if line is not None:  # engine is the sole writer — stamp routing keys for resume
                 stamped = _stamp(
@@ -346,6 +375,13 @@ class LoopEngine:
         raise StepGateExhausted(f"{step_type} step {step_id} exhausted the validation gate")
 
     # ---- helpers ------------------------------------------------------------
+
+    def _stop_step(self, loop_id, step_id, stop_reason=None) -> None:
+        """Mark a step STOPPED (never leave it RUNNING); with a stop_reason, stop the loop too."""
+        with self._db_lock:
+            self.db.update_loop_step(step_id, status=TaskStatus.STOPPED, completed_at=datetime.utcnow())
+            if stop_reason is not None:
+                self.db.update_loop_status(loop_id, status=JobStatus.STOPPED, stop_reason=stop_reason)
 
     def _resolve_worker_prompt(self, step_type, worker) -> str:
         """Resolve a Worker to its system prompt, falling back to the step's default."""

@@ -3018,6 +3018,49 @@ def test_loop_stop_sends_sigterm_to_live_pid(runner, mock_config_dir, monkeypatc
     assert killed == [(12345, signal.SIGTERM)]
 
 
+def _stopped_loop(mock_config_dir, stop_reason):
+    from minimise.models import LoopSpec
+    from minimise.storage.loop_store import LoopStore
+
+    spec = {
+        "version": "1", "name": "Demo", "goal": "make it better", "max_iterations": 3,
+        "loop": {
+            "plan": {"prompt": "plan it"}, "implement": {"prompt": "do it"},
+            "evaluate": {"max_concurrent": 1, "dimensions": [{"name": "a", "rubric": "ra"}]},
+        },
+    }
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+    loop_obj = LoopStore(db, mock_config_dir / "jobs").create(LoopSpec.model_validate(spec), "example.yaml")
+    db.update_loop_status(loop_obj.loop_id, status=JobStatus.STOPPED, stop_reason=stop_reason)
+    return loop_obj.loop_id
+
+
+def test_loop_status_shows_usage_limit_stop_reason(runner, mock_config_dir):
+    reason = "usage limit: resets 4:40am (America/Los_Angeles)"
+    loop_id = _stopped_loop(mock_config_dir, reason)
+
+    text = runner.invoke(mini, ["loop", "status", loop_id])
+    assert text.exit_code == 0, text.output
+    lines = text.output.splitlines()
+    status_at = lines.index("Status: stopped")
+    assert lines[status_at + 1] == f"Stopped: {reason}"
+
+    data = json.loads(runner.invoke(mini, ["loop", "status", loop_id, "--format", "json"]).output)
+    assert data["status"] == "stopped" and data["stop_reason"] == reason
+
+
+def test_loop_status_without_stop_reason_has_no_stopped_line(runner, mock_config_dir):
+    loop_id = _stopped_loop(mock_config_dir, None)  # e.g. a manual `mini loop stop`
+
+    text = runner.invoke(mini, ["loop", "status", loop_id])
+    assert text.exit_code == 0, text.output
+    assert "Stopped:" not in text.output
+
+    data = json.loads(runner.invoke(mini, ["loop", "status", loop_id, "--format", "json"]).output)
+    assert "stop_reason" in data and data["stop_reason"] is None
+
+
 def test_loop_stop_dead_pid_skips_kill(runner, mock_config_dir, monkeypatch):
     """`mini loop stop` on a RUNNING loop with a dead/None pid does not call os.kill."""
     from minimise.models import LoopSpec, JobStatus

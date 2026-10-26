@@ -56,6 +56,17 @@ def test_mark_job_running_records_orchestrator_pid(db, temp_db_dir):
     assert store.load(job.id).pid == os.getpid()
 
 
+def test_mark_job_running_clears_stop_reason(db, temp_db_dir):
+    """Starting a job again clears why its last run stopped (e.g. a usage limit)."""
+    store = JobStore(db, temp_db_dir / "jobs")
+    job = _new_job(store)
+    db.update_job_status(job.id, JobStatus.STOPPED, stop_reason="usage limit: resets 4am")
+
+    store.mark_job_running(job.id)
+
+    assert db.get_job(job.id).stop_reason is None
+
+
 def _dead_pid():
     """A pid guaranteed not to be alive: spawn a child, reap it."""
     import subprocess

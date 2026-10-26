@@ -33,6 +33,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         # sqlite3.Row raises KeyError (not IndexError) on a missing key, so guard
         # by presence rather than catching the wrong exception.
         pid=row['pid'] if 'pid' in keys else None,
+        stop_reason=row['stop_reason'] if 'stop_reason' in keys else None,
     )
 
 
@@ -88,6 +89,7 @@ def _row_to_loop(row: sqlite3.Row) -> Loop:
         started_at=_dt(row['started_at']),
         completed_at=_dt(row['completed_at']),
         pid=row['pid'] if 'pid' in keys else None,
+        stop_reason=row['stop_reason'] if 'stop_reason' in keys else None,
     )
 
 
@@ -165,7 +167,7 @@ class Database:
         finally:
             conn.close()
 
-    SCHEMA_VERSION = 8
+    SCHEMA_VERSION = 9
 
     def init_db(self):
         """Create/migrate the schema once per DB.
@@ -382,6 +384,12 @@ class Database:
             )
         """)
 
+        # v9: why a loop/job stopped on its own (a usage limit). Additive and last,
+        # so no earlier rebuild drops it; NULL = not stopped that way.
+        for table in ("jobs", "loops"):
+            if 'stop_reason' not in _column_names(cursor, table):
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN stop_reason TEXT")
+
         cursor.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
         conn.commit()
         conn.close()
@@ -413,9 +421,9 @@ class Database:
         """Insert a new job."""
         with self._write(conn) as cursor:
             cursor.execute("""
-                INSERT INTO jobs (id, name, status, plan_path, base_commit, created_at, pid)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (job.id, job.name, job.status.value, job.plan_path, job.base_commit, job.created_at.isoformat(), job.pid))
+                INSERT INTO jobs (id, name, status, plan_path, base_commit, created_at, pid, stop_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (job.id, job.name, job.status.value, job.plan_path, job.base_commit, job.created_at.isoformat(), job.pid, job.stop_reason))
 
     def create_job_with_tasks(self, job: Job, tasks: List[Task]) -> None:
         """Insert a job and all its tasks in one transaction — all or nothing."""
@@ -440,11 +448,12 @@ class Database:
             rows = self._query("SELECT * FROM jobs ORDER BY created_at DESC, id")
         return [_row_to_job(row) for row in rows]
 
-    def update_job_status(self, job_id: str, status: JobStatus, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, pid: Optional[int] = None, conn: Optional[sqlite3.Connection] = None) -> None:
+    def update_job_status(self, job_id: str, status: JobStatus, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, pid: Optional[int] = None, stop_reason=_UNSET, conn: Optional[sqlite3.Connection] = None) -> None:
         """Update job status.
 
         Only updates fields that are explicitly provided. If started_at or completed_at
-        are None, their existing database values are preserved.
+        are None, their existing database values are preserved. stop_reason defaults
+        to _UNSET (preserve); pass None to clear it.
         """
         # Build dynamic UPDATE statement to only update provided fields
         update_fields = ["status = ?"]
@@ -461,6 +470,10 @@ class Database:
         if pid is not None:
             update_fields.append("pid = ?")
             params.append(pid)
+
+        if stop_reason is not _UNSET:
+            update_fields.append("stop_reason = ?")
+            params.append(stop_reason)
 
         params.append(job_id)
 
@@ -625,12 +638,13 @@ class Database:
         """Insert a new loop."""
         with self._write(conn) as cursor:
             cursor.execute("""
-                INSERT INTO loops (loop_id, name, status, plan_path, max_iterations, created_at, started_at, completed_at, pid)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO loops (loop_id, name, status, plan_path, max_iterations, created_at, started_at, completed_at, pid, stop_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (loop.loop_id, loop.name, loop.status.value, loop.plan_path, loop.max_iterations,
                   loop.created_at.isoformat(),
                   loop.started_at.isoformat() if loop.started_at else None,
-                  loop.completed_at.isoformat() if loop.completed_at else None, loop.pid))
+                  loop.completed_at.isoformat() if loop.completed_at else None, loop.pid,
+                  loop.stop_reason))
 
     def get_loop(self, loop_id: str) -> Optional[Loop]:
         """Fetch a loop by ID."""
@@ -648,8 +662,9 @@ class Database:
             rows = self._query("SELECT * FROM loops ORDER BY created_at DESC, loop_id")
         return [_row_to_loop(row) for row in rows]
 
-    def update_loop_status(self, loop_id: str, status: Optional[JobStatus] = None, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, pid: Optional[int] = None, conn: Optional[sqlite3.Connection] = None) -> None:
-        """Update loop status. Only updates fields that are explicitly provided."""
+    def update_loop_status(self, loop_id: str, status: Optional[JobStatus] = None, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, pid: Optional[int] = None, stop_reason=_UNSET, conn: Optional[sqlite3.Connection] = None) -> None:
+        """Update loop status. Only updates fields that are explicitly provided;
+        stop_reason defaults to _UNSET (preserve), pass None to clear it."""
         update_fields = []
         params = []
 
@@ -665,6 +680,9 @@ class Database:
         if pid is not None:
             update_fields.append("pid = ?")
             params.append(pid)
+        if stop_reason is not _UNSET:
+            update_fields.append("stop_reason = ?")
+            params.append(stop_reason)
 
         if not update_fields:
             return

@@ -68,8 +68,9 @@ def _iteration_status(steps: list[LoopStep]) -> str:
     if started:
         # Parallel evaluators can share the latest start, so any of them counts as last.
         last = max(step.started_at for step in started)
-        if any(step.status == TaskStatus.FAILED and step.started_at == last for step in started):
-            return "failed"
+        for status in (TaskStatus.FAILED, TaskStatus.STOPPED):  # stopped: a usage limit or a stop
+            if any(step.status == status and step.started_at == last for step in started):
+                return status.value
     if all(step.status in _FINISHED_STEP_STATUSES for step in steps):
         return "completed"
     return "pending"
@@ -263,6 +264,7 @@ def _serialize_loop(
         ),
     }
     if include_steps:
+        result["stop_reason"] = loop.stop_reason
         result["steps"] = [_serialize_step(step) for step in steps]
         result["timeline"] = _loop_timeline(
             loop,
