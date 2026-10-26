@@ -48,14 +48,45 @@ def _carried_cells(journal_records) -> dict:
     return carried
 
 
+def _recheck_cells(journal_records) -> set:
+    """{(dimension, iteration)} for heatmap cells whose latest evaluate record is
+    a re-check: a carried-over pass evaluated again before the loop can finish
+    (select: failed). Same last-record-wins keying as _carried_cells."""
+    rechecked: set = set()
+    for r in journal_records:
+        if r.get("step_type") != "evaluate" or r.get("iteration") is None:
+            continue
+        key = (r.get("dimension") or "?", r.get("iteration"))
+        if r.get("recheck") is True:
+            rechecked.add(key)
+        else:
+            rechecked.discard(key)
+    return rechecked
+
+
 _CARRIED_CAPTION = "faded ✓ from N = pass carried over from iteration N, not re-run (select: failed)"
+_RECHECK_CAPTION = "re-check = carried-over pass evaluated again before the loop can finish (select: failed)"
 
 
-def _verdict_cell(verdict, step=None) -> Text:
+def _now_iteration(loop: Loop, steps: list) -> Optional[int]:
+    """The iteration whose column reads "N now": the current one (the highest
+    over the loop's steps, as the "Iteration:" line shows) while the loop runs.
+    None otherwise, so a finished, failed, stopped or pending loop shows numbers only."""
+    if loop.status != JobStatus.RUNNING or not steps:
+        return None
+    return max(s.iteration for s in steps)
+
+
+def _iteration_header(it, now_it) -> str:
+    return f"{it} now" if it == now_it else str(it)
+
+
+def _verdict_cell(verdict, step=None, tag=None) -> Text:
     """pass -> green ✓, fail -> red ✗. With no verdict, fall back to the eval
     step status: RUNNING -> yellow ▸, FAILED -> red ✗, anything else
-    (pending/completed-without-verdict/None) -> dim ·. When the eval step has
-    started, append a dim duration (elapsed while running, final once done)."""
+    (pending/completed-without-verdict/None) -> dim ·. A `tag` (e.g. "re-check")
+    follows the glyph, dim. When the eval step has started, append a dim
+    duration (elapsed while running, final once done)."""
     step_status = step.status if step else None
     if verdict == "pass":
         cell = Text("✓", style="green")
@@ -69,6 +100,9 @@ def _verdict_cell(verdict, step=None) -> Text:
         cell = Text("✗", style="red")
     else:
         cell = Text("·", style="dim")
+    if tag:
+        cell.append(" ")
+        cell.append(tag, style="dim")
     if step and step.started_at is not None:
         dur = format_duration(step.started_at, step.completed_at,
                               is_running=step.status == TaskStatus.RUNNING, now=None)
@@ -147,16 +181,21 @@ def render_loop_progress_table(
 
     A pass carried over from iteration N (select: failed) shows a faded "✓ from N"
     with no duration or timeline bar, still counts toward the passing footer, and
-    adds a caption explaining it.
+    adds a caption explaining it. A re-check of one (its latest record has
+    "recheck": true) shows "✓ re-check <duration>" and adds a caption line too.
+
+    Columns are headed by iteration number; while the loop runs, the current
+    iteration's column reads "N now" (_now_iteration).
 
     A RUNNING step of a loop that isn't running shows as stopped (shown_loop_steps)."""
     steps = shown_loop_steps(loop, steps or [])
     rows, iters = _pivot_evaluate(journal_records)
     carried = _carried_cells(journal_records)
+    rechecked = _recheck_cells(journal_records)
     eval_steps = {(s.iteration, s.dimension): s
                   for s in steps if s.step_type == "evaluate"}
     # Iterations with eval steps but no journaled verdict yet still get a column,
-    # so "now" advances the moment a fresh iteration's eval fan-out starts.
+    # so the column appears the moment a fresh iteration's eval fan-out starts.
     iters = sorted(set(iters) | {it for (it, _dim) in eval_steps})
     # Genuine no-data case: no dimensions AND no evaluations -> placeholder.
     if not iters and not dimensions:
@@ -172,13 +211,17 @@ def render_loop_progress_table(
 
     # Same width->N math the Gantt uses; here it caps how many iteration columns fit.
     n = fit_width(40)
-    # Zero-iteration seed: one "now" column of dim cells until verdicts arrive.
+    # Zero-iteration seed: one column of dim cells until verdicts arrive.
     shown = iters[-n:] if iters else [None]
+    now_it = _now_iteration(loop, steps)
 
     table = Table(show_footer=True)
     table.add_column("dimension", style="cyan", no_wrap=True, footer="passing")
-    for i, it in enumerate(shown):
-        header = "now" if i == len(shown) - 1 else str(it)
+    for it in shown:
+        if it is None:
+            header = "now" if loop.status == JobStatus.RUNNING else "—"
+        else:
+            header = _iteration_header(it, now_it)
         # Per-column footer: X/Y passes at this iteration, "—" when no verdicts.
         verdicts = [rows[d][it] for d in ordered if it in rows.get(d, {})]
         foot = f"{verdicts.count('pass')}/{len(ordered)}" if verdicts else "—"
@@ -206,15 +249,22 @@ def render_loop_progress_table(
     def cell(dim, it) -> Text:
         if (dim, it) in carried:
             return Text(f"✓ from {carried[(dim, it)]}", style="dim green")
-        return _verdict_cell(rows.get(dim, {}).get(it), eval_steps.get((it, dim)))
+        return _verdict_cell(rows.get(dim, {}).get(it), eval_steps.get((it, dim)),
+                             tag="re-check" if (dim, it) in rechecked else None)
 
     for dim in ordered:
         bar = ("" if (dim, cur_it) in carried
                else _eval_gantt_bar(eval_steps.get((cur_it, dim)), t0, span_secs, now=now))
         table.add_row(dim, *[cell(dim, it) for it in shown], bar)
 
-    if any((dim, it) in carried for dim in ordered for it in shown):
-        table.caption = _CARRIED_CAPTION
+    shown_cells = [(dim, it) for dim in ordered for it in shown]
+    caption = []
+    if any(c in carried for c in shown_cells):
+        caption.append(_CARRIED_CAPTION)
+    if any(c in rechecked and c not in carried for c in shown_cells):
+        caption.append(_RECHECK_CAPTION)
+    if caption:
+        table.caption = "\n".join(caption)
     return table
 
 
@@ -224,7 +274,8 @@ def render_loop_stage_timing(loop: Loop, steps: list, dimensions: list = None) -
     iterations the heatmap shows (derived from steps' `.iteration`). Each cell is
     format_duration over the matching steps' min(started_at)..max(completed_at);
     a still-running step shows elapsed, a stopped one with no recorded end "—".
-    No footer row."""
+    Headers follow the heatmap's rule: iteration numbers, "N now" on the
+    running loop's current iteration. No footer row."""
     steps = shown_loop_steps(loop, steps or [])
     if not steps:
         table = Table()
@@ -237,6 +288,7 @@ def render_loop_stage_timing(loop: Loop, steps: list, dimensions: list = None) -
 
     n = fit_width(40)
     shown = iters[-n:]
+    now_it = _now_iteration(loop, steps)
 
     def cell(iteration, step_type):
         matched = [s for s in steps if s.iteration == iteration
@@ -252,9 +304,8 @@ def render_loop_stage_timing(loop: Loop, steps: list, dimensions: list = None) -
 
     table = Table()
     table.add_column("stage", style="cyan", no_wrap=True)
-    for i, it in enumerate(shown):
-        header = "now" if i == len(shown) - 1 else str(it)
-        table.add_column(header, justify="center")
+    for it in shown:
+        table.add_column(_iteration_header(it, now_it), justify="center")
 
     rows = [("plan", "plan"), ("implement", "implement"),
             ("eval", "evaluate"), ("iter total", None)]

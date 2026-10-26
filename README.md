@@ -308,8 +308,10 @@ loop:
 In the journal, a carried-over pass is recorded with `"evaluated_in_iteration": N`,
 the iteration where an evaluator last really ran that dimension. A re-check
 evaluation is recorded with `"recheck": true`. `mini loop status` shows a carried
-pass as a faded `✓ from N`; the web page shows "✓ pass (carried over from
-iteration N)".
+pass as a faded `✓ from N` and a re-check as `✓ re-check` (`✗ re-check` if it
+fails); its columns are headed by iteration number, and while the loop runs, the
+current iteration's column is labelled "N now". The web page shows "✓ pass
+(carried over from iteration N)".
 
 See [`examples/example-loop.yaml`](examples/example-loop.yaml). Register and run:
 

@@ -933,14 +933,14 @@ def test_render_loop_progress_seeds_dims_with_zero_evals():
     from minimise.interfaces.terminal_ui import render_loop_progress_table
     # dimensions given but no evaluations -> real per-dim table of dim `·` cells
     table = render_loop_progress_table(_loop(), [], ["tests", "lint"])
-    assert len(table.columns) == 3  # dimension col + one "now" col + timeline
+    assert len(table.columns) == 3  # dimension col + one seed col + timeline
     assert table.columns[-1].header == "timeline"
-    assert table.columns[-2].header == "now"
+    assert table.columns[-2].header == "now"  # the loop is RUNNING
     assert _cell(table, 0, 0)[0] == "tests"
     assert _cell(table, 0, 1)[0] == "lint"
     assert _cell(table, 1, 0) == ("·", "dim")
     assert _cell(table, 1, 1) == ("·", "dim")
-    # the "now" column with no verdicts (pre-eval seed) shows "—" in its footer
+    # the seed column with no verdicts (pre-eval) shows "—" in its footer
     assert table.columns[-2].footer == "—"
     # timeline column: blank footer, blank bars (no started eval steps)
     assert table.columns[-1].footer == ""
@@ -1077,16 +1077,16 @@ def test_render_loop_progress_normalizes_verdict_casing_and_whitespace(base_time
 
 def test_render_loop_progress_now_column_advances_at_eval_dispatch():
     # Regression: verdicts only through iter0, iter1's evals just RUNNING (no
-    # verdict). The "now" column must be iter1 and show ▸, not stay on iter0.
+    # verdict). iter1 gets a column ("1 now") showing ▸ the moment its evals start.
     from minimise.interfaces.terminal_ui import render_loop_progress_table
     from minimise.models import TaskStatus
     records = [_rec(0, "tests", "pass"), _rec(0, "lint", "pass")]  # previous iter
     steps = [_estep(1, "tests", TaskStatus.RUNNING),
              _estep(1, "lint", TaskStatus.RUNNING)]  # iter1, no verdicts yet
     table = render_loop_progress_table(_loop(), records, ["tests", "lint"], steps)
-    # cols: dimension, iter0 ("0"), iter1 ("now"), timeline
+    # cols: dimension, iter0 ("0"), iter1 ("1 now"), timeline
     assert table.columns[1].header == "0"
-    assert table.columns[2].header == "now"  # now == iter1, not iter0
+    assert table.columns[2].header == "1 now"  # now == iter1, not iter0
     # iter1's running dimension shows the running glyph, not a dim ·
     assert _cell(table, 2, 0) == ("▸", "yellow")
     assert _cell(table, 2, 1) == ("▸", "yellow")
@@ -1407,13 +1407,14 @@ def test_render_loop_progress_shows_only_last_n_iterations(monkeypatch):
     monkeypatch.setattr(rich.console, "Console",
                         lambda: real_console(width=48))
     records = [_rec(i, "tests", "pass") for i in range(1, 13)]  # 12 iterations
-    table = render_loop_progress_table(_loop(), records)
+    steps = [_estep(12, "tests", TaskStatus.COMPLETED)]  # the running loop is in iter12
+    table = render_loop_progress_table(_loop(), records, None, steps)
     # 1 dimension col + 8 iteration cols (last 8) + timeline
     assert len(table.columns) == 10
-    # last iteration column header is "now"; earlier headers are numbers 5..11
+    # last iteration column header is "12 now"; earlier headers are numbers 5..11
     assert table.columns[-1].header == "timeline"
-    assert table.columns[-2].header == "now"
-    assert table.columns[1].header == "5"  # iters 5..12 shown, last -> "now"
+    assert table.columns[-2].header == "12 now"
+    assert [c.header for c in table.columns[1:-2]] == [str(i) for i in range(5, 12)]
     from minimise.interfaces.terminal_ui import loop_progress_summary
     assert loop_progress_summary(records) == "showing last 8 of 12 iterations"
 
@@ -1462,10 +1463,160 @@ def test_render_loop_progress_carried_copy_of_a_carried_pass_names_where_it_ran(
     assert [_cell(table, col, 0)[0] for col in (1, 2, 3)] == ["✓", "✓ from 1", "✓ from 1"]
 
 
-def test_render_loop_progress_no_caption_without_carried_records():
+def test_render_loop_progress_no_caption_without_carried_or_recheck_records():
     from minimise.interfaces.terminal_ui import render_loop_progress_table
-    records = [_rec(1, "tests", "pass"), _rec(1, "lint", "fail"),
-               {**_rec(2, "tests", "pass"), "recheck": True}]
+    records = [_rec(1, "tests", "pass"), _rec(1, "lint", "fail"), _rec(2, "tests", "pass")]
     table = render_loop_progress_table(_loop(), records, ["tests", "lint"])
     assert table.caption is None
-    assert _cell(table, 2, 0) == ("✓", "green")  # a re-check is an ordinary pass cell
+    assert _cell(table, 2, 0) == ("✓", "green")
+
+
+# --- select: failed — re-checks of carried passes before the loop can finish ---
+
+_RECHECK_LINE = (
+    "re-check = carried-over pass evaluated again before the loop can finish (select: failed)"
+)
+_CARRIED_LINE = (
+    "faded ✓ from N = pass carried over from iteration N, not re-run (select: failed)"
+)
+
+
+def _recheck_rec(iteration, dimension, verdict):
+    """An evaluate record the engine stamped as a re-check of a carried pass."""
+    return {**_rec(iteration, dimension, verdict), "recheck": True}
+
+
+def test_render_loop_progress_recheck_cell_shows_verdict_tag_and_duration(base_time):
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    records = [_rec(1, "tests", "pass"), _rec(1, "lint", "pass"),
+               _recheck_rec(2, "tests", "pass"), _recheck_rec(2, "lint", "fail")]
+    steps = [
+        _estep_timed(2, "tests", TaskStatus.COMPLETED,
+                     base_time, base_time + timedelta(seconds=11.5)),
+        _estep_timed(2, "lint", TaskStatus.COMPLETED,
+                     base_time, base_time + timedelta(seconds=9)),
+    ]
+    table = render_loop_progress_table(_loop(), records, ["tests", "lint"], steps)
+    passed = table.columns[2]._cells[0]
+    failed = table.columns[2]._cells[1]
+    assert passed.plain == "✓ re-check 11.5s"
+    assert failed.plain == "✗ re-check 9.0s"
+    assert passed.style == "green" and failed.style == "red"
+    # " re-check" and the duration are both dim spans after the glyph
+    assert [passed.plain[sp.start:sp.end] for sp in passed.spans if sp.style == "dim"] == [
+        "re-check", "11.5s"]
+    assert _cell(table, 1, 0) == ("✓", "green")  # iter1 was an ordinary evaluation
+    assert table.caption == _RECHECK_LINE
+    assert "✓ re-check 11.5s" in _render_text(table)
+
+
+def test_render_loop_progress_later_plain_record_clears_recheck():
+    # Last record wins: a later non-recheck record for the same cell is an ordinary cell.
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    records = [_rec(1, "tests", "pass"), _recheck_rec(2, "tests", "fail"), _rec(2, "tests", "pass")]
+    table = render_loop_progress_table(_loop(), records, ["tests"])
+    assert _cell(table, 2, 0) == ("✓", "green")
+    assert "re-check" not in _render_text(table)
+    assert table.caption is None
+
+
+def test_render_loop_progress_caption_has_carried_then_recheck_line():
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    records = [_rec(1, "tests", "pass"), _rec(1, "lint", "fail"),
+               _rec(2, "lint", "fail"), _carried_rec(2, "tests", 1),
+               _rec(3, "lint", "pass"), _recheck_rec(3, "tests", "pass")]
+    table = render_loop_progress_table(_loop(), records, ["tests", "lint"])
+    assert _cell(table, 2, 0) == ("✓ from 1", "dim green")  # carried cell unchanged
+    assert _cell(table, 3, 0)[0] == "✓ re-check"
+    assert table.caption == _CARRIED_LINE + "\n" + _RECHECK_LINE
+    rendered = _render_text(table)  # rich wraps each caption line to the table width
+    assert rendered.index("faded ✓ from N =") < rendered.index("re-check = carried-over")
+
+
+def test_render_loop_progress_recheck_caption_only_when_recheck_cell_shown(monkeypatch):
+    # The re-check cell scrolled out of the last-N columns -> no re-check caption.
+    import rich.console
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    real_console = rich.console.Console
+    monkeypatch.setattr(rich.console, "Console", lambda: real_console(width=48))  # n == 8
+    records = [_recheck_rec(1, "tests", "pass")] + [_rec(i, "tests", "pass") for i in range(2, 13)]
+    table = render_loop_progress_table(_loop(), records, ["tests"])
+    assert table.columns[1].header == "5"
+    assert table.caption is None
+
+
+# --- column headers: iteration numbers, "N now" only on a running loop's current iteration ---
+
+def _headers(table, timeline=True):
+    """Iteration column headers (between the label column and, for the heatmap, timeline)."""
+    return [c.header for c in table.columns[1:-1 if timeline else None]]
+
+
+def test_headers_finished_loop_are_numbers_only(base_time):
+    # A COMPLETED loop whose iteration 4 only ran the planner's stop: stage timing
+    # shows 1..4, verdicts 1..3, and no header in either table says "now".
+    from minimise.interfaces.terminal_ui import render_loop_progress_table, render_loop_stage_timing
+    from minimise.models import JobStatus
+    done = base_time + timedelta(seconds=5)
+    steps = []
+    for it in (1, 2, 3):
+        steps += [_pstep_timed(it, "plan", TaskStatus.COMPLETED, base_time, done),
+                  _estep_timed(it, "tests", TaskStatus.COMPLETED, base_time, done)]
+    steps.append(_pstep_timed(4, "plan", TaskStatus.COMPLETED, base_time, done))
+    records = [_rec(it, "tests", "pass") for it in (1, 2, 3)]
+    loop = _loop(JobStatus.COMPLETED)
+    timing = render_loop_stage_timing(loop, steps, ["tests"])
+    verdicts = render_loop_progress_table(loop, records, ["tests"], steps)
+    assert _headers(timing, timeline=False) == ["1", "2", "3", "4"]
+    assert _headers(verdicts) == ["1", "2", "3"]
+    for status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.STOPPED, JobStatus.PENDING):
+        for table in (render_loop_stage_timing(_loop(status), steps, ["tests"]),
+                      render_loop_progress_table(_loop(status), records, ["tests"], steps)):
+            assert not any("now" in str(c.header) for c in table.columns)
+
+
+def test_headers_running_loop_planning_next_iteration(base_time):
+    # Iteration 4 has only a RUNNING plan step: stage timing's last header is
+    # "4 now"; verdicts (columns 1..3) has no "now" anywhere.
+    from minimise.interfaces.terminal_ui import render_loop_progress_table, render_loop_stage_timing
+    done = base_time + timedelta(seconds=5)
+    steps = []
+    for it in (1, 2, 3):
+        steps += [_pstep_timed(it, "plan", TaskStatus.COMPLETED, base_time, done),
+                  _estep_timed(it, "tests", TaskStatus.COMPLETED, base_time, done)]
+    steps.append(_pstep_timed(4, "plan", TaskStatus.RUNNING, done))
+    records = [_rec(it, "tests", "pass") for it in (1, 2, 3)]
+    timing = render_loop_stage_timing(_loop(), steps, ["tests"])
+    verdicts = render_loop_progress_table(_loop(), records, ["tests"], steps)
+    assert _headers(timing, timeline=False) == ["1", "2", "3", "4 now"]
+    assert _headers(verdicts) == ["1", "2", "3"]
+
+
+def test_headers_running_loop_evaluating_current_iteration(base_time):
+    # The running loop is in iteration 3 with evaluations there: both tables'
+    # iteration-3 header is "3 now", earlier headers plain numbers.
+    from minimise.interfaces.terminal_ui import render_loop_progress_table, render_loop_stage_timing
+    done = base_time + timedelta(seconds=5)
+    steps = []
+    for it in (1, 2):
+        steps += [_pstep_timed(it, "plan", TaskStatus.COMPLETED, base_time, done),
+                  _estep_timed(it, "tests", TaskStatus.COMPLETED, base_time, done)]
+    steps += [_pstep_timed(3, "plan", TaskStatus.COMPLETED, base_time, done),
+              _estep_timed(3, "tests", TaskStatus.RUNNING, done)]
+    records = [_rec(1, "tests", "fail"), _rec(2, "tests", "fail")]
+    timing = render_loop_stage_timing(_loop(), steps, ["tests"])
+    verdicts = render_loop_progress_table(_loop(), records, ["tests"], steps)
+    assert _headers(timing, timeline=False) == ["1", "2", "3 now"]
+    assert _headers(verdicts) == ["1", "2", "3 now"]
+
+
+def test_headers_seed_column_now_only_while_running():
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    from minimise.models import JobStatus
+    steps = [_pstep_timed(1, "plan", TaskStatus.RUNNING, datetime(2026, 1, 1))]
+    running = render_loop_progress_table(_loop(), [], ["tests"], steps)
+    assert _headers(running) == ["now"]
+    for status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.STOPPED, JobStatus.PENDING):
+        table = render_loop_progress_table(_loop(status), [], ["tests"], steps)
+        assert _headers(table) == ["—"]
+        assert table.columns[-2].footer == "—"  # seed footer unchanged

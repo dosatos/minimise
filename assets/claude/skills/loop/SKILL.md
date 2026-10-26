@@ -74,7 +74,8 @@ loop:
 over. `fail` and `blocked` both count as failed and always re-run. A spec patch re-runs
 everything. Before finishing, the loop re-checks carried-over passes: when everything that ran
 passes, the carried ones run too, in the same iteration. In the journal, a carried pass has
-`evaluated_in_iteration` and a re-check has `"recheck": true`. Pick `failed` when a loop has
+`evaluated_in_iteration` and a re-check has `"recheck": true`; `mini loop status` marks
+re-checks `✓ re-check`. Pick `failed` when a loop has
 several dimensions and each iteration's fix usually targets one of them: an iteration then pays
 only for the failing evaluators, and the re-check still guards the finish. `evaluate` rejects
 unknown keys, so a typo like `selct:` fails at `mini loop new` instead of silently running `all`.
