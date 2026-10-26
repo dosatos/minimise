@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional
-from minimise.models import Execution, Task, TaskStatus, TokenUsage
+from minimise.models import Execution, Task, TaskStatus
 from minimise.storage.git_tracker import GitTracker
 from minimise.storage.job_store import JobStore
 from minimise.orchestration.handover_manager import HandoverManager
@@ -145,7 +145,7 @@ class TaskExecutor:
             )
             handoff_path = self.store.handoff_path(job_id, task.id, attempt)
             harness = self._factory.for_task(task)
-            success, output, exit_reason, usage_limit, tokens = self._invoke_agent(harness, {
+            success, output, exit_reason, usage_limit = self._invoke_agent(harness, {
                 "job_id": job_id,
                 "task_id": task.id,
                 "attempt": attempt,
@@ -175,7 +175,7 @@ class TaskExecutor:
                     str(job_log_path), {"type": "task", "step": _step_label(attempt)},
                     f"Stopped: {reason}. Resume with: mini job start {job_id}", level="warning",
                 )
-                self.store.mark_task_usage_limited(task, reason, ended_at=agent_end, tokens=tokens)
+                self.store.mark_task_usage_limited(task, reason, ended_at=agent_end)
                 raise JobStopped(reason)
 
             if success:
@@ -185,18 +185,18 @@ class TaskExecutor:
                     if outcome == "fail":
                         msg = _stash_work(f"Post-task hook failed\n{combined}")
                         _log_failure(_step_label(attempt), msg)
-                        self.store.mark_task_failed(task, msg, exit_reason="hook_failed", ended_at=agent_end, tokens=tokens)
+                        self.store.mark_task_failed(task, msg, exit_reason="hook_failed", ended_at=agent_end)
                         return False, msg
                     if outcome == "retry":
                         if attempt >= self.MAX_RETRIES:
                             msg = _stash_work(f"Post-task hook failed (retries exhausted)\n{combined}")
                             _log_failure(_step_label(attempt), msg)
-                            self.store.mark_task_failed(task, msg, exit_reason="hook_failed", ended_at=agent_end, tokens=tokens)
+                            self.store.mark_task_failed(task, msg, exit_reason="hook_failed", ended_at=agent_end)
                             return False, msg
                         _log_failure(_step_label(attempt), combined)
                         # The agent exited success; this FAILED attempt is the gating
                         # hook demanding a retry — book the hook, not the agent.
-                        self.store.record_attempt(task, attempt, combined, exit_reason="hook_retry", ended_at=agent_end, tokens=tokens)
+                        self.store.record_attempt(task, attempt, combined, exit_reason="hook_retry", ended_at=agent_end)
                         # Agent succeeded and wrote its handoff, so build the next
                         # context unconditionally and PREPEND the review findings —
                         # can't rely on build_retry_prompt's empty-handoff fallback.
@@ -213,7 +213,7 @@ class TaskExecutor:
                 break
             if attempt < self.MAX_RETRIES:
                 _log_failure(_step_label(attempt), output)
-                self.store.record_attempt(task, attempt, output, exit_reason=exit_reason, ended_at=agent_end, tokens=tokens)
+                self.store.record_attempt(task, attempt, output, exit_reason=exit_reason, ended_at=agent_end)
                 # learn-from-failure: feed this attempt's handoff into the next.
                 attempt_handover = self._read_handoff(
                     handoff_path,
@@ -242,13 +242,13 @@ class TaskExecutor:
                 win_path.write_text(
                     HandoverManager.build_handover_prompt(final_output, diff, next_task or task)
                 )
-            self.store.record_completed(task, "", diff, commit_sha=commit_sha, exit_reason="success", ended_at=agent_end, tokens=tokens)
+            self.store.record_completed(task, "", diff, commit_sha=commit_sha, exit_reason="success", ended_at=agent_end)
             if chain_handover is not None:
                 return True, chain_handover
         else:
             final_output = _stash_work(final_output)
             _log_failure(_step_label(task.retries), final_output)
-            self.store.mark_task_failed(task, final_output, exit_reason=exit_reason, ended_at=agent_end, tokens=tokens)
+            self.store.mark_task_failed(task, final_output, exit_reason=exit_reason, ended_at=agent_end)
 
         return final_success, final_output
 
@@ -260,9 +260,7 @@ class TaskExecutor:
             return f"(agent-written handoff)\n\n{content}"
         return f"WARNING auto-generated from diff - not reviewed\n\n{fallback()}"
 
-    def _invoke_agent(
-        self, harness, context: dict
-    ) -> tuple[bool, str, str, Optional[str], Optional[TokenUsage]]:
+    def _invoke_agent(self, harness, context: dict) -> tuple[bool, str, str, Optional[str]]:
         """
         Delegate to the injected agent harness.
 
@@ -280,9 +278,8 @@ class TaskExecutor:
                 plan context, and evolving handover.
 
         Returns:
-            (success, output, exit_reason, usage_limit, tokens) — usage_limit is
-            HarnessResult.usage_limit: None unless the agent hit its usage limit;
-            tokens is HarnessResult.tokens: None unless the harness reported them.
+            (success, output, exit_reason, usage_limit) — usage_limit is
+            HarnessResult.usage_limit: None unless the agent hit its usage limit.
         """
         task_name = context.get("task_name", "Task")
         task_description = context.get("task_description", "")
@@ -325,4 +322,4 @@ class TaskExecutor:
             self.store.finish_agent_run(run_id, result.tokens if result is not None else None)
         return result.success, (
             result.output if result.success else (result.error or result.output)
-        ), result.exit_reason, result.usage_limit, result.tokens
+        ), result.exit_reason, result.usage_limit

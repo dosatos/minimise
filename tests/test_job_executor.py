@@ -295,7 +295,7 @@ class _TokenReportingHarness(AgentHarness):
         return HarnessResult(success=True, output="ok", exit_reason="success", tokens=self.TOKENS)
 
 
-def test_hook_rows_and_the_pre_task_hook_failure_row_store_no_tokens(temp_db_dir, db, git_repo):
+def test_a_pre_task_hook_failure_writes_no_agent_run(temp_db_dir, db, git_repo):
     git_tracker = GitTracker(git_repo)
     store = JobStore(db, temp_db_dir)
     job, plan, t1 = _single_task_job(
@@ -310,11 +310,10 @@ def test_hook_rows_and_the_pre_task_hook_failure_row_store_no_tokens(temp_db_dir
     assert set(rows) == {("pre_task", "check"), ("task", None)}
     task_row = rows[("task", None)]
     assert task_row.status == TaskStatus.FAILED and task_row.started_at is None  # no agent ran
-    assert [e.tokens for e in rows.values()] == [None, None]
     assert db.list_agent_runs_for_job(job.id) == []  # a hook is no agent call
 
 
-def test_post_task_hook_rows_store_no_tokens_but_the_attempt_does(temp_db_dir, db, git_repo):
+def test_a_post_task_hook_writes_no_agent_run_but_the_attempt_does(temp_db_dir, db, git_repo):
     git_tracker = GitTracker(git_repo)
     store = JobStore(db, temp_db_dir)
     job, plan, t1 = _single_task_job(
@@ -325,8 +324,8 @@ def test_post_task_hook_rows_store_no_tokens_but_the_attempt_does(temp_db_dir, d
 
     assert executor.execute(job, plan)
 
-    rows = {(e.execution_type, e.hook_name): e.tokens for e in db.list_executions_for_task(t1.id)}
-    assert rows == {("post_task", "tests"): None, ("task", None): _TokenReportingHarness.TOKENS}
+    rows = {(e.execution_type, e.hook_name) for e in db.list_executions_for_task(t1.id)}
+    assert rows == {("post_task", "tests"), ("task", None)}
     # Only the agent call is a run; the hook writes none.
     assert [(r.task_id, r.attempt, r.tokens) for r in db.list_agent_runs_for_job(job.id)] == [
         (t1.id, 0, _TokenReportingHarness.TOKENS)]

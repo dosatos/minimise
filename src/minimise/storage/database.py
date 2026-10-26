@@ -22,8 +22,8 @@ def _dt(value: Optional[str]) -> Optional[datetime]:
 
 
 def _tokens(row: sqlite3.Row) -> Optional[TokenUsage]:
-    """A row's tokens column as a TokenUsage; None when NULL (not reported)."""
-    value = row['tokens'] if 'tokens' in row.keys() else None
+    """An agent_runs row's tokens as a TokenUsage; None when NULL (not reported)."""
+    value = row['tokens']
     return TokenUsage.from_json_dict(json.loads(value)) if value else None
 
 
@@ -87,7 +87,6 @@ def _row_to_execution(row: sqlite3.Row) -> Execution:
         commit_sha=row['commit_sha'],
         hook_name=row['hook_name'] if 'hook_name' in keys else None,
         exit_reason=row['exit_reason'] if 'exit_reason' in keys else None,
-        tokens=_tokens(row),
     )
 
 
@@ -120,7 +119,6 @@ def _row_to_loop_step(row: sqlite3.Row) -> LoopStep:
         retries=row['retries'],
         started_at=_dt(row['started_at']),
         completed_at=_dt(row['completed_at']),
-        tokens=_tokens(row),
     )
 
 
@@ -420,12 +418,6 @@ class Database:
             if 'stop_reason' not in _column_names(cursor, table):
                 cursor.execute(f"ALTER TABLE {table} ADD COLUMN stop_reason TEXT")
 
-        # v10: the tokens an agent run used, as TokenUsage JSON, on its loop step or
-        # task attempt. Additive and after v9 for the same reason; NULL = not reported.
-        for table in ("loop_steps", "executions"):
-            if 'tokens' not in _column_names(cursor, table):
-                cursor.execute(f"ALTER TABLE {table} ADD COLUMN tokens TEXT")
-
         # v11: one append-only row per agent call; every token figure sums them.
         # Inserted when the call starts, finished once when it returns: ended_at
         # NULL = it never returned (killed), tokens NULL = not reported.
@@ -630,14 +622,14 @@ class Database:
                 INSERT OR REPLACE INTO executions
                     (execution_id, job_id, task_id, execution_type, attempt, status,
                      started_at, completed_at, diff_path, commit_sha, hook_name,
-                     exit_reason, tokens)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     exit_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (execution.execution_id, execution.job_id, execution.task_id,
                   execution.execution_type, execution.attempt, execution.status.value,
                   execution.started_at.isoformat() if execution.started_at else None,
                   execution.completed_at.isoformat() if execution.completed_at else None,
                   execution.diff_path, execution.commit_sha,
-                  execution.hook_name, execution.exit_reason, _tokens_json(execution.tokens)))
+                  execution.hook_name, execution.exit_reason))
 
     def list_executions_for_task(self, task_id: str) -> List[Execution]:
         """Fetch a task's executions in attempt order."""
@@ -757,15 +749,14 @@ class Database:
         """Insert a new loop step."""
         with self._write(conn) as cursor:
             cursor.execute("""
-                INSERT INTO loop_steps (step_id, loop_id, iteration, step_type, dimension, status, retries, started_at, completed_at, tokens)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO loop_steps (step_id, loop_id, iteration, step_type, dimension, status, retries, started_at, completed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (step.step_id, step.loop_id, step.iteration, step.step_type, step.dimension,
                   step.status.value, step.retries,
                   step.started_at.isoformat() if step.started_at else None,
-                  step.completed_at.isoformat() if step.completed_at else None,
-                  _tokens_json(step.tokens)))
+                  step.completed_at.isoformat() if step.completed_at else None))
 
-    def update_loop_step(self, step_id: str, status: Optional[TaskStatus] = None, retries: Optional[int] = None, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, tokens: Optional[TokenUsage] = None, conn: Optional[sqlite3.Connection] = None) -> None:
+    def update_loop_step(self, step_id: str, status: Optional[TaskStatus] = None, retries: Optional[int] = None, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, conn: Optional[sqlite3.Connection] = None) -> None:
         """Update a loop step. Only updates fields that are explicitly provided."""
         update_fields = []
         params = []
@@ -782,9 +773,6 @@ class Database:
         if completed_at is not None:
             update_fields.append("completed_at = ?")
             params.append(completed_at.isoformat())
-        if tokens is not None:
-            update_fields.append("tokens = ?")
-            params.append(_tokens_json(tokens))
 
         if not update_fields:
             return

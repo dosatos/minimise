@@ -678,55 +678,75 @@ counts as an ordinary hook failure.
 
 ## Token Usage
 
-Each loop step and each job task attempt records how many tokens its agent used.
+Every agent call is a **run**, and each run records the tokens it used. Every token
+figure is a sum over runs.
 
-- **What's recorded:** Claude Code runs only. Pi and Codex report nothing yet, so
-  their runs show `—`. Hooks are shell commands and are never captured, so a job's
-  total covers its task agents only. There's no dollar cost anywhere: tokens only.
+- **What's recorded:** one record per run, in the `agent_runs` table. A gate retry,
+  a job task's retry and a resumed job's rerun of a task are new runs, so they add
+  records; nothing is ever overwritten. Only Claude Code reports tokens: Pi and Codex
+  runs report nothing yet. Hooks are shell commands, not agent calls, so they have
+  no runs, and a job's figures cover its task agents only. There's no dollar cost
+  anywhere: tokens only.
 - **Where it shows:** `mini loop status <ID>` prints a `Tokens:` line and a `tokens`
   row with each iteration's total. `mini job status <ID>` prints a
   `Tokens (task agents only):` line and a Tokens column with each attempt's total.
   Both carry the objects below in `--format json`. The web loop and job pages show the
   same figures; hover one for its four buckets.
-- Figures print as `243.1M`, `12.4K` or the plain integer. `—` means not reported.
+- Figures print as `243.1M`, `12.4K` or the plain integer. A `Tokens` line adds
+  ` (3 runs not reported)` (or ` (1 run not reported)`) when some counted runs
+  reported nothing.
+- **`0` or `—`:** `0` means we know no tokens were used: no agent ran there, as in a
+  pass carried over under `evaluate.select: failed`, a pending row, or the failed
+  task row a failing pre-task hook writes. `—` (`null` in JSON) means tokens were, or
+  are being, used but we don't know how many: a run that reported nothing, is still
+  running or was killed, or a hook.
+- **Jobs and loops from before token tracking** show `—` everywhere, and every
+  `tokens` and `tokens_total` in their JSON is `null`, even after you resume them.
 
 ### The tokens object
 
-One run (a loop step or a task attempt) has `tokens`: `null` when nothing was
-reported, otherwise
+One row (a loop step, or a job task attempt) has `tokens`:
 
 ```json
 {"input": 120412, "cache_read": 218600000, "cache_write": 21600000, "output": 2800000, "total": 243120412}
 ```
 
 - The four buckets don't overlap: `input` is the tokens neither read from nor written
-  to the cache, `cache_read` and `cache_write` the cached ones, `output` what the
-  model wrote.
+  to the cache, `cache_read` and `cache_write` the cached ones, and `output` what the
+  model wrote, reasoning tokens included.
 - `total` is the sum of the four. A bucket is `null` when it wasn't reported, and
   `total` sums the rest.
+- A row's `tokens` is the sum of its runs. A loop step has one run per attempt, gate
+  retries included. A task attempt has one run, or more after a resumed job re-ran it.
+  - A row with no runs has all five keys `0`.
+  - A row with a run that hasn't ended or reported nothing is `null`.
+  - A hook row is always `null`.
 
-A rollup (a loop, an iteration, a job task, a job) has `tokens_total`, which is always
-an object, never `null`:
+A rollup (a loop, an iteration, a job task, a job) has `tokens_total`:
 
 ```json
 {"input": 120412, "cache_read": 218600000, "cache_write": 21600000, "output": 2800000, "total": 243120412, "not_reported": 3}
 ```
 
-- Each bucket, and `total`, is the sum over the counted runs that reported it, or
-  `null` if none did.
-- `not_reported` is the number of counted runs whose `tokens` is `null`. When it's
+- A run is counted once it has ended. A run that never ended (killed, or its engine
+  crashed) is counted once its job or loop isn't running; while the job or loop runs,
+  it's in progress and not counted yet.
+- Each bucket, and `total`, is the sum over the counted runs that reported it. With
+  no counted runs, all of them are `0`; they're `null` only when runs were counted
+  and none of them reported it.
+- `not_reported` is the number of counted runs that reported nothing. When it's
   above 0, the sums are a lower bound.
-- A run is counted when an agent ran in it and it has finished: it started, and it
-  ended `completed`, `failed` or `stopped`. Running and pending runs aren't counted.
-  Neither is a pass carried over under `evaluate.select: failed`, a hook, or the
-  failed task row a failing pre-task hook writes: no agent ran in those.
+- `tokens_total` is `null` for a job or loop from before token tracking. A job's
+  plan-hook group (`Before all tasks`, `After all tasks`) is `null` too: its hooks
+  can spend tokens (`/minimise:review-plan` runs `claude -p`), and they aren't
+  captured.
 
-| Where | `tokens` (per run) | `tokens_total` (rollup) |
+| Where | `tokens` (per row) | `tokens_total` (rollup) |
 |---|---|---|
 | `mini loop status <ID> --format json` | `steps[]` | top level (the loop) |
 | `mini job status <ID> --format json` | — | top level (the job), each `tasks[]` |
 | `GET /api/loops/<ID>` (web) | `steps[]`, `timeline.groups[].steps[]` | top level (the loop), each `timeline.groups[]` (an iteration) |
-| `GET /jobs/<ID>` (web) | `timeline.groups[].steps[]` (`null` on hooks) | `timeline` (the job), each `timeline.groups[]` |
+| `GET /jobs/<ID>` (web) | `timeline.groups[].steps[]` (`null` on hooks) | top level (the job), each `timeline.groups[]` (a task, or plan hooks: `null`) |
 
 Change policy: keys are only ever added; a key never changes meaning. No JSON carries
 reasoning tokens, per-model counts, model names or cost.

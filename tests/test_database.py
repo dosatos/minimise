@@ -914,15 +914,21 @@ def test_old_db_migrates_to_v11_with_rows_intact_and_marked_untracked(tmp_path, 
     [ex] = db.list_executions_for_task("t1")
     assert (ex.attempt, ex.status, ex.commit_sha, ex.exit_reason) == (
         1, TaskStatus.COMPLETED, "abc123", "success")
-    assert ex.completed_at == datetime(2026, 10, 1, 0, 5) and ex.tokens is None
+    assert ex.completed_at == datetime(2026, 10, 1, 0, 5)
     [step] = db.list_loop_steps("l1")
     assert (step.iteration, step.dimension, step.status, step.retries) == (
         2, "clarity", TaskStatus.COMPLETED, 1)
-    assert step.completed_at == datetime(2026, 10, 1, 0, 3) and step.tokens is None
+    assert step.completed_at == datetime(2026, 10, 1, 0, 3)
     job, loop = db.get_job("j1"), db.get_loop("l1")
     assert (job.name, job.status, job.pid, job.stop_reason) == ("job", JobStatus.STOPPED, 7, "usage limit")
     assert (loop.name, loop.status, loop.max_iterations, loop.pid) == ("loop", JobStatus.STOPPED, 5, 9)
     assert job.tokens_untracked is True and loop.tokens_untracked is True
+
+    # New rows write fine, a v10 DB's unused tokens columns or not.
+    db.save_execution(Execution(task_id="t1", attempt=2, job_id="j1"))
+    db.create_loop_step(LoopStep(step_id="s2", loop_id="l1", iteration=3, step_type="plan"))
+    assert [e.attempt for e in db.list_executions_for_task("t1")] == [1, 2]
+    assert [s.step_id for s in db.list_loop_steps("l1")] == ["s1", "s2"]
 
     db.create_job(Job(id="j2", name="new"))
     db.create_loop(Loop(loop_id="l2", name="new"))
@@ -930,6 +936,25 @@ def test_old_db_migrates_to_v11_with_rows_intact_and_marked_untracked(tmp_path, 
     assert db.get_job("j2").tokens_untracked is False
     assert db.get_loop("l2").tokens_untracked is False
     assert db.get_job("j1").tokens_untracked is True
+
+
+def _columns(db, table):
+    conn = sqlite3.connect(db.db_path)
+    try:
+        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    finally:
+        conn.close()
+
+
+def test_v9_db_migrates_to_v11_without_tokens_columns(tmp_path):
+    """Tokens live in agent_runs only: released DBs go v9 -> v11 and gain no
+    tokens column on executions or loop_steps (a fresh DB has none either)."""
+    for db in (_db_from(tmp_path, _V9_DB), Database(tmp_path / "fresh.db")):
+        db.init_db()
+        assert _user_version(db) == 11
+        assert "tokens" not in _columns(db, "executions")
+        assert "tokens" not in _columns(db, "loop_steps")
+        assert "tokens" in _columns(db, "agent_runs")
 
 
 def test_untracked_mark_runs_once_even_if_init_db_reruns_its_steps(tmp_path):
@@ -956,6 +981,15 @@ def test_fresh_db_jobs_and_loops_are_tracked(db):
     assert db.get_job("j1").tokens_untracked is False
     assert db.get_loop("l1").tokens_untracked is False
     assert "tokens_untracked" not in db.get_job("j1").to_dict()
+
+
+_TOKENS = TokenUsage(
+    input=302, cache_read=12334, cache_write=18110, output=54, reasoning=12,
+    by_model={
+        "claude-opus-5-5": {"input": 2, "cache_read": 11334, "cache_write": 18110, "output": 4},
+        "claude-haiku-5-5": {"input": 300, "cache_read": 1000, "cache_write": 0, "output": 50},
+    },
+)
 
 
 def test_agent_run_is_started_then_finished_once(db):
@@ -1002,42 +1036,3 @@ def test_every_agent_run_gets_its_own_row(db):
     assert first != second
     assert [r.run_id for r in db.list_agent_runs_for_job("j1")] == [first, second]
     assert [r.step_id for r in db.list_agent_runs_for_loop("l1")] == ["s1"]
-
-
-_TOKENS = TokenUsage(
-    input=302, cache_read=12334, cache_write=18110, output=54, reasoning=12,
-    by_model={
-        "claude-opus-5-5": {"input": 2, "cache_read": 11334, "cache_write": 18110, "output": 4},
-        "claude-haiku-5-5": {"input": 300, "cache_read": 1000, "cache_write": 0, "output": 50},
-    },
-)
-
-
-def test_save_execution_twice_keeps_tokens(db):
-    ex = Execution(task_id="t1", attempt=0, job_id="j1", status=TaskStatus.RUNNING,
-                   started_at=datetime(2026, 1, 1), tokens=_TOKENS)
-    db.save_execution(ex)
-    ex.status = TaskStatus.COMPLETED
-    db.save_execution(ex)  # INSERT OR REPLACE rewrites the whole row
-
-    [got] = db.list_executions_for_task("t1")
-    assert got.status == TaskStatus.COMPLETED
-    assert got.tokens == _TOKENS  # by_model and reasoning round-trip too
-
-
-def test_execution_without_tokens_reads_back_none(db):
-    db.save_execution(Execution(task_id="t1", attempt=0, job_id="j1"))
-    assert db.list_executions_for_task("t1")[0].tokens is None
-
-
-def test_loop_step_tokens_round_trip_and_survive_other_updates(db):
-    db.create_loop(Loop(loop_id="l1", name="n"))
-    db.create_loop_step(LoopStep(step_id="s1", loop_id="l1", iteration=1, step_type="plan"))
-    assert db.list_loop_steps("l1")[0].tokens is None
-
-    db.update_loop_step("s1", tokens=_TOKENS)
-    db.update_loop_step("s1", status=TaskStatus.COMPLETED, completed_at=datetime.utcnow())
-
-    [step] = db.list_loop_steps("l1")
-    assert step.status == TaskStatus.COMPLETED
-    assert step.tokens == _TOKENS

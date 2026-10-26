@@ -380,7 +380,7 @@ def test_claude_code_gate_retry_resumes_the_session(tmp_path):
     assert "ONLY the single JSON control line" in procs[1].prompt
 
 
-def test_claude_code_step_stores_model_usage_summed_over_models_and_attempts(tmp_path):
+def test_claude_code_step_writes_each_calls_model_usage_summed_over_models(tmp_path):
     db, store, lid = _build(tmp_path)
     opus = {"inputTokens": 2, "outputTokens": 4, "cacheReadInputTokens": 11334,
             "cacheCreationInputTokens": 18110, "costUSD": 0.0037, "contextWindow": 1000000}
@@ -397,13 +397,14 @@ def test_claude_code_step_stores_model_usage_summed_over_models_and_attempts(tmp
 
     [step] = db.list_loop_steps(lid)
     assert step.retries == 1
-    assert step.tokens == TokenUsage(
-        input=304, cache_read=23668, cache_write=36220, output=58, reasoning=None,
-        by_model={
-            "claude-opus-5-5": {"input": 4, "cache_read": 22668, "cache_write": 36220, "output": 8},
+    opus_counts = {"input": 2, "cache_read": 11334, "cache_write": 18110, "output": 4}
+    assert [r.tokens for r in db.list_agent_runs_for_loop(lid)] == [
+        TokenUsage(input=302, cache_read=12334, cache_write=18110, output=54, by_model={
+            "claude-opus-5-5": opus_counts,
             "claude-haiku-5-5": {"input": 300, "cache_read": 1000, "cache_write": 0, "output": 50},
-        },
-    )
+        }),
+        TokenUsage(**opus_counts, by_model={"claude-opus-5-5": opus_counts}),  # the gate retry's own
+    ]
 
 
 # --- 5) resume re-runs ONLY the missing dimension -------------------------------
@@ -536,58 +537,13 @@ def test_usage_limit_without_reset_text_is_just_usage_limit(tmp_path):
     assert db.get_loop(lid).stop_reason == "usage limit"
 
 
-# --- 6c) tokens: a step stores every attempt's, gate retries included ---------
+# --- 6c) agent_runs: one row per agent call, a gate retry is its own run ------
 
-def _tokens(n, model="claude-opus-5-5"):
+def _tokens(n):
     """TokenUsage of n input, 10n cache_read, 2n cache_write, n output, all on one model."""
     counts = {"input": n, "cache_read": 10 * n, "cache_write": 2 * n, "output": n}
-    return TokenUsage(**counts, by_model={model: dict(counts)})
+    return TokenUsage(**counts, by_model={"claude-opus-5-5": dict(counts)})
 
-
-def test_gate_retry_tokens_add_up_on_the_step(tmp_path):
-    h = StubHarness({("plan", 1, None): [
-        HarnessResult(success=True, output="no json at all", tokens=_tokens(1)),
-        HarnessResult(success=True, output='{"control":"done"}', tokens=_tokens(5, "claude-haiku-5-5")),
-    ]})
-    status, db, store, lid = _run(tmp_path, h)
-
-    assert status == JobStatus.COMPLETED
-    [step] = _steps(db, lid, step_type="plan")
-    assert step.retries == 1
-    assert step.tokens == TokenUsage(input=6, cache_read=60, cache_write=12, output=6, by_model={
-        "claude-opus-5-5": {"input": 1, "cache_read": 10, "cache_write": 2, "output": 1},
-        "claude-haiku-5-5": {"input": 5, "cache_read": 50, "cache_write": 10, "output": 5},
-    })
-
-
-def test_a_harness_reporting_no_tokens_leaves_every_step_null(tmp_path):
-    h = StubHarness({
-        ("plan", 1, None): ['{"control":"continue"}'],
-        ("plan", 2, None): ['{"control":"done"}'],
-    })
-    status, db, store, lid = _run(tmp_path, h)
-
-    assert status == JobStatus.COMPLETED
-    steps = db.list_loop_steps(lid)
-    assert {s.step_type for s in steps} == {"plan", "implement", "evaluate"}
-    assert [s.tokens for s in steps] == [None] * len(steps)
-
-
-def test_a_usage_limit_stop_keeps_the_tokens_already_used(tmp_path):
-    """The limited attempt's tokens add to the rejected attempt's before it."""
-    h = StubHarness({("plan", 1, None): [
-        HarnessResult(success=True, output="no json at all", tokens=_tokens(1)),
-        dataclasses.replace(_limit(), tokens=_tokens(2)),
-    ]})
-    status, db, store, lid = _run(tmp_path, h)
-
-    assert status == JobStatus.STOPPED
-    [step] = _steps(db, lid, step_type="plan")
-    assert step.status == TaskStatus.STOPPED
-    assert step.tokens == _tokens(3)
-
-
-# --- 6d) agent_runs: one row per agent call, a gate retry is its own run ------
 
 def _runs(db, lid):
     return [(r.step_id, r.ended_at is not None, r.tokens) for r in db.list_agent_runs_for_loop(lid)]
@@ -627,6 +583,20 @@ def test_a_run_whose_harness_raised_is_finished_without_tokens(tmp_path):
 
     [step] = db.list_loop_steps(lid)
     assert _runs(db, lid) == [(step.step_id, True, None)]
+
+
+def test_a_usage_limit_stop_keeps_each_runs_tokens(tmp_path):
+    """The rejected attempt's run and the limited one's each keep their tokens."""
+    h = StubHarness({("plan", 1, None): [
+        HarnessResult(success=True, output="no json at all", tokens=_tokens(1)),
+        dataclasses.replace(_limit(), tokens=_tokens(2)),
+    ]})
+    status, db, store, lid = _run(tmp_path, h)
+
+    assert status == JobStatus.STOPPED
+    [step] = _steps(db, lid, step_type="plan")
+    assert step.status == TaskStatus.STOPPED
+    assert _runs(db, lid) == [(step.step_id, True, _tokens(1)), (step.step_id, True, _tokens(2))]
 
 
 def test_a_carried_over_pass_writes_no_run(tmp_path):

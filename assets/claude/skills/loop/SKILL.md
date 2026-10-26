@@ -108,5 +108,6 @@ passed.** Always surface the verdict table (or journal verdicts) alongside a "co
 a planner can stop with failing dimensions if it judged that acceptable.
 
 Token figures: `mini loop status` prints the loop's `Tokens:` line and a `tokens` row per iteration
-(Claude Code runs only; `—` = not reported); `--format json` has `tokens_total` and each step's
-`tokens`. README → Token Usage documents the object.
+(Claude Code runs only; `0` = no agent ran, `—` = unknown: not reported, still running, or a loop
+from before token tracking); `--format json` has `tokens_total` and each step's `tokens`.
+README → Token Usage documents the object.

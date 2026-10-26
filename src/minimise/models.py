@@ -32,11 +32,14 @@ def _add_counts(a: Optional[int], b: Optional[int]) -> Optional[int]:
 
 @dataclass
 class TokenUsage:
-    """The tokens one agent run used. None = the harness didn't report it.
+    """The tokens one agent call used (an agent_runs row's tokens). None = the
+    harness didn't report it.
 
     The four buckets split the tokens with no overlap: input is the tokens
-    neither read from nor written to the cache. reasoning (never added to
-    total) and by_model (model id -> the four buckets) are stored, never shown.
+    neither read from nor written to the cache, and output already includes
+    the reasoning tokens. reasoning is the part of output spent reasoning, so
+    it is never added to total. reasoning and by_model (model id -> the four
+    buckets) are stored, never shown.
     """
     input: Optional[int]
     cache_read: Optional[int]
@@ -86,7 +89,7 @@ class TokenUsage:
     __radd__ = __add__  # None + usage is usage too
 
     def to_json_dict(self) -> dict:
-        """The stored form (the tokens column). Not the API shape: that never
+        """The stored form (agent_runs.tokens). Not the API shape: that never
         carries reasoning or by_model."""
         return {
             "input": self.input,
@@ -184,7 +187,6 @@ class Execution:
     commit_sha: Optional[str] = None
     hook_name: Optional[str] = None  # set on hooks; NULL for task attempts
     exit_reason: Optional[str] = None  # machine classification of how the run ended
-    tokens: Optional[TokenUsage] = None  # task attempts only; None = not reported
 
     @property
     def execution_id(self) -> str:
@@ -442,4 +444,3 @@ class LoopStep:
     retries: int = 0
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    tokens: Optional[TokenUsage] = None  # every attempt's, gate retries included; None = not reported
