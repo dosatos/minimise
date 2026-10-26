@@ -7,14 +7,14 @@ lives in JobStore.
 """
 
 import os
-import signal
 from pathlib import Path
 from typing import Optional
 
 from minimise.models import Job, JobStatus, TaskStatus, Plan
 from minimise.storage.database import Database
 from minimise.storage.git_tracker import GitTracker
-from minimise.storage.job_store import JobStore, _pid_alive
+from minimise.storage.job_store import JobStore
+from minimise.orchestration.engine_process import engine_alive, stop_engine
 from minimise.orchestration.task_executor import JobStopped, TaskExecutor
 from minimise.orchestration.hook_executor import HookExecutor
 from minimise.orchestration.job_executor import JobExecutor
@@ -24,8 +24,8 @@ from minimise.utils import ensure_directory
 # start_job outcomes (a crashed RUNNING job arrives reconciled to FAILED).
 RAN_OK = "ran_ok"                 # executed to completion
 RAN_FAILED = "ran_failed"         # executed but the run failed
-RAN_STOPPED = "ran_stopped"       # a task stopped it (usage limit); resumable
-BACKED_OFF = "backed_off"         # a live RUNNING job — left alone
+RAN_STOPPED = "ran_stopped"       # stopped (usage limit or `mini job stop`); resumable
+BACKED_OFF = "backed_off"         # a live RUNNING job or engine — left alone
 ALREADY_COMPLETE = "already_complete"
 
 
@@ -100,6 +100,12 @@ class JobController:
         if job.status == JobStatus.COMPLETED:
             print("Job already complete")
             return ALREADY_COMPLETE
+        # A stopped engine that hasn't exited yet still works the checkout; a
+        # second engine beside it would commit its files. (The pid check keeps a
+        # new engine that reused the old pid from backing off from itself.)
+        if job.pid != os.getpid() and engine_alive(job.pid, "job", job_id):
+            print(f"Engine still running (pid {job.pid}). Stop it first: mini job stop {job_id[:8]}")
+            return BACKED_OFF
 
         # PENDING (fresh) or FAILED/STOPPED (resume) both run the same path;
         # execute() skips COMPLETED tasks using the live statuses store.load attached.
@@ -115,7 +121,8 @@ class JobController:
         try:
             success = self.executor.execute(job, plan)
         except JobStopped:
-            # The task already stopped the job with its reason; FAILED would bury it.
+            # The job is already STOPPED (a task's usage limit, with its reason, or
+            # `mini job stop`, seen at a task/hook boundary); FAILED would bury it.
             return RAN_STOPPED
         if success:
             self.store.mark_job_completed(job_id)
@@ -124,22 +131,23 @@ class JobController:
         return RAN_OK if success else RAN_FAILED
 
     def stop_job(self, job_id: str) -> bool:
-        """Stop a job: mark it and its RUNNING/PENDING tasks STOPPED."""
+        """Stop a job: mark it and its RUNNING/PENDING tasks STOPPED, then kill
+        its engine's whole process tree (agent and hooks included), waiting up
+        to the grace period. Marking first means an engine that survives the
+        kill sees STOPPED at its next task or hook and ends the run itself.
+
+        The kill runs whatever the status: a STOPPED job whose engine is still
+        alive is stopped again rather than left beside a refusing start.
+        """
         job = self.db.get_job(job_id)
         if not job:
             print(f"Job {job_id} not found")
             return False
 
-        was_running = job.status == JobStatus.RUNNING
         self.store.mark_job_stopped(job_id)
         for task in self.db.list_tasks_for_job(job_id):
             if task.status in (TaskStatus.RUNNING, TaskStatus.PENDING):
                 self.store.mark_task_stopped(task)
 
-        if was_running and _pid_alive(job.pid):
-            try:
-                os.kill(job.pid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
-
+        stop_engine(job.pid, "job", job_id)  # verifies the pid; signals nothing otherwise
         return True

@@ -197,8 +197,13 @@ mini job status a1b2c3d4
 
 ```bash
 mini job stop a1b2c3d4
-# Sends SIGTERM to the orchestrator process
+# Kills the engine and everything it started (agent, hooks): SIGTERM to its
+# process group, then SIGKILL after a 10 s grace period. Takes up to ~10 s.
 ```
+
+If a stopped job's old engine is somehow still alive, `mini job start` refuses
+(`Engine still running (pid N). Stop it first: mini job stop <ID>`), and
+`mini job stop` kills it even though the job is no longer RUNNING.
 
 #### Resume a failed/stopped/crashed job
 
@@ -618,14 +623,15 @@ PENDING ──[start]──> RUNNING ──[complete]──> COMPLETED
 ```
 
 `mini job start` is idempotent: on a STOPPED/FAILED/crashed job it resumes from
-the first non-complete task; on a live RUNNING job it backs off.
+the first non-complete task; on a live RUNNING job, or while the job's old
+engine is still alive, it backs off.
 
 ### State Transitions
 
 | From | To | Command | Condition |
 |------|-----|---------|-----------|
 | PENDING | RUNNING | `mini job start <ID>` | Job in PENDING state |
-| RUNNING | STOPPED | `mini job stop <ID>` | Job must be in RUNNING state |
+| RUNNING | STOPPED | `mini job stop <ID>` | Job in RUNNING state, or its old engine still alive |
 | RUNNING | STOPPED | (automatic) | The agent hits its Claude usage limit (see [Usage Limits](#usage-limits)) |
 | STOPPED/FAILED | RUNNING | `mini job start <ID>` | Resumes from the first non-complete task |
 | RUNNING | RUNNING | `mini job start <ID>` | Backs off — a live job is left alone |

@@ -1,14 +1,16 @@
 """JobExecutor — runs a job's tasks sequentially, end to end.
 
 Pure orchestration: run plan hooks, execute each task in order while flowing
-a handover report to the next, and report success. It touches no storage —
+a handover report to the next, and report success. It writes no storage —
 JobController loads the job/plan and marks RUNNING/COMPLETED/FAILED around
 this call; per-task persistence lives in TaskExecutor. A task that hits the
 agent's usage limit raises JobStopped, which ends the run before the next task.
+So does a job marked STOPPED (`mini job stop`): its status is re-read before
+every task and every hook, so an engine that outlives its stop goes no further.
 """
 
-from minimise.models import Job, Plan, TaskStatus
-from minimise.orchestration.task_executor import TaskExecutor
+from minimise.models import Job, JobStatus, Plan, TaskStatus
+from minimise.orchestration.task_executor import JobStopped, TaskExecutor
 from minimise.orchestration.hook_executor import HookExecutor
 from minimise.utils import dump_yaml_readable
 
@@ -20,20 +22,29 @@ class JobExecutor:
         self.task_executor = task_executor
         self.hook_executor = hook_executor
 
-    def _run_hooks(self, hooks, execution_type, task_id, stdin=None) -> bool:
+    def _raise_if_stopped(self, job_id) -> None:
+        """End the run (JobStopped) if the job was marked STOPPED meanwhile."""
+        job = self.task_executor.store.load(job_id)
+        if job is not None and job.status == JobStatus.STOPPED:
+            raise JobStopped("Job stopped")
+
+    def _run_hooks(self, job_id, hooks, execution_type, task_id, stdin=None) -> bool:
         for hook in hooks:
+            self._raise_if_stopped(job_id)
             ok, _ = self.hook_executor.run(hook, execution_type, task_id, stdin=stdin)
             if not ok:
                 print(f"{execution_type} hook '{hook.name}' failed")
                 return False
         return True
 
-    def _make_post_verify(self, hooks, task_id, stdin):
+    def _make_post_verify(self, job_id, hooks, task_id, stdin):
         """Closure run after each successful attempt: run post_task hooks in
-        order, mapping on_failure to (outcome, combined_output)."""
+        order, mapping on_failure to (outcome, combined_output). JobStopped
+        raised here propagates through TaskExecutor.execute_task untouched."""
         def verify(attempt):
             combined = ""
             for hook in hooks:
+                self._raise_if_stopped(job_id)
                 ok, output = self.hook_executor.run(hook, "post_task", task_id, stdin=stdin)
                 if ok:
                     continue
@@ -53,7 +64,7 @@ class JobExecutor:
         plan_briefing = plan.briefing
         plan_yaml = dump_yaml_readable(plan.model_dump())
 
-        if not self._run_hooks(plan.pre_hooks, "pre_plan", None, stdin=plan_yaml):
+        if not self._run_hooks(job.id, plan.pre_hooks, "pre_plan", None, stdin=plan_yaml):
             return False
 
         handover = ""
@@ -63,6 +74,7 @@ class JobExecutor:
             # task with the previous (completed) task's persisted handoff.
             if task.status == TaskStatus.COMPLETED:
                 continue
+            self._raise_if_stopped(job.id)
             if resuming:
                 resuming = False
                 if idx > 0:
@@ -83,13 +95,13 @@ class JobExecutor:
             pre = getattr(plan_task, "pre_hooks", []) if plan_task else []
             post = getattr(plan_task, "post_hooks", []) if plan_task else []
 
-            if not self._run_hooks(pre, "pre_task", task.id, stdin=plan_yaml):
+            if not self._run_hooks(job.id, pre, "pre_task", task.id, stdin=plan_yaml):
                 self.task_executor.store.mark_task_failed(task, "Pre-task hook failed")
                 return False
 
             success, output = self.task_executor.execute_task(
                 task, job.id, handover, next_task=next_task,
-                verify=self._make_post_verify(post, task.id, plan_yaml),
+                verify=self._make_post_verify(job.id, post, task.id, plan_yaml),
                 plan_name=plan_name, plan_briefing=plan_briefing,
             )
             if not success:
@@ -99,4 +111,4 @@ class JobExecutor:
             # execute_task returns the completed task's handoff for the next one.
             handover = output
 
-        return self._run_hooks(plan.post_hooks, "post_plan", None, stdin=plan_yaml)
+        return self._run_hooks(job.id, plan.post_hooks, "post_plan", None, stdin=plan_yaml)

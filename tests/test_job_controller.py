@@ -314,43 +314,115 @@ def test_cancel_job_basic(job_controller, plan_file):
             assert task.status == TaskStatus.STOPPED
 
 
-def test_stop_job_sends_sigterm_to_live_pid(job_controller, plan_file, monkeypatch):
-    """Stopping a RUNNING job with a live pid sends SIGTERM to that pid."""
-    created_job = job_controller.create_job(plan_file)
-    job_id = created_job.id
-
+def test_stop_job_kills_engine_process_tree(job_controller, plan_file, fake_engine):
+    """Stopping a RUNNING job kills its verified engine AND what the engine spawned
+    (the agent / hooks), then leaves the job STOPPED."""
+    job_id = job_controller.create_job(plan_file).id
+    engine = fake_engine("job", job_id)
     job_controller.db.update_job_status(
-        job_id, JobStatus.RUNNING, started_at=datetime.utcnow(), pid=12345
+        job_id, JobStatus.RUNNING, started_at=datetime.utcnow(), pid=engine.pid
     )
 
-    monkeypatch.setattr("minimise.orchestration.job_controller._pid_alive", lambda pid: True)
-    killed = []
-    monkeypatch.setattr("minimise.orchestration.job_controller.os.kill", lambda pid, sig: killed.append((pid, sig)))
+    assert job_controller.stop_job(job_id) is True
 
-    result = job_controller.stop_job(job_id)
-    assert result is True
-
-    import signal
-    assert killed == [(12345, signal.SIGTERM)]
+    assert engine.engine_gone()
+    assert engine.grandchild_gone()
+    assert job_controller.get_job_status(job_id).status == JobStatus.STOPPED
 
 
-def test_stop_job_dead_pid_skips_kill(job_controller, plan_file, monkeypatch):
-    """Stopping a RUNNING job with a dead/None pid does not call os.kill and does not raise."""
-    created_job = job_controller.create_job(plan_file)
-    job_id = created_job.id
-
+@pytest.mark.parametrize("pid", [None, "self", "other-job-engine"])
+def test_stop_job_dead_pid_skips_kill(job_controller, plan_file, monkeypatch, fake_engine, pid):
+    """A dead/None pid, or a live pid that isn't THIS job's engine (a reused pid),
+    is never signalled; the job is still marked STOPPED."""
+    import os
+    job_id = job_controller.create_job(plan_file).id
+    if pid == "self":
+        pid = os.getpid()
+    elif pid == "other-job-engine":
+        pid = fake_engine("job", "job-0ther0").pid
     job_controller.db.update_job_status(
-        job_id, JobStatus.RUNNING, started_at=datetime.utcnow(), pid=None
+        job_id, JobStatus.RUNNING, started_at=datetime.utcnow(), pid=pid
     )
 
-    def fail_kill(pid, sig):
-        raise AssertionError("os.kill should not be called for a dead/None pid")
+    def fail_kill(*args):
+        raise AssertionError("no signal may be sent to a pid that isn't this job's engine")
 
-    monkeypatch.setattr("minimise.orchestration.job_controller.os.kill", fail_kill)
+    monkeypatch.setattr("minimise.orchestration.engine_process.os.kill", fail_kill)
+    monkeypatch.setattr("minimise.orchestration.engine_process.os.killpg", fail_kill)
 
     result = job_controller.stop_job(job_id)
     assert result is True
     assert job_controller.get_job_status(job_id).status == JobStatus.STOPPED
+
+
+def test_stop_job_kills_live_engine_of_stopped_job(job_controller, plan_file, fake_engine):
+    """A STOPPED job whose engine survived is stopped again: its tree is killed."""
+    job_id = job_controller.create_job(plan_file).id
+    engine = fake_engine("job", job_id)
+    job_controller.db.update_job_status(job_id, JobStatus.STOPPED, pid=engine.pid)
+
+    assert job_controller.stop_job(job_id) is True
+
+    assert engine.engine_gone()
+    assert engine.grandchild_gone()
+    assert job_controller.get_job_status(job_id).status == JobStatus.STOPPED
+
+
+def test_start_job_backs_off_while_old_engine_alive(job_controller, plan_file, fake_engine, capsys):
+    """start never runs a second engine beside a live one, whatever the status."""
+    job_id = job_controller.create_job(plan_file).id
+    engine = fake_engine("job", job_id)
+    job_controller.db.update_job_status(job_id, JobStatus.STOPPED, pid=engine.pid)
+
+    def fail_execute(job, plan):
+        raise AssertionError("must not execute while the old engine lives")
+
+    job_controller.executor.execute = fail_execute
+
+    assert job_controller.start_job(job_id) == BACKED_OFF
+    assert (f"Engine still running (pid {engine.pid}). Stop it first: mini job stop {job_id[:8]}"
+            in capsys.readouterr().out)
+    job = job_controller.db.get_job(job_id)
+    assert job.status == JobStatus.STOPPED and job.pid == engine.pid
+    assert engine.proc.poll() is None  # left alone
+
+
+def test_job_marked_stopped_mid_run_ends_before_next_hook_and_task(temp_db_dir, git_repo):
+    """`mini job stop` during task 1 (an engine that outlived the kill): the run
+    skips task 1's post_task hook and task 2, returns RAN_STOPPED, stays STOPPED."""
+    from minimise.orchestration.job_controller import RAN_STOPPED
+
+    marker = temp_db_dir / "hook-ran"
+    plan_path = temp_db_dir / "stop_mid_run.yaml"
+    plan_path.write_text(yaml.dump({"name": "Stop mid run", "tasks": [
+        {"id": "t1", "name": "Task 1", "description": "d", "goal": "g",
+         "estimated_duration_min": 1,
+         "post_hooks": [{"name": "gate", "shell": f"touch {marker}", "estimated_duration_min": 1}]},
+        {"id": "t2", "name": "Task 2", "description": "d", "goal": "g",
+         "estimated_duration_min": 1},
+    ]}))
+    db = Database(temp_db_dir / "test.db")
+    db.init_db()
+    controller = None
+
+    class StopDuringRunHarness(_ScriptedHarness):
+        def run(self, prompt, *, cwd, **kwargs):
+            result = super().run(prompt, cwd=cwd, **kwargs)
+            # The stored pid is this test process, not a `job _run` engine, so
+            # stop_job marks everything STOPPED and signals nothing.
+            controller.stop_job(job_id)
+            return result
+
+    harness = StopDuringRunHarness(_done(), _done())
+    controller = JobController(db, GitTracker(git_repo), temp_db_dir / "jobs", git_repo,
+                               factory=_OneHarnessFactory(harness))
+    job_id = controller.create_job(plan_path).id
+
+    assert controller.start_job(job_id) == RAN_STOPPED
+    assert len(harness.prompts) == 1  # task 2 never started
+    assert not marker.exists()        # task 1's post_task hook never ran
+    assert db.get_job(job_id).status == JobStatus.STOPPED
+    assert [t.status for t in db.list_tasks_for_job(job_id)] == [TaskStatus.STOPPED] * 2
 
 
 def test_run_job_basic(job_controller, plan_file):

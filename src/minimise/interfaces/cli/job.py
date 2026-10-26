@@ -34,6 +34,7 @@ from minimise.interfaces.cli.results import job_results
 from minimise.orchestration.handover_manager import HandoverManager
 from minimise.orchestration.task_executor import render_task_prompt
 from minimise.orchestration import job_controller as controller
+from minimise.orchestration.engine_process import engine_alive
 from minimise.personas import load_personas
 from minimise.storage.git_tracker import GitTracker
 from minimise.storage.job_store import _pid_alive
@@ -298,6 +299,7 @@ def job_start(job_id: str, harness: str | None, model: str | None):
 
     A PENDING job runs; a crashed FAILED/STOPPED job resumes from its first
     incomplete task; a live RUNNING job is left alone; a COMPLETED job is a no-op.
+    A job whose old engine is still alive is left alone too, whatever its status.
     """
     try:
         job_id, db, job_obj = _get_and_validate_job(job_id)
@@ -307,6 +309,10 @@ def job_start(job_id: str, harness: str | None, model: str | None):
             return
         if job_obj.status == JobStatus.COMPLETED:
             console.print(f"[green]Job already complete[/green]")
+            return
+        if engine_alive(job_obj.pid, "job", job_id):
+            console.print(f"[yellow]Engine still running (pid {job_obj.pid}). "
+                          f"Stop it first: mini job stop {job_id[:8]}[/yellow]")
             return
 
         cmd = [sys.argv[0], "job", "_run", job_id]
@@ -578,12 +584,16 @@ def job_status(job_id: str, format: str):
 @job.command(name="stop")
 @click.argument("job_id")
 def job_stop(job_id: str):
-    """Stop a running job (marks it and its tasks STOPPED)."""
+    """Stop a running job: mark it and its tasks STOPPED, then kill its engine,
+    agent and hooks (SIGTERM, then SIGKILL after a grace period of up to 10 s).
+
+    Also stops a non-RUNNING job whose old engine is still alive.
+    """
     try:
         job_id, db, job_obj = _get_and_validate_job(job_id)
         job_controller = get_job_controller(db)
 
-        if job_obj.status != JobStatus.RUNNING:
+        if job_obj.status != JobStatus.RUNNING and not engine_alive(job_obj.pid, "job", job_id):
             console.print(f"[red]Error: Job must be in RUNNING state to stop (current: {job_obj.status.value})[/red]")
             raise SystemExit(1)
 

@@ -780,63 +780,27 @@ def test_stop_running_job_sets_stopped_status(db):
     assert job_after.completed_at is not None
 
 
-def test_stop_pending_job_fails(db, runner, mock_config_dir):
-    """Test that stopping a PENDING job returns error."""
-    # Create a PENDING job
-    job = Job(
-        id=str(uuid.uuid4()),
-        name="Pending Job",
-        status=JobStatus.PENDING,
-        plan_path="/path/to/plan.yaml"
-    )
-    db.create_job(job)
+@pytest.mark.parametrize("status", [
+    JobStatus.STOPPED, JobStatus.FAILED, JobStatus.PENDING, JobStatus.COMPLETED,
+])
+@pytest.mark.parametrize("pid", [None, "self"])
+def test_stop_non_running_job_without_live_engine_fails(runner, mock_config_dir, monkeypatch, status, pid):
+    """Stopping a job that isn't RUNNING, with no live engine of its own (no pid,
+    or a live pid that isn't its engine), errors as before and signals nothing."""
+    import os
+    from minimise.orchestration import engine_process
 
-    # Try to stop it via CLI
+    def fail_kill(*args):
+        raise AssertionError("no signal may be sent")
+
+    _, job = _make_start_job(mock_config_dir, status, pid=os.getpid() if pid == "self" else None)
+    monkeypatch.setattr(engine_process.os, "kill", fail_kill)
+    monkeypatch.setattr(engine_process.os, "killpg", fail_kill)
+
     result = runner.invoke(mini, ["job", "stop", job.id])
 
-    # Should fail with error message
     assert result.exit_code == 1
-    assert "Error" in result.output or "RUNNING" in result.output
-
-
-def test_stop_completed_job_fails(db, runner, mock_config_dir):
-    """Test that stopping a COMPLETED job returns error."""
-    # Create a COMPLETED job
-    job = Job(
-        id=str(uuid.uuid4()),
-        name="Completed Job",
-        status=JobStatus.COMPLETED,
-        plan_path="/path/to/plan.yaml",
-        completed_at=datetime.utcnow()
-    )
-    db.create_job(job)
-
-    # Try to stop it via CLI
-    result = runner.invoke(mini, ["job", "stop", job.id])
-
-    # Should fail with error message
-    assert result.exit_code == 1
-    assert "Error" in result.output or "RUNNING" in result.output
-
-
-def test_stop_failed_job_fails(db, runner, mock_config_dir):
-    """Test that stopping a FAILED job returns error."""
-    # Create a FAILED job
-    job = Job(
-        id=str(uuid.uuid4()),
-        name="Failed Job",
-        status=JobStatus.FAILED,
-        plan_path="/path/to/plan.yaml",
-        completed_at=datetime.utcnow()
-    )
-    db.create_job(job)
-
-    # Try to stop it via CLI
-    result = runner.invoke(mini, ["job", "stop", job.id])
-
-    # Should fail with error message
-    assert result.exit_code == 1
-    assert "Error" in result.output or "RUNNING" in result.output
+    assert f"Job must be in RUNNING state to stop (current: {status.value})" in result.output
 
 
 def test_stop_nonexistent_job_fails(runner, mock_config_dir):
@@ -848,25 +812,73 @@ def test_stop_nonexistent_job_fails(runner, mock_config_dir):
     assert "Error" in result.output or "not found" in result.output
 
 
-def test_stop_running_job_without_pid_fails(db, runner, mock_config_dir):
-    """Test that stopping a RUNNING job without PID returns error."""
-    # Create a RUNNING job WITHOUT PID (corrupted state)
-    job = Job(
-        id=str(uuid.uuid4()),
-        name="Running Job No PID",
-        status=JobStatus.RUNNING,
-        plan_path="/path/to/plan.yaml",
-        pid=None,  # No PID
-        started_at=datetime.utcnow()
-    )
-    db.create_job(job)
+def test_stop_running_job_without_pid_fails(runner, mock_config_dir):
+    """A RUNNING job without a pid (corrupted state) reconciles to FAILED, so
+    stopping it errors: there is no engine to stop."""
+    _, job = _make_start_job(mock_config_dir, JobStatus.RUNNING, pid=None)
 
-    # Try to stop it via CLI
     result = runner.invoke(mini, ["job", "stop", job.id])
 
-    # Should fail with error message
     assert result.exit_code == 1
-    assert "Error" in result.output or "process" in result.output.lower()
+    assert "Job must be in RUNNING state to stop (current: failed)" in result.output
+
+
+def test_stop_running_job_kills_engine_process_tree(runner, mock_config_dir, fake_engine):
+    """`mini job stop` kills the engine and what it spawned, and marks it STOPPED."""
+    db, job = _make_start_job(mock_config_dir, JobStatus.PENDING)
+    engine = fake_engine("job", job.id)
+    db.update_job_status(job.id, JobStatus.RUNNING, started_at=datetime.utcnow(), pid=engine.pid)
+
+    result = runner.invoke(mini, ["job", "stop", job.id])
+
+    assert result.exit_code == 0, result.output
+    assert "stopped successfully" in result.output
+    assert engine.engine_gone()
+    assert engine.grandchild_gone()
+    assert db.get_job(job.id).status == JobStatus.STOPPED
+    assert db.get_task("task-start").status == TaskStatus.STOPPED
+
+
+def test_stop_stopped_job_with_live_engine_kills_it(runner, mock_config_dir, fake_engine):
+    """A STOPPED job whose engine is still alive can be stopped again (exit 0),
+    so the user is never stuck between a refusing start and a refusing stop."""
+    db, job = _make_start_job(mock_config_dir, JobStatus.PENDING)
+    engine = fake_engine("job", job.id)
+    db.update_job_status(job.id, JobStatus.STOPPED, pid=engine.pid)
+
+    result = runner.invoke(mini, ["job", "stop", job.id])
+
+    assert result.exit_code == 0, result.output
+    assert engine.engine_gone()
+    assert engine.grandchild_gone()
+    assert db.get_job(job.id).status == JobStatus.STOPPED
+
+
+def test_start_stopped_job_refuses_while_engine_alive(runner, mock_config_dir, monkeypatch, fake_engine):
+    """`mini job start` never spawns a second engine beside a live one."""
+    import subprocess
+    db, job = _make_start_job(mock_config_dir, JobStatus.PENDING)
+    engine = fake_engine("job", job.id)
+    db.update_job_status(job.id, JobStatus.STOPPED, pid=engine.pid)
+    real_popen = subprocess.Popen
+    spawned = []
+
+    def recording_popen(cmd, *args, **kwargs):
+        if "_run" in cmd:  # an engine spawn; `ps` (engine_alive) still runs for real
+            spawned.append(cmd)
+            return _FakeProc(pid=4242)
+        return real_popen(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", recording_popen)
+
+    result = runner.invoke(mini, ["job", "start", job.id])
+
+    assert result.exit_code == 0, result.output
+    assert (f"Engine still running (pid {engine.pid}). Stop it first: mini job stop {job.id[:8]}"
+            in result.output)
+    assert spawned == []
+    assert db.get_job(job.id).status == JobStatus.STOPPED
+    assert engine.proc.poll() is None  # left alone
 
 
 # ============================================================================

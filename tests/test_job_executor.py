@@ -5,6 +5,7 @@ loop with a real TaskExecutor + a stub harness, asserting JobExecutor forwards
 execute_task's returned handoff (not a rebuilt-from-stdout one) to the next task.
 """
 
+import os
 import re
 import subprocess
 import tempfile
@@ -17,7 +18,7 @@ from minimise.agents.harness import AgentHarness, HarnessResult
 from minimise.models import Job, JobStatus, Plan, Task, TaskStatus
 from minimise.orchestration.hook_executor import HookExecutor
 from minimise.orchestration.job_executor import JobExecutor
-from minimise.orchestration.task_executor import TaskExecutor
+from minimise.orchestration.task_executor import JobStopped, TaskExecutor
 from minimise.storage.git_tracker import GitTracker
 from minimise.storage.job_store import JobStore
 
@@ -67,6 +68,11 @@ def test_job_executor_passes_only_stable_plan_scalars_to_each_task():
     calls = []
 
     class RecordingTaskExecutor:
+        class store:  # the stop check finds no stored job → keeps running
+            @staticmethod
+            def load(job_id):
+                return None
+
         def execute_task(
             self, task, job_id, handover_context, next_task=None, verify=None,
             *, plan_name=None, plan_briefing=None,
@@ -366,3 +372,97 @@ def test_mark_running_clears_stale_completed_at(temp_db_dir, db, git_repo):
     store.mark_running(task, 0)
     reloaded = db.get_task(task.id)
     assert reloaded.completed_at is None  # cleared → no negative duration
+
+
+def _two_task_job(db, git_tracker, tmp_path):
+    """A two-task job with every kind of hook, each touching a marker file."""
+    def hook(name):
+        return [{"name": name, "shell": f"touch {tmp_path / name}", "estimated_duration_min": 1}]
+
+    job_id = str(uuid.uuid4())
+    # RUNNING under this (live) pid, as start_job leaves it, so load() keeps it RUNNING.
+    db.create_job(Job(id=job_id, name="J", status=JobStatus.RUNNING, pid=os.getpid(),
+                      base_commit=git_tracker.get_current_commit()))
+    tasks = [Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
+                  name=f"T{n}", description=f"d{n}", status=TaskStatus.PENDING)
+             for n in (1, 2)]
+    for task in tasks:
+        db.create_task(task)
+    plan = Plan(name="J", pre_hooks=hook("pre_plan"), post_hooks=hook("post_plan"), tasks=[
+        {"id": t.id, "name": t.name, "description": t.description, "goal": "g",
+         "estimated_duration_min": 5,
+         "pre_hooks": hook(f"pre_task{n}"), "post_hooks": hook(f"post_task{n}")}
+        for n, t in enumerate(tasks, 1)
+    ])
+    return Job(id=job_id, name="J", status=JobStatus.RUNNING, tasks=tasks), plan
+
+
+class _StopDuringHarness(HandoffWritingHarness):
+    """Marks the job STOPPED (as `mini job stop` would) while agent run N works."""
+
+    def __init__(self, db, job_id, on_run):
+        super().__init__()
+        self.db, self.job_id, self.on_run = db, job_id, on_run
+
+    def run(self, prompt, **kw):
+        result = super().run(prompt, **kw)
+        if len(self.prompts) == self.on_run:
+            self.db.update_job_status(self.job_id, JobStatus.STOPPED)
+        return result
+
+
+@pytest.mark.parametrize("stop_at, ran_agents, ran_hooks", [
+    # Stopped before the run: not even the pre_plan hook starts.
+    (0, 0, []),
+    # Stopped during task 1: its post_task hook and all of task 2 are skipped.
+    (1, 1, ["pre_plan", "pre_task1"]),
+    # Stopped during task 2 (the last): its post_task and the post_plan hook are skipped.
+    (2, 2, ["pre_plan", "pre_task1", "post_task1", "pre_task2"]),
+])
+def test_job_marked_stopped_ends_run_at_next_task_or_hook(
+    temp_db_dir, db, git_repo, tmp_path, stop_at, ran_agents, ran_hooks
+):
+    git_tracker = GitTracker(git_repo)
+    store = JobStore(db, temp_db_dir)
+    job, plan = _two_task_job(db, git_tracker, tmp_path)
+    if stop_at == 0:
+        db.update_job_status(job.id, JobStatus.STOPPED)
+    harness = _StopDuringHarness(db, job.id, on_run=stop_at)
+    executor = JobExecutor(
+        TaskExecutor(store, git_tracker, factory=_FixedHarnessFactory(harness)), HookExecutor())
+
+    with pytest.raises(JobStopped):
+        executor.execute(job, plan)
+
+    assert len(harness.prompts) == ran_agents
+    all_hooks = ["pre_plan", "pre_task1", "post_task1", "pre_task2", "post_task2", "post_plan"]
+    assert [h for h in all_hooks if (tmp_path / h).exists()] == ran_hooks
+    assert db.get_job(job.id).status == JobStatus.STOPPED
+
+
+def test_job_stopped_between_tasks_skips_next_task_without_hooks(temp_db_dir, db, git_repo):
+    """With no hooks at all, the per-task check alone keeps task 2 from starting."""
+    git_tracker = GitTracker(git_repo)
+    store = JobStore(db, temp_db_dir)
+    job_id = str(uuid.uuid4())
+    # RUNNING under this (live) pid, as start_job leaves it, so load() keeps it RUNNING.
+    db.create_job(Job(id=job_id, name="J", status=JobStatus.RUNNING, pid=os.getpid(),
+                      base_commit=git_tracker.get_current_commit()))
+    tasks = [Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
+                  name=f"T{n}", description=f"d{n}", status=TaskStatus.PENDING) for n in (1, 2)]
+    for task in tasks:
+        db.create_task(task)
+    job = Job(id=job_id, name="J", status=JobStatus.RUNNING, tasks=tasks)
+    plan = Plan(name="J", tasks=[
+        {"id": t.id, "name": t.name, "description": t.description, "goal": "g",
+         "estimated_duration_min": 5} for t in tasks])
+    harness = _StopDuringHarness(db, job_id, on_run=1)
+    executor = JobExecutor(
+        TaskExecutor(store, git_tracker, factory=_FixedHarnessFactory(harness)), HookExecutor())
+
+    with pytest.raises(JobStopped):
+        executor.execute(job, plan)
+
+    assert len(harness.prompts) == 1
+    assert db.get_task(tasks[0].id).status == TaskStatus.COMPLETED  # task 1 finished its work
+    assert db.get_task(tasks[1].id).status == TaskStatus.PENDING    # task 2 never started

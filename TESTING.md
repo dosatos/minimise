@@ -223,7 +223,7 @@ mini job new --plan examples/example-plan.yaml
 
 mini job start b2c3d4e5
 
-# Stop the running job (sends SIGTERM)
+# Stop the running job (kills its engine, agent and hooks; up to ~10 s)
 mini job stop b2c3d4e5
 # Output: Job b2c3d4e5 stopped successfully
 
