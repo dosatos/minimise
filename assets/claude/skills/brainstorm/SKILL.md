@@ -25,8 +25,8 @@ choice decides which schema the survey fills, so getting it wrong wastes the who
 ## The interview
 
 Reverse-engineer the survey from the triaged schema: for a **loop**, fill `goal` +
-`dimensions` + `max_iterations` + reuse; for a **job**, the task breakdown + gates. The exact
-field contract is fixed — before authoring a **job** plan, follow
+`dimensions` + `max_iterations` + `select` + reuse; for a **job**, the task breakdown + gates. The
+exact field contract is fixed — before authoring a **job** plan, follow
 [`../job/reference/plan-schema.md`](../job/reference/plan-schema.md) (`estimated_duration_min` is
 required on every task and hook, or `mini job new` rejects it); for a **loop**, the full spec is
 inlined in `/minimise:loop`. Four settled mechanics:
@@ -39,7 +39,9 @@ inlined in `/minimise:loop`. Four settled mechanics:
    first-class, not a fallback. In the cold phase "You suggest" grounds in the one-liner; after
    retrieval it is corpus-grounded.
 3. **One concept per turn, ~3 cards.** Not all-at-once, not one-field-at-a-time. Concept-grouped:
-   (a) goal + stopping condition, (b) dimensions + `max_iterations`, (c) reuse (after retrieval).
+   (a) goal + stopping condition, (b) dimensions + `max_iterations` + `evaluate.select` (offer
+   `failed` when there are several dimensions, so an iteration re-runs only the failing ones),
+   (c) reuse (after retrieval).
 4. **Retrieval = a subagent's semantic judgment** over `mini persona list` + recent loops. No
    keyword matching, no embeddings index. It returns a single top pick to fork and the relevant
    personas to reference (**by versioned name, not inlined** — so upgrades propagate). The
