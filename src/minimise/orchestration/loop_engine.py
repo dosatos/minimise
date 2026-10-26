@@ -351,18 +351,29 @@ class LoopEngine:
                 turn = self._build_prompt(spec, step_type, context, rubric, feedback)
                 # A new id per full run: Claude Code may reject an id already in use.
                 session_id = str(uuid.uuid4()) if harness.supports_resume else None
-            result = harness.run(
-                harness.wrap_prompt(turn), cwd=self.cwd, allow_edits=allow_edits,
-                system_prompt=system_prompt + OUTPUT_CONTRACT,
-                log_path=str(self.store.loop_log_path(loop_id)),
-                log_fields={
-                    "loop_id": loop_id, "iteration": iteration, "step_id": step_id,
-                    "step_type": step_type, "dimension": dimension,
-                    "plan_version": spec.plan_version,
-                },
-                log_filter=journal.strip_control_line,  # journal owns the control line; keep logs reasoning-only
-                session_id=session_id, resume=resume,
-            )
+            prompt = harness.wrap_prompt(turn)
+            # One agent_runs row per call (a gate retry is its own run), finished
+            # once when the call returns or raises (tokens NULL when it raised).
+            with self._db_lock:
+                run_id = self.db.start_agent_run(loop_id=loop_id, step_id=step_id)
+            result = None
+            try:
+                result = harness.run(
+                    prompt, cwd=self.cwd, allow_edits=allow_edits,
+                    system_prompt=system_prompt + OUTPUT_CONTRACT,
+                    log_path=str(self.store.loop_log_path(loop_id)),
+                    log_fields={
+                        "loop_id": loop_id, "iteration": iteration, "step_id": step_id,
+                        "step_type": step_type, "dimension": dimension,
+                        "plan_version": spec.plan_version,
+                    },
+                    log_filter=journal.strip_control_line,  # journal owns the control line; keep logs reasoning-only
+                    session_id=session_id, resume=resume,
+                )
+            finally:
+                with self._db_lock:
+                    self.db.finish_agent_run(
+                        run_id, datetime.utcnow(), result.tokens if result is not None else None)
             if result.tokens is not None:  # stored at once, so a later stop or crash keeps them
                 tokens = tokens + result.tokens
                 with self._db_lock:

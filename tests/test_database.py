@@ -1,3 +1,4 @@
+import pytest
 from minimise.models import Job, Task, Execution, Loop, LoopStep, JobStatus, TaskStatus, TokenUsage
 from minimise.storage.database import Database
 from minimise.utils import new_id
@@ -817,68 +818,99 @@ def test_stop_reason_is_kept_until_cleared(db):
         assert get(key).stop_reason is None
 
 
-def test_v9_db_migrates_to_v10_with_rows_intact_and_tokens_null(tmp_path):
-    """v10 adds loop_steps.tokens and executions.tokens; existing rows keep their data."""
-    db_path = tmp_path / "v9.db"
+# A v9 database (the last released schema): one row in each of the four tables.
+_V9_DB = """
+    CREATE TABLE jobs (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL,
+        plan_path TEXT, base_commit TEXT, created_at TEXT NOT NULL,
+        started_at TEXT, completed_at TEXT, pid INTEGER, stop_reason TEXT
+    );
+    CREATE TABLE tasks (
+        id TEXT PRIMARY KEY, job_id TEXT NOT NULL, name TEXT NOT NULL,
+        description TEXT, status TEXT NOT NULL, retries INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT,
+        diff_path TEXT, base_commit TEXT, goal TEXT, assignee TEXT, harness TEXT,
+        model TEXT, estimated_duration_min INTEGER NOT NULL DEFAULT 5,
+        FOREIGN KEY(job_id) REFERENCES jobs(id)
+    );
+    CREATE TABLE executions (
+        execution_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, task_id TEXT,
+        execution_type TEXT NOT NULL DEFAULT 'task', attempt INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL, started_at TEXT, completed_at TEXT, diff_path TEXT,
+        commit_sha TEXT, hook_name TEXT, exit_reason TEXT,
+        FOREIGN KEY(job_id) REFERENCES jobs(id), FOREIGN KEY(task_id) REFERENCES tasks(id)
+    );
+    CREATE TABLE loops (
+        loop_id TEXT PRIMARY KEY, name TEXT, status TEXT, plan_path TEXT,
+        max_iterations INTEGER, created_at TEXT, started_at TEXT,
+        completed_at TEXT, pid INTEGER, stop_reason TEXT
+    );
+    CREATE TABLE loop_steps (
+        step_id TEXT PRIMARY KEY, loop_id TEXT, iteration INTEGER, step_type TEXT,
+        dimension TEXT, status TEXT, retries INTEGER, started_at TEXT,
+        completed_at TEXT, FOREIGN KEY(loop_id) REFERENCES loops(loop_id)
+    );
+    INSERT INTO jobs (id, name, status, plan_path, created_at, pid, stop_reason)
+        VALUES ('j1', 'job', 'stopped', '/p.yaml', '2026-10-01T00:00:00', 7, 'usage limit');
+    INSERT INTO tasks (id, job_id, name, description, status, retries, created_at, goal)
+        VALUES ('t1', 'j1', 'task', 'd', 'stopped', 1, '2026-10-01T00:00:00', 'g');
+    INSERT INTO executions (execution_id, job_id, task_id, execution_type, attempt, status,
+                            started_at, completed_at, commit_sha, exit_reason)
+        VALUES ('job#j1#task#t1#attempt#1', 'j1', 't1', 'task', 1, 'completed',
+                '2026-10-01T00:00:00', '2026-10-01T00:05:00', 'abc123', 'success');
+    INSERT INTO loops (loop_id, name, status, plan_path, max_iterations, created_at, pid)
+        VALUES ('l1', 'loop', 'stopped', '/l.yaml', 5, '2026-10-01T00:00:00', 9);
+    INSERT INTO loop_steps (step_id, loop_id, iteration, step_type, dimension, status, retries,
+                            started_at, completed_at)
+        VALUES ('s1', 'l1', 2, 'evaluate', 'clarity', 'completed', 1,
+                '2026-10-01T00:00:00', '2026-10-01T00:03:00');
+    PRAGMA user_version = 9;
+"""
+
+# The same database at v10: the tokens columns added (never released).
+_V10_DB = _V9_DB.replace("PRAGMA user_version = 9;", """
+    ALTER TABLE loop_steps ADD COLUMN tokens TEXT;
+    ALTER TABLE executions ADD COLUMN tokens TEXT;
+    PRAGMA user_version = 10;
+""")
+
+
+def _db_from(tmp_path, script) -> Database:
+    db_path = tmp_path / "old.db"
     conn = sqlite3.connect(db_path)
-    conn.executescript("""
-        CREATE TABLE jobs (
-            id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL,
-            plan_path TEXT, base_commit TEXT, created_at TEXT NOT NULL,
-            started_at TEXT, completed_at TEXT, pid INTEGER, stop_reason TEXT
-        );
-        CREATE TABLE tasks (
-            id TEXT PRIMARY KEY, job_id TEXT NOT NULL, name TEXT NOT NULL,
-            description TEXT, status TEXT NOT NULL, retries INTEGER DEFAULT 0,
-            created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT,
-            diff_path TEXT, base_commit TEXT, goal TEXT, assignee TEXT, harness TEXT,
-            model TEXT, estimated_duration_min INTEGER NOT NULL DEFAULT 5,
-            FOREIGN KEY(job_id) REFERENCES jobs(id)
-        );
-        CREATE TABLE executions (
-            execution_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, task_id TEXT,
-            execution_type TEXT NOT NULL DEFAULT 'task', attempt INTEGER NOT NULL DEFAULT 0,
-            status TEXT NOT NULL, started_at TEXT, completed_at TEXT, diff_path TEXT,
-            commit_sha TEXT, hook_name TEXT, exit_reason TEXT,
-            FOREIGN KEY(job_id) REFERENCES jobs(id), FOREIGN KEY(task_id) REFERENCES tasks(id)
-        );
-        CREATE TABLE loops (
-            loop_id TEXT PRIMARY KEY, name TEXT, status TEXT, plan_path TEXT,
-            max_iterations INTEGER, created_at TEXT, started_at TEXT,
-            completed_at TEXT, pid INTEGER, stop_reason TEXT
-        );
-        CREATE TABLE loop_steps (
-            step_id TEXT PRIMARY KEY, loop_id TEXT, iteration INTEGER, step_type TEXT,
-            dimension TEXT, status TEXT, retries INTEGER, started_at TEXT,
-            completed_at TEXT, FOREIGN KEY(loop_id) REFERENCES loops(loop_id)
-        );
-        INSERT INTO jobs (id, name, status, plan_path, created_at, pid, stop_reason)
-            VALUES ('j1', 'job', 'stopped', '/p.yaml', '2026-10-01T00:00:00', 7, 'usage limit');
-        INSERT INTO tasks (id, job_id, name, description, status, retries, created_at, goal)
-            VALUES ('t1', 'j1', 'task', 'd', 'stopped', 1, '2026-10-01T00:00:00', 'g');
-        INSERT INTO executions (execution_id, job_id, task_id, execution_type, attempt, status,
-                                started_at, completed_at, commit_sha, exit_reason)
-            VALUES ('job#j1#task#t1#attempt#1', 'j1', 't1', 'task', 1, 'completed',
-                    '2026-10-01T00:00:00', '2026-10-01T00:05:00', 'abc123', 'success');
-        INSERT INTO loops (loop_id, name, status, plan_path, max_iterations, created_at, pid)
-            VALUES ('l1', 'loop', 'stopped', '/l.yaml', 5, '2026-10-01T00:00:00', 9);
-        INSERT INTO loop_steps (step_id, loop_id, iteration, step_type, dimension, status, retries,
-                                started_at, completed_at)
-            VALUES ('s1', 'l1', 2, 'evaluate', 'clarity', 'completed', 1,
-                    '2026-10-01T00:00:00', '2026-10-01T00:03:00');
-        PRAGMA user_version = 9;
-    """)
+    conn.executescript(script)
     conn.commit()
     conn.close()
-
     db = Database(db_path)
     db.init_db()
+    return db
 
-    conn = sqlite3.connect(db_path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 10 == Database.SCHEMA_VERSION
-    assert conn.execute("SELECT tokens FROM executions").fetchall() == [(None,)]
-    assert conn.execute("SELECT tokens FROM loop_steps").fetchall() == [(None,)]
-    conn.close()
+
+def _tables(db):
+    conn = sqlite3.connect(db.db_path)
+    try:
+        return {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    finally:
+        conn.close()
+
+
+def _user_version(db):
+    conn = sqlite3.connect(db.db_path)
+    try:
+        return conn.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("script", [_V9_DB, _V10_DB], ids=["v9", "v10"])
+def test_old_db_migrates_to_v11_with_rows_intact_and_marked_untracked(tmp_path, script):
+    """v11 adds agent_runs and tokens_untracked; existing jobs and loops are marked
+    untracked, ones created afterwards aren't, and the old rows keep their data."""
+    db = _db_from(tmp_path, script)
+
+    assert _user_version(db) == 11 == Database.SCHEMA_VERSION
+    assert "agent_runs" in _tables(db)
+    assert db.list_agent_runs_for_job("j1") == [] and db.list_agent_runs_for_loop("l1") == []
     [ex] = db.list_executions_for_task("t1")
     assert (ex.attempt, ex.status, ex.commit_sha, ex.exit_reason) == (
         1, TaskStatus.COMPLETED, "abc123", "success")
@@ -887,7 +919,89 @@ def test_v9_db_migrates_to_v10_with_rows_intact_and_tokens_null(tmp_path):
     assert (step.iteration, step.dimension, step.status, step.retries) == (
         2, "clarity", TaskStatus.COMPLETED, 1)
     assert step.completed_at == datetime(2026, 10, 1, 0, 3) and step.tokens is None
-    assert db.get_job("j1").stop_reason == "usage limit"
+    job, loop = db.get_job("j1"), db.get_loop("l1")
+    assert (job.name, job.status, job.pid, job.stop_reason) == ("job", JobStatus.STOPPED, 7, "usage limit")
+    assert (loop.name, loop.status, loop.max_iterations, loop.pid) == ("loop", JobStatus.STOPPED, 5, 9)
+    assert job.tokens_untracked is True and loop.tokens_untracked is True
+
+    db.create_job(Job(id="j2", name="new"))
+    db.create_loop(Loop(loop_id="l2", name="new"))
+    db.init_db()  # every cli command runs it: a no-op now, so nothing is re-marked
+    assert db.get_job("j2").tokens_untracked is False
+    assert db.get_loop("l2").tokens_untracked is False
+    assert db.get_job("j1").tokens_untracked is True
+
+
+def test_untracked_mark_runs_once_even_if_init_db_reruns_its_steps(tmp_path):
+    """The mark lives in the step that adds the column: a rerun of every step
+    (user_version reset) leaves jobs made after v11 tracked."""
+    db = _db_from(tmp_path, _V9_DB)
+    db.create_job(Job(id="j2", name="new"))
+    db.create_loop(Loop(loop_id="l2", name="new"))
+    conn = sqlite3.connect(db.db_path)
+    conn.execute("PRAGMA user_version = 9")
+    conn.commit()
+    conn.close()
+
+    db.init_db()
+
+    assert db.get_job("j2").tokens_untracked is False
+    assert db.get_loop("l2").tokens_untracked is False
+    assert db.get_job("j1").tokens_untracked is True
+
+
+def test_fresh_db_jobs_and_loops_are_tracked(db):
+    db.create_job(Job(id="j1", name="n"))
+    db.create_loop(Loop(loop_id="l1", name="n"))
+    assert db.get_job("j1").tokens_untracked is False
+    assert db.get_loop("l1").tokens_untracked is False
+    assert "tokens_untracked" not in db.get_job("j1").to_dict()
+
+
+def test_agent_run_is_started_then_finished_once(db):
+    run_id = db.start_agent_run(job_id="j1", task_id="t1", attempt=0)
+    [run] = db.list_agent_runs_for_job("j1")
+    assert (run.run_id, run.job_id, run.task_id, run.attempt, run.loop_id, run.step_id) == (
+        run_id, "j1", "t1", 0, None, None)
+    assert run.started_at is not None and run.ended_at is None and run.tokens is None
+
+    db.finish_agent_run(run_id, datetime(2026, 10, 26, 12), _TOKENS)
+    db.finish_agent_run(run_id, datetime(2026, 10, 26, 13), None)  # finished: changes nothing
+
+    [run] = db.list_agent_runs_for_job("j1")
+    assert run.ended_at == datetime(2026, 10, 26, 12)
+    assert run.tokens == _TOKENS  # by_model and reasoning round-trip too
+
+
+def test_agent_run_finished_without_tokens_reads_back_none(db):
+    run_id = db.start_agent_run(loop_id="l1", step_id="s1")
+    db.finish_agent_run(run_id, datetime(2026, 10, 26, 12), None)
+    db.finish_agent_run(run_id, datetime(2026, 10, 26, 13), _TOKENS)  # finished: changes nothing
+
+    [run] = db.list_agent_runs_for_loop("l1")
+    assert (run.loop_id, run.step_id, run.job_id, run.attempt) == ("l1", "s1", None, None)
+    assert run.ended_at == datetime(2026, 10, 26, 12) and run.tokens is None
+
+
+def test_a_taken_run_id_is_drawn_again(db, monkeypatch):
+    from minimise.storage import database
+    taken = db.start_agent_run(job_id="j1", task_id="t1", attempt=0)
+    ids = iter([taken, "run-fresh1"])
+    monkeypatch.setattr(database, "new_id", lambda prefix: next(ids))
+
+    assert db.start_agent_run(job_id="j1", task_id="t1", attempt=1) == "run-fresh1"
+    assert [r.attempt for r in db.list_agent_runs_for_job("j1")] == [0, 1]
+
+
+def test_every_agent_run_gets_its_own_row(db):
+    first = db.start_agent_run(job_id="j1", task_id="t1", attempt=0)
+    second = db.start_agent_run(job_id="j1", task_id="t1", attempt=0)  # a resumed job re-runs attempt 0
+    db.start_agent_run(job_id="j2", task_id="t2", attempt=0)
+    db.start_agent_run(loop_id="l1", step_id="s1")
+
+    assert first != second
+    assert [r.run_id for r in db.list_agent_runs_for_job("j1")] == [first, second]
+    assert [r.step_id for r in db.list_agent_runs_for_loop("l1")] == ["s1"]
 
 
 _TOKENS = TokenUsage(

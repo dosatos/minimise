@@ -219,6 +219,15 @@ class JobStore:
                 **exec_fields,
             ), conn=conn)
 
+    def start_agent_run(self, job_id: Optional[str], task_id: Optional[str],
+                        attempt: Optional[int]) -> str:
+        """Record a task attempt's agent call starting now (attempt is 0-based); returns its run_id."""
+        return self.db.start_agent_run(job_id=job_id, task_id=task_id, attempt=attempt)
+
+    def finish_agent_run(self, run_id: str, tokens: Optional[TokenUsage]) -> None:
+        """Finish an agent call now, once, with the tokens it reported (None = not reported)."""
+        self.db.finish_agent_run(run_id, datetime.utcnow(), tokens)
+
     def save_execution(self, execution: Execution) -> None:
         """Persist an execution row (e.g. a per-task hook)."""
         self.db.save_execution(execution)

@@ -587,6 +587,61 @@ def test_a_usage_limit_stop_keeps_the_tokens_already_used(tmp_path):
     assert step.tokens == _tokens(3)
 
 
+# --- 6d) agent_runs: one row per agent call, a gate retry is its own run ------
+
+def _runs(db, lid):
+    return [(r.step_id, r.ended_at is not None, r.tokens) for r in db.list_agent_runs_for_loop(lid)]
+
+
+def test_a_gate_retry_writes_two_runs_for_its_step(tmp_path):
+    h = StubHarness({("plan", 1, None): [
+        HarnessResult(success=True, output="no json at all", tokens=_tokens(1)),
+        HarnessResult(success=True, output='{"control":"done"}', tokens=_tokens(5)),
+    ]})
+    status, db, store, lid = _run(tmp_path, h)
+
+    assert status == JobStatus.COMPLETED
+    [step] = _steps(db, lid, step_type="plan")
+    assert _runs(db, lid) == [(step.step_id, True, _tokens(1)), (step.step_id, True, _tokens(5))]
+    assert all(r.job_id is None and r.task_id is None and r.attempt is None
+               for r in db.list_agent_runs_for_loop(lid))
+
+
+def test_every_dispatched_step_writes_one_run(tmp_path):
+    h = StubHarness({("plan", 1, None): ['{"control":"continue"}'],
+                     ("plan", 2, None): ['{"control":"done"}']})
+    status, db, store, lid = _run(tmp_path, h)
+
+    assert status == JobStatus.COMPLETED
+    assert sorted(r[0] for r in _runs(db, lid)) == sorted(s.step_id for s in db.list_loop_steps(lid))
+    assert [r[1:] for r in _runs(db, lid)] == [(True, None)] * len(h.calls)  # none reported tokens
+
+
+def test_a_run_whose_harness_raised_is_finished_without_tokens(tmp_path):
+    h = StubHarness({}, on_call=_crash_on(("plan", 1, None)))
+    db, store, lid = _build(tmp_path)
+
+    with pytest.raises(RuntimeError, match="interrupted"):
+        LoopEngine(factory=_fixed(h), store=store, db=db)._run_step(
+            lid, store.load_spec(lid), store.journal_path(lid), "plan", Worker(prompt="plan it"), 1)
+
+    [step] = db.list_loop_steps(lid)
+    assert _runs(db, lid) == [(step.step_id, True, None)]
+
+
+def test_a_carried_over_pass_writes_no_run(tmp_path):
+    h = StubHarness(_script({(1, "a"): "pass", (1, "b"): "fail",
+                             (2, "b"): "fail"}, stop_at=3))
+    status, db, store, lid = _run(tmp_path, h, _select_spec(dims=("a", "b")))
+
+    assert status == JobStatus.COMPLETED
+    (carried,) = [r for r in _eval_recs(store, lid, 2) if r["dimension"] == "a"]
+    assert "evaluated_in_iteration" in carried  # a was carried over, not re-run
+    run_steps = [r[0] for r in _runs(db, lid)]
+    assert carried["step_id"] not in run_steps
+    assert len(run_steps) == len(h.calls)  # one run per agent call, none for the carry
+
+
 def _limited_eval_wave(tmp_path):
     """Iteration 1, max_concurrent 1: a passes, b hits the limit, c is queued behind it."""
     spec = _select_spec(dims=("a", "b", "c"), select=None, max_concurrent=1)

@@ -789,6 +789,67 @@ def test_tokens_land_on_the_attempt_that_hit_the_usage_limit(temp_db_dir, db, gi
     assert _attempt_rows(db, task) == [(0, TaskStatus.STOPPED, "usage_limit", _tokens(3))]
 
 
+# --- agent_runs: one row per agent call, finished once, never overwritten ---
+
+def _runs(db, job_id):
+    return [(r.task_id, r.attempt, r.ended_at is not None, r.tokens)
+            for r in db.list_agent_runs_for_job(job_id)]
+
+
+def test_an_attempt_writes_one_finished_run(temp_db_dir, db, git_repo):
+    executor, (job_id, task) = _executor_with(git_repo, db, temp_db_dir, [_ran(1)])
+
+    assert executor.execute_task(task, job_id, "")[0]
+
+    [run] = db.list_agent_runs_for_job(job_id)
+    assert (run.job_id, run.task_id, run.attempt, run.loop_id, run.step_id) == (
+        job_id, task.id, 0, None, None)
+    assert run.started_at <= run.ended_at and run.tokens == _tokens(1)
+
+
+def test_a_retry_writes_a_second_run_with_attempt_1(temp_db_dir, db, git_repo):
+    executor, (job_id, task) = _executor_with(
+        git_repo, db, temp_db_dir, [_ran(1, success=False), _ran(2)])
+
+    assert executor.execute_task(task, job_id, "")[0]
+
+    assert _runs(db, job_id) == [(task.id, 0, True, _tokens(1)), (task.id, 1, True, _tokens(2))]
+
+
+def test_rerunning_attempt_0_adds_a_run_and_keeps_the_old_one(temp_db_dir, db, git_repo):
+    """A resumed job re-runs the task from attempt 0: a new run, the first untouched."""
+    from dataclasses import replace
+    from minimise.orchestration.task_executor import JobStopped
+
+    executor, (job_id, task) = _executor_with(
+        git_repo, db, temp_db_dir, [replace(_limited(), tokens=_tokens(3)), _ran(4)])
+    with pytest.raises(JobStopped):
+        executor.execute_task(task, job_id, "")
+
+    assert executor.execute_task(task, job_id, "")[0]  # the resume
+
+    assert _runs(db, job_id) == [(task.id, 0, True, _tokens(3)), (task.id, 0, True, _tokens(4))]
+
+
+def test_a_run_whose_harness_raised_is_finished_without_tokens(temp_db_dir, db, git_repo):
+    executor, (job_id, task) = _executor_with(
+        git_repo, db, temp_db_dir, [RuntimeError("harness blew up")])
+
+    with pytest.raises(RuntimeError, match="harness blew up"):
+        executor.execute_task(task, job_id, "")
+
+    assert _runs(db, job_id) == [(task.id, 0, True, None)]
+
+
+def test_a_run_that_reported_no_tokens_is_finished_with_none(temp_db_dir, db, git_repo):
+    executor, (job_id, task) = _executor_with(
+        git_repo, db, temp_db_dir, [HarnessResult(success=True, output="ok", exit_reason="success")])
+
+    assert executor.execute_task(task, job_id, "")[0]
+
+    assert _runs(db, job_id) == [(task.id, 0, True, None)]
+
+
 def test_invoke_returns_the_harness_tokens(temp_db_dir, db, git_repo):
     """_invoke_agent hands HarnessResult.tokens back as its fifth value."""
     executor = TaskExecutor(JobStore(db, temp_db_dir), GitTracker(git_repo))

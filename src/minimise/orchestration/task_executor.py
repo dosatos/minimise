@@ -146,6 +146,9 @@ class TaskExecutor:
             handoff_path = self.store.handoff_path(job_id, task.id, attempt)
             harness = self._factory.for_task(task)
             success, output, exit_reason, usage_limit, tokens = self._invoke_agent(harness, {
+                "job_id": job_id,
+                "task_id": task.id,
+                "attempt": attempt,
                 "handover": attempt_handover,
                 "plan_name": plan_name,
                 "plan_briefing": plan_briefing,
@@ -268,9 +271,13 @@ class TaskExecutor:
         and error handling. Timeout is only applied when the plan opts in via
         timeout_min.
 
+        Each call is one agent_runs row: started right before harness.run and
+        finished once when it returns or raises (tokens None when it raised).
+
         Args:
             harness: Resolved AgentHarness instance.
-            context: Task fields, stable plan context, and evolving handover.
+            context: job_id, task_id and the 0-based attempt; task fields, stable
+                plan context, and evolving handover.
 
         Returns:
             (success, output, exit_reason, usage_limit, tokens) — usage_limit is
@@ -304,12 +311,18 @@ class TaskExecutor:
         timeout = context["timeout_min"] * 60 if context.get("timeout_min") else None
         repo_root = str(self.git_tracker.repo_path)
         prompt = harness.wrap_prompt(prompt)
-        result = harness.run(
-            prompt, cwd=repo_root, allow_edits=True,
-            system_prompt=system_prompt,
-            log_path=log_path, log_fields=log_fields,
-            timeout=timeout,
-        )
+        run_id = self.store.start_agent_run(
+            context.get("job_id"), context.get("task_id"), context.get("attempt"))
+        result = None
+        try:
+            result = harness.run(
+                prompt, cwd=repo_root, allow_edits=True,
+                system_prompt=system_prompt,
+                log_path=log_path, log_fields=log_fields,
+                timeout=timeout,
+            )
+        finally:
+            self.store.finish_agent_run(run_id, result.tokens if result is not None else None)
         return result.success, (
             result.output if result.success else (result.error or result.output)
         ), result.exit_reason, result.usage_limit, result.tokens

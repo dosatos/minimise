@@ -52,7 +52,8 @@ class HarnessResult:
     # the run, and this is the reset text from its message
     # ("resets 4:40am (America/Los_Angeles)"), or "" when it gave none.
     usage_limit: Optional[str] = None
-    # The tokens the run used, or None when the harness reported none.
+    # The tokens this call used, or None when the harness reported none. Never
+    # a session total: a resumed session's earlier runs are not in it.
     tokens: Optional[TokenUsage] = None
 
 
@@ -115,7 +116,7 @@ def _token_count(value) -> Optional[int]:
 
 
 def _claude_tokens(model_usage) -> Optional[TokenUsage]:
-    """The result event's modelUsage summed over its models, or None without one.
+    """A result event's per-model usage summed over its models, or None without one.
 
     modelUsage counts subagents too; the event's top-level "usage" leaves them
     out, so it is never read. Nor is costUSD: tokens only.
@@ -359,7 +360,7 @@ class _ClaudeCapture(_JsonlCapture):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._result_text: Optional[str] = None
-        self._model_usage = None  # the result event's modelUsage
+        self._model_usage = None  # this call's per-model usage from the result event
 
     def consume(self, event: dict) -> None:
         text = _extract_text(event)
@@ -368,7 +369,10 @@ class _ClaudeCapture(_JsonlCapture):
         elif event.get("type") == "result":
             if isinstance(event.get("result"), str):
                 self._result_text = event["result"]
-            self._model_usage = event.get("modelUsage")
+            # modelUsage is the session's running total, so after a --resume it
+            # holds the earlier runs too; model_usage_since_last_result (same
+            # shape) is this call's. Older Claude Code sends only modelUsage.
+            self._model_usage = event.get("model_usage_since_last_result", event.get("modelUsage"))
 
     @property
     def tokens(self) -> Optional[TokenUsage]:

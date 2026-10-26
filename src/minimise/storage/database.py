@@ -4,7 +4,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List
-from minimise.models import Job, Task, Execution, Loop, LoopStep, JobStatus, TaskStatus, TokenUsage
+from minimise.models import AgentRun, Job, Task, Execution, Loop, LoopStep, JobStatus, TaskStatus, TokenUsage
+from minimise.utils import new_id
 
 
 _UNSET = object()  # sentinel: "field not provided" vs an explicit None (clear it)
@@ -45,6 +46,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         # by presence rather than catching the wrong exception.
         pid=row['pid'] if 'pid' in keys else None,
         stop_reason=row['stop_reason'] if 'stop_reason' in keys else None,
+        tokens_untracked=bool(row['tokens_untracked']) if 'tokens_untracked' in keys else False,
     )
 
 
@@ -102,6 +104,7 @@ def _row_to_loop(row: sqlite3.Row) -> Loop:
         completed_at=_dt(row['completed_at']),
         pid=row['pid'] if 'pid' in keys else None,
         stop_reason=row['stop_reason'] if 'stop_reason' in keys else None,
+        tokens_untracked=bool(row['tokens_untracked']) if 'tokens_untracked' in keys else False,
     )
 
 
@@ -117,6 +120,20 @@ def _row_to_loop_step(row: sqlite3.Row) -> LoopStep:
         retries=row['retries'],
         started_at=_dt(row['started_at']),
         completed_at=_dt(row['completed_at']),
+        tokens=_tokens(row),
+    )
+
+
+def _row_to_agent_run(row: sqlite3.Row) -> AgentRun:
+    return AgentRun(
+        run_id=row['run_id'],
+        job_id=row['job_id'],
+        task_id=row['task_id'],
+        attempt=row['attempt'],
+        loop_id=row['loop_id'],
+        step_id=row['step_id'],
+        started_at=datetime.fromisoformat(row['started_at']),
+        ended_at=_dt(row['ended_at']),
         tokens=_tokens(row),
     )
 
@@ -180,7 +197,7 @@ class Database:
         finally:
             conn.close()
 
-    SCHEMA_VERSION = 10
+    SCHEMA_VERSION = 11
 
     def init_db(self):
         """Create/migrate the schema once per DB.
@@ -408,6 +425,31 @@ class Database:
         for table in ("loop_steps", "executions"):
             if 'tokens' not in _column_names(cursor, table):
                 cursor.execute(f"ALTER TABLE {table} ADD COLUMN tokens TEXT")
+
+        # v11: one append-only row per agent call; every token figure sums them.
+        # Inserted when the call starts, finished once when it returns: ended_at
+        # NULL = it never returned (killed), tokens NULL = not reported.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS agent_runs (
+                run_id TEXT PRIMARY KEY,
+                job_id TEXT,
+                task_id TEXT,
+                attempt INTEGER,
+                loop_id TEXT,
+                step_id TEXT,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                tokens TEXT
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_agent_runs_job ON agent_runs (job_id, task_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_agent_runs_loop ON agent_runs (loop_id, step_id)")
+        # Jobs and loops from before v11 have no runs, so they show no tokens. Marked
+        # only in the step that adds the column, so it runs once; new rows get 0.
+        for table in ("jobs", "loops"):
+            if 'tokens_untracked' not in _column_names(cursor, table):
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN tokens_untracked INTEGER NOT NULL DEFAULT 0")
+                cursor.execute(f"UPDATE {table} SET tokens_untracked = 1")
 
         cursor.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
         conn.commit()
@@ -773,6 +815,53 @@ class Database:
             (loop_id,),
         )
         return [_row_to_loop_step(row) for row in rows]
+
+    def start_agent_run(self, *, job_id: Optional[str] = None, task_id: Optional[str] = None,
+                        attempt: Optional[int] = None, loop_id: Optional[str] = None,
+                        step_id: Optional[str] = None,
+                        conn: Optional[sqlite3.Connection] = None) -> str:
+        """Record an agent call starting now; returns its new run_id.
+
+        Job runs set job_id, task_id and the 0-based attempt; loop runs set
+        loop_id and step_id. Rows are never replaced or deleted.
+        """
+        # new_id has 6 hex digits and this table only grows, so a taken id is
+        # likely in time: draw again rather than fail the agent call.
+        for tries_left in reversed(range(3)):
+            run_id = new_id("run")
+            try:
+                with self._write(conn) as cursor:
+                    cursor.execute("""
+                        INSERT INTO agent_runs (run_id, job_id, task_id, attempt, loop_id, step_id, started_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (run_id, job_id, task_id, attempt, loop_id, step_id, datetime.utcnow().isoformat()))
+                return run_id
+            except sqlite3.IntegrityError:
+                if not tries_left:
+                    raise
+
+    def finish_agent_run(self, run_id: str, ended_at: datetime, tokens: Optional[TokenUsage],
+                         conn: Optional[sqlite3.Connection] = None) -> None:
+        """Finish a run once: a run that already ended is left as it is."""
+        with self._write(conn) as cursor:
+            cursor.execute(
+                "UPDATE agent_runs SET ended_at = ?, tokens = ? WHERE run_id = ? AND ended_at IS NULL",
+                (ended_at.isoformat(), _tokens_json(tokens), run_id),
+            )
+
+    def list_agent_runs_for_job(self, job_id: str) -> List[AgentRun]:
+        """A job's agent runs in start order."""
+        rows = self._query(
+            "SELECT * FROM agent_runs WHERE job_id = ? ORDER BY started_at, run_id", (job_id,)
+        )
+        return [_row_to_agent_run(row) for row in rows]
+
+    def list_agent_runs_for_loop(self, loop_id: str) -> List[AgentRun]:
+        """A loop's agent runs in start order."""
+        rows = self._query(
+            "SELECT * FROM agent_runs WHERE loop_id = ? ORDER BY started_at, run_id", (loop_id,)
+        )
+        return [_row_to_agent_run(row) for row in rows]
 
     def current_iteration(self, loop_id: str) -> int:
         """Derived iteration numerator: MAX(iteration) across a loop's steps (0 if none)."""

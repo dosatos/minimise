@@ -1274,6 +1274,36 @@ def test_claude_capture_tokens_sum_model_usage_over_models():
     assert "cost" not in stored.lower() and "9999" not in stored
 
 
+# After `claude -p --resume`, modelUsage is the session's running total (this call
+# plus the earlier ones); model_usage_since_last_result, same shape, is this call's.
+# Checked 2026-10-26 on Claude Code 2.1.310 with a two-process resume.
+SESSION_TOTAL_USAGE = {"claude-opus-5-5": {
+    "inputTokens": 10, "outputTokens": 400, "cacheReadInputTokens": 30000,
+    "cacheCreationInputTokens": 23384, "costUSD": 0.2}}  # 53,794 in all
+THIS_CALL_USAGE = {"claude-opus-5-5": {
+    "inputTokens": 5, "outputTokens": 211, "cacheReadInputTokens": 26700,
+    "cacheCreationInputTokens": 0, "costUSD": 0.01}}  # 26,916 in all
+
+
+def test_claude_capture_tokens_are_this_calls_when_the_event_has_both_keys():
+    event = _result_event(SESSION_TOTAL_USAGE)
+    event["model_usage_since_last_result"] = THIS_CALL_USAGE
+
+    tokens = _claude_capture([event]).tokens
+
+    assert tokens == TokenUsage(input=5, cache_read=26700, cache_write=0, output=211, by_model={
+        "claude-opus-5-5": {"input": 5, "cache_read": 26700, "cache_write": 0, "output": 211}})
+    assert tokens.total == 26916
+
+
+def test_claude_capture_tokens_fall_back_to_model_usage_without_the_per_call_key():
+    tokens = _claude_capture([_result_event(SESSION_TOTAL_USAGE)]).tokens
+
+    assert tokens.total == 53794
+    assert tokens.by_model == {
+        "claude-opus-5-5": {"input": 10, "cache_read": 30000, "cache_write": 23384, "output": 400}}
+
+
 @pytest.mark.parametrize("events", [
     [_assistant_event("done")],                                    # no result event
     [_assistant_event("done"), _result_event(None)],               # no modelUsage

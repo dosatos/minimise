@@ -311,6 +311,7 @@ def test_hook_rows_and_the_pre_task_hook_failure_row_store_no_tokens(temp_db_dir
     task_row = rows[("task", None)]
     assert task_row.status == TaskStatus.FAILED and task_row.started_at is None  # no agent ran
     assert [e.tokens for e in rows.values()] == [None, None]
+    assert db.list_agent_runs_for_job(job.id) == []  # a hook is no agent call
 
 
 def test_post_task_hook_rows_store_no_tokens_but_the_attempt_does(temp_db_dir, db, git_repo):
@@ -326,6 +327,9 @@ def test_post_task_hook_rows_store_no_tokens_but_the_attempt_does(temp_db_dir, d
 
     rows = {(e.execution_type, e.hook_name): e.tokens for e in db.list_executions_for_task(t1.id)}
     assert rows == {("post_task", "tests"): None, ("task", None): _TokenReportingHarness.TOKENS}
+    # Only the agent call is a run; the hook writes none.
+    assert [(r.task_id, r.attempt, r.tokens) for r in db.list_agent_runs_for_job(job.id)] == [
+        (t1.id, 0, _TokenReportingHarness.TOKENS)]
 
 
 def test_pre_plan_hook_receives_plan_yaml_on_stdin(temp_db_dir, db, git_repo, tmp_path):

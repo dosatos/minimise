@@ -110,6 +110,25 @@ class TokenUsage:
 
 
 @dataclass
+class AgentRun:
+    """One agent call (an agent_runs row): appended when it starts, finished once.
+
+    Job runs carry job_id, task_id and the 0-based attempt (= Execution.attempt);
+    loop runs carry loop_id and step_id. ended_at None = it never returned
+    (killed, or still running); tokens None = not reported.
+    """
+    run_id: str
+    job_id: Optional[str]
+    task_id: Optional[str]
+    attempt: Optional[int]
+    loop_id: Optional[str]
+    step_id: Optional[str]
+    started_at: datetime
+    ended_at: Optional[datetime] = None
+    tokens: Optional[TokenUsage] = None
+
+
+@dataclass
 class Task:
     id: str
     job_id: str
@@ -210,6 +229,7 @@ class Job:
     tasks: list[Task] = field(default_factory=list)
     pid: Optional[int] = None
     stop_reason: Optional[str] = None  # why it stopped on its own, e.g. "usage limit: resets 4am"
+    tokens_untracked: bool = False  # made before agent_runs existed: no token figures
 
     def to_dict(self) -> dict:
         """Convert Job object to dictionary for JSON serialization."""
@@ -408,6 +428,7 @@ class Loop:
     completed_at: Optional[datetime] = None
     pid: Optional[int] = None
     stop_reason: Optional[str] = None  # why it stopped on its own, e.g. "usage limit: resets 4am"
+    tokens_untracked: bool = False  # made before agent_runs existed: no token figures
 
 
 @dataclass
