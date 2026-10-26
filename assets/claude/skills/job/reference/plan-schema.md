@@ -61,7 +61,8 @@ stdin** and captures stdout/stderr into the Execution record (`mini job logs <id
 **exit code gates**: nonzero blocks.
 
 `claude -p` always exits 0 regardless of the verdict, so an agent reviewer must print a sentinel
-that the `shell:` string greps to set the exit code. And do **not** pipe straight into `grep -q`
+that the `shell:` string greps to set the exit code. Grep for `REVIEW: PASS`, not the fail: a
+reviewer that crashes or hits a usage limit prints no verdict and must not count as a pass. And do **not** pipe straight into `grep -q`
 — that swallows stdout, leaving an exit code with no explanation. `tee /dev/stderr` first, so the
 findings are recorded, then grep the copy.
 
@@ -71,7 +72,7 @@ findings are recorded, then grep the copy.
 pre_hooks:
   - name: review-plan
     estimated_duration_min: 5
-    shell: "claude -p '/minimise:review-plan' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+    shell: "claude -p '/minimise:review-plan' | tee /dev/stderr | grep -q '^REVIEW: PASS'"
 ```
 
 ### The implementation gate (after a task's commit, sees the real diff)
@@ -82,7 +83,7 @@ post_hooks:
     estimated_duration_min: 3       # measured median 2.7 min; 1 in 10 runs takes ~9 min
     timeout_min: 15
     on_failure: retry
-    shell: "claude -p '/minimise:review-implementation' --dangerously-skip-permissions | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+    shell: "claude -p '/minimise:review-implementation' --dangerously-skip-permissions | tee /dev/stderr | grep -q '^REVIEW: PASS'"
 ```
 
 Any command honoring the contract works — a linter, a `jq` policy check, `pytest -q`. It does not

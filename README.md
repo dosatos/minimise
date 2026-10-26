@@ -704,7 +704,7 @@ pre_hooks:
   - name: review-plan
     estimated_duration_min: 5
     # tee: print the review (so it lands in the logs), THEN gate on the verdict.
-    shell: "claude -p '/minimise:review-plan' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+    shell: "claude -p '/minimise:review-plan' | tee /dev/stderr | grep -q '^REVIEW: PASS'"
 ```
 
 **Writing your own reviewer.** A reviewer is any command that:
@@ -721,8 +721,9 @@ script — anything that honors that contract. Two gotchas:
   with no explanation. Use `tee /dev/stderr | grep -q ...` (as above) so the findings
   are still recorded.
 - `claude -p` always exits 0 on a successful run regardless of the verdict, so an
-  agent reviewer must print a sentinel (e.g. `REVIEW: FAIL`) that your `shell:` string
-  greps to set the exit code. For structured parsing use
+  agent reviewer must print a sentinel that your `shell:` string greps to set the exit
+  code. Grep for the pass (`REVIEW: PASS`), not the fail: a reviewer that crashes or
+  hits a usage limit prints no verdict and must not count as a pass. For structured parsing use
   `claude -p '...' --output-format json | jq -e ...`.
 
 The example above uses `/minimise:review-plan`, a Claude Code skill (shipped by the
@@ -743,7 +744,7 @@ tasks:
       - name: review-implementation
         estimated_duration_min: 8
         on_failure: retry   # failing review re-runs the task with findings; capped by retries
-        shell: "claude -p '/minimise:review-implementation' --dangerously-skip-permissions | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+        shell: "claude -p '/minimise:review-implementation' --dangerously-skip-permissions | tee /dev/stderr | grep -q '^REVIEW: PASS'"
 ```
 
 ## Development

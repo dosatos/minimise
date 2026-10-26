@@ -105,7 +105,7 @@ The plan gate — blocking, before any task runs:
 pre_hooks:
   - name: review-plan
     estimated_duration_min: 5
-    shell: "claude -p '/minimise:review-plan' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+    shell: "claude -p '/minimise:review-plan' | tee /dev/stderr | grep -q '^REVIEW: PASS'"
 ```
 
 The implementation gate — after a task's commit, sees the real diff:
@@ -115,13 +115,14 @@ post_hooks:
   - name: review-implementation
     estimated_duration_min: 8
     on_failure: retry
-    shell: "claude -p '/minimise:review-implementation' --dangerously-skip-permissions | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+    shell: "claude -p '/minimise:review-implementation' --dangerously-skip-permissions | tee /dev/stderr | grep -q '^REVIEW: PASS'"
 ```
 
 Two gotchas when the reviewer is an agent:
 
-- `claude -p` exits 0 regardless of its verdict, so it must print a sentinel (`REVIEW: FAIL`) that
-  the `shell:` string greps to set the exit code.
+- `claude -p` exits 0 regardless of its verdict, so it must print a sentinel that the `shell:`
+  string greps to set the exit code. Grep for `REVIEW: PASS`: a reviewer that crashes or hits a
+  usage limit prints no verdict and must not count as a pass.
 - Don't pipe straight into `grep -q` — it swallows stdout, so a block arrives with no explanation.
   `tee /dev/stderr` first, then grep the copy.
 

@@ -116,7 +116,7 @@ findings JSON, then a final verdict line as the **last line**:
       "task_id": "task-2 (or \"plan\" for a pre_plan hook)",
       "gate": "post_task",
       "suggestion": "Why this task benefits from a verification gate and what it checks",
-      "shell": "claude -p --dangerously-skip-permissions '/minimise:review-implementation task-2' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+      "shell": "claude -p --dangerously-skip-permissions '/minimise:review-implementation task-2' | tee /dev/stderr | grep -q '^REVIEW: PASS'"
     }
   ],
   "summary": "Brief overall assessment"
@@ -146,7 +146,7 @@ pre_hooks:
   - name: review-plan
     estimated_duration_min: 5
     # tee: show the full review, THEN gate on the sentinel (grep reads the copy).
-    shell: "claude -p '/minimise:review-plan' | tee /dev/stderr | grep -q '^REVIEW: FAIL' && exit 1 || exit 0"
+    shell: "claude -p '/minimise:review-plan' | tee /dev/stderr | grep -q '^REVIEW: PASS'"
 ```
 
 `tee /dev/stderr` echoes the whole review (findings JSON + verdict) so minimise records
