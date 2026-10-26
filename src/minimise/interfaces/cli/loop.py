@@ -6,7 +6,6 @@ lives in journal.jsonl and narration in job.log — hence the extra `journal` ve
 
 import json
 import os
-import signal
 import subprocess
 import sys
 from datetime import datetime
@@ -39,7 +38,7 @@ from minimise.interfaces.cli._shared import (
     _format_datetime,
 )
 from minimise.storage.loop_store import LoopStore
-from minimise.storage.job_store import _pid_alive
+from minimise.orchestration.engine_process import engine_alive, stop_engine
 from minimise.orchestration.loop_engine import LoopEngine
 from minimise.personas import load_personas
 from minimise.settings import load_settings
@@ -208,6 +207,7 @@ def loop_start(loop_id: str, harness: str | None, model: str | None):
     """Start or resume a loop in the background (idempotent).
 
     A live RUNNING loop is left alone; a COMPLETED loop is a no-op.
+    A loop whose old engine is still alive is left alone too, whatever its status.
     """
     try:
         loop_id = resolve_loop_id(loop_id)
@@ -222,6 +222,10 @@ def loop_start(loop_id: str, harness: str | None, model: str | None):
             return
         if loop_obj.status == JobStatus.COMPLETED:
             console.print(f"[green]Loop already complete[/green]")
+            return
+        if engine_alive(loop_obj.pid, "loop", loop_id):
+            console.print(f"[yellow]Engine still running (pid {loop_obj.pid}). "
+                          f"Stop it first: mini loop stop {loop_id[:8]}[/yellow]")
             return
 
         cmd = [sys.argv[0], "loop", "_run", loop_id]
@@ -260,7 +264,7 @@ def loop_run(loop_id: str, harness: str | None, model: str | None):
 
     The engine sets status RUNNING + pid, resumes from the journal anchor, and
     runs to a terminal status. A live RUNNING loop is left alone; a COMPLETED
-    loop is a no-op.
+    loop is a no-op; a loop whose old engine is still alive is left alone.
     """
     try:
         loop_id = resolve_loop_id(loop_id)
@@ -273,6 +277,11 @@ def loop_run(loop_id: str, harness: str | None, model: str | None):
             return
         if loop_obj.status == JobStatus.COMPLETED:
             console.print(f"[green]Loop already complete[/green]")
+            return
+        # A dead old engine's pid reused by this very process isn't an old engine.
+        if loop_obj.pid != os.getpid() and engine_alive(loop_obj.pid, "loop", loop_id):
+            console.print(f"[yellow]Engine still running (pid {loop_obj.pid}). "
+                          f"Stop it first: mini loop stop {loop_id[:8]}[/yellow]")
             return
 
         personas = load_personas(_cli.CONFIG_DIR)
@@ -463,24 +472,23 @@ def loop_status(loop_id: str, format: str):
 @loop.command(name="stop")
 @click.argument("loop_id")
 def loop_stop(loop_id: str):
-    """Stop a running loop (the engine polls loops.status)."""
+    """Stop a running loop: mark it and its running steps STOPPED, then kill its
+    engine, agent and hooks (SIGTERM, then SIGKILL after a grace period of up to 10 s).
+
+    Also stops a non-RUNNING loop whose old engine is still alive.
+    """
     try:
         loop_id = resolve_loop_id(loop_id)
         db = get_db()
         loop_obj = _get_store(db).load(loop_id)
 
-        if loop_obj.status != JobStatus.RUNNING:
+        if loop_obj.status != JobStatus.RUNNING and not engine_alive(loop_obj.pid, "loop", loop_id):
             console.print(f"[red]Error: Loop must be in RUNNING state to stop (current: {loop_obj.status.value})[/red]")
             raise SystemExit(1)
 
         db.update_loop_status(loop_id, status=JobStatus.STOPPED)
-        db.stop_running_loop_steps(loop_id)  # the SIGTERMed engine won't finish them
-
-        if _pid_alive(loop_obj.pid):
-            try:
-                os.kill(loop_obj.pid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
+        db.stop_running_loop_steps(loop_id)  # the killed engine won't finish them
+        stop_engine(loop_obj.pid, "loop", loop_id)
 
         console.print(f"[green]Loop {loop_id} stopped[/green]")
 

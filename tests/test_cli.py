@@ -2996,43 +2996,9 @@ def test_loop_start_with_harness_and_model_builds_factory(runner, mock_config_di
     assert harness._model == "openai/gpt-4o"
 
 
-def test_loop_stop_sends_sigterm_to_live_pid(runner, mock_config_dir, monkeypatch):
-    """`mini loop stop` on a RUNNING loop with a live pid sends SIGTERM to it."""
-    from minimise.models import LoopSpec, JobStatus
-    from minimise.storage.database import Database
-    from minimise.storage.loop_store import LoopStore
-
-    spec = {
-        "version": "1", "name": "Demo", "goal": "make it better", "max_iterations": 3,
-        "loop": {
-            "plan": {"prompt": "plan it"}, "implement": {"prompt": "do it"},
-            "evaluate": {"max_concurrent": 1, "dimensions": [{"name": "a", "rubric": "ra"}]},
-        },
-    }
-    db = Database(mock_config_dir / "minimise.db")
-    db.init_db()
-    store = LoopStore(db, mock_config_dir / "jobs")
-    loop_obj = store.create(LoopSpec.model_validate(spec), "example.yaml")
-    db.update_loop_status(loop_obj.loop_id, status=JobStatus.RUNNING, pid=12345)
-
-    loop_module = sys.modules["minimise.interfaces.cli.loop"]
-    loop_store_module = sys.modules["minimise.storage.loop_store"]
-    # load()'s reconcile step also checks liveness (against the same pid), so it
-    # must agree with the guard's check to keep the loop RUNNING through to stop.
-    monkeypatch.setattr(loop_store_module, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(loop_module, "_pid_alive", lambda pid: True)
-    killed = []
-    monkeypatch.setattr(loop_module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
-
-    result = runner.invoke(mini, ["loop", "stop", loop_obj.loop_id])
-
-    assert result.exit_code == 0
-    assert killed == [(12345, signal.SIGTERM)]
-
-
-def test_loop_stop_stops_its_running_steps(runner, mock_config_dir, monkeypatch):
-    """`mini loop stop` leaves no RUNNING step: the SIGTERMed engine won't finish it."""
-    from minimise.models import LoopSpec, LoopStep, JobStatus, TaskStatus
+def _make_loop(mock_config_dir, status=None, pid=None):
+    """A loop in the CLI's DB, optionally moved to `status` with `pid`; returns (db, loop_id)."""
+    from minimise.models import LoopSpec
     from minimise.storage.loop_store import LoopStore
 
     spec = {
@@ -3045,25 +3011,169 @@ def test_loop_stop_stops_its_running_steps(runner, mock_config_dir, monkeypatch)
     db = Database(mock_config_dir / "minimise.db")
     db.init_db()
     loop_obj = LoopStore(db, mock_config_dir / "jobs").create(LoopSpec.model_validate(spec), "example.yaml")
-    db.update_loop_status(loop_obj.loop_id, status=JobStatus.RUNNING, pid=12345)
+    if status is not None:
+        db.update_loop_status(loop_obj.loop_id, status=status, pid=pid)
+    return db, loop_obj.loop_id
+
+
+def _forbid_signals(monkeypatch):
+    """Fail on any real signal; signal 0 (load()'s liveness probe) delivers nothing, so allow it."""
+    from minimise.orchestration import engine_process
+
+    def guard(real):
+        def kill(pid, sig):
+            if sig != 0:
+                raise AssertionError("no signal may be sent")
+            return real(pid, sig)
+        return kill
+
+    monkeypatch.setattr(engine_process.os, "kill", guard(engine_process.os.kill))
+    monkeypatch.setattr(engine_process.os, "killpg", guard(engine_process.os.killpg))
+
+
+def test_loop_stop_kills_engine_process_tree(runner, mock_config_dir, fake_engine):
+    """`mini loop stop` kills the engine and what it spawned, and marks the loop STOPPED."""
+    db, loop_id = _make_loop(mock_config_dir)
+    engine = fake_engine("loop", loop_id)
+    db.update_loop_status(loop_id, status=JobStatus.RUNNING, pid=engine.pid)
+
+    result = runner.invoke(mini, ["loop", "stop", loop_id])
+
+    assert result.exit_code == 0, result.output
+    assert f"Loop {loop_id} stopped" in result.output
+    assert engine.engine_gone()
+    assert engine.grandchild_gone()
+    assert db.get_loop(loop_id).status == JobStatus.STOPPED
+
+
+def test_loop_stop_stops_its_running_steps(runner, mock_config_dir, fake_engine):
+    """`mini loop stop` leaves no RUNNING step: the killed engine won't finish it."""
+    from minimise.models import LoopStep, TaskStatus
+
+    db, loop_id = _make_loop(mock_config_dir)
+    engine = fake_engine("loop", loop_id)
+    db.update_loop_status(loop_id, status=JobStatus.RUNNING, pid=engine.pid)
     for step_id, status in (("step-done", TaskStatus.COMPLETED), ("step-live", TaskStatus.RUNNING)):
         db.create_loop_step(LoopStep(
-            step_id=step_id, loop_id=loop_obj.loop_id, iteration=1, step_type="plan",
+            step_id=step_id, loop_id=loop_id, iteration=1, step_type="plan",
             status=status, started_at=datetime.utcnow(),
         ))
 
-    loop_module = sys.modules["minimise.interfaces.cli.loop"]
-    monkeypatch.setattr(sys.modules["minimise.storage.loop_store"], "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(loop_module, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(loop_module.os, "kill", lambda pid, sig: None)
+    result = runner.invoke(mini, ["loop", "stop", loop_id])
 
-    result = runner.invoke(mini, ["loop", "stop", loop_obj.loop_id])
-
-    assert result.exit_code == 0
-    steps = {s.step_id: s for s in db.list_loop_steps(loop_obj.loop_id)}
+    assert result.exit_code == 0, result.output
+    assert engine.engine_gone() and engine.grandchild_gone()
+    steps = {s.step_id: s for s in db.list_loop_steps(loop_id)}
     assert steps["step-live"].status == TaskStatus.STOPPED
     assert steps["step-live"].completed_at is not None
     assert steps["step-done"].status == TaskStatus.COMPLETED  # a finished step is left alone
+
+
+@pytest.mark.parametrize("pid_kind", ["dead", "not-engine"])
+def test_loop_stop_without_live_engine_signals_nothing(runner, mock_config_dir, monkeypatch, pid_kind):
+    """`mini loop stop` on a RUNNING loop whose pid is dead, or alive but not this
+    loop's engine, marks the loop STOPPED and signals nothing."""
+    import os
+    import subprocess
+
+    if pid_kind == "dead":
+        p = subprocess.Popen(["true"]); p.wait()  # a pid guaranteed dead
+        pid = p.pid
+        # Keep load()'s reconcile from downgrading the loop: the engine died
+        # between load and stop's own check.
+        monkeypatch.setattr(sys.modules["minimise.storage.loop_store"], "_pid_alive", lambda pid: True)
+    else:
+        pid = os.getpid()  # alive, but its command line isn't `loop _run <id>`
+    db, loop_id = _make_loop(mock_config_dir, JobStatus.RUNNING, pid=pid)
+    _forbid_signals(monkeypatch)
+
+    result = runner.invoke(mini, ["loop", "stop", loop_id])
+
+    assert result.exit_code == 0, result.output
+    assert db.get_loop(loop_id).status == JobStatus.STOPPED
+
+
+def test_loop_stop_stopped_loop_with_live_engine_kills_it(runner, mock_config_dir, fake_engine):
+    """A STOPPED loop whose engine is still alive can be stopped again (exit 0),
+    so the user is never stuck between a refusing start and a refusing stop."""
+    db, loop_id = _make_loop(mock_config_dir)
+    engine = fake_engine("loop", loop_id)
+    db.update_loop_status(loop_id, status=JobStatus.STOPPED, pid=engine.pid)
+
+    result = runner.invoke(mini, ["loop", "stop", loop_id])
+
+    assert result.exit_code == 0, result.output
+    assert engine.engine_gone()
+    assert engine.grandchild_gone()
+    assert db.get_loop(loop_id).status == JobStatus.STOPPED
+
+
+@pytest.mark.parametrize("status", [
+    JobStatus.STOPPED, JobStatus.FAILED, JobStatus.PENDING, JobStatus.COMPLETED,
+])
+@pytest.mark.parametrize("pid", [None, "self"])
+def test_loop_stop_non_running_loop_without_live_engine_fails(runner, mock_config_dir, monkeypatch, status, pid):
+    """Stopping a loop that isn't RUNNING, with no live engine of its own (no pid,
+    or a live pid that isn't its engine), errors as before and signals nothing."""
+    import os
+
+    db, loop_id = _make_loop(mock_config_dir, status, pid=os.getpid() if pid == "self" else None)
+    _forbid_signals(monkeypatch)
+
+    result = runner.invoke(mini, ["loop", "stop", loop_id])
+
+    assert result.exit_code == 1
+    assert f"Loop must be in RUNNING state to stop (current: {status.value})" in result.output
+    assert db.get_loop(loop_id).status == status
+
+
+def test_loop_start_refuses_while_engine_alive(runner, mock_config_dir, monkeypatch, fake_engine):
+    """`mini loop start` never spawns a second engine beside a live one."""
+    import subprocess
+
+    db, loop_id = _make_loop(mock_config_dir)
+    engine = fake_engine("loop", loop_id)
+    db.update_loop_status(loop_id, status=JobStatus.STOPPED, pid=engine.pid)
+    real_popen = subprocess.Popen
+    spawned = []
+
+    def recording_popen(cmd, *args, **kwargs):
+        if "_run" in cmd:  # an engine spawn; `ps` (engine_alive) still runs for real
+            spawned.append(cmd)
+            return _FakeProc(pid=4242)
+        return real_popen(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", recording_popen)
+
+    result = runner.invoke(mini, ["loop", "start", loop_id])
+
+    assert result.exit_code == 0, result.output
+    assert (f"Engine still running (pid {engine.pid}). Stop it first: mini loop stop {loop_id[:8]}"
+            in result.output)
+    assert spawned == []
+    assert db.get_loop(loop_id).status == JobStatus.STOPPED
+    assert engine.proc.poll() is None  # left alone
+
+
+def test_loop_run_refuses_while_engine_alive(runner, mock_config_dir, monkeypatch, fake_engine):
+    """The hidden foreground `mini loop _run` doesn't run beside a live old engine either."""
+    db, loop_id = _make_loop(mock_config_dir)
+    engine = fake_engine("loop", loop_id)
+    db.update_loop_status(loop_id, status=JobStatus.STOPPED, pid=engine.pid)
+
+    class NoEngine:
+        def __init__(self, **kwargs):
+            raise AssertionError("no engine may run")
+
+    monkeypatch.setattr(sys.modules["minimise.interfaces.cli.loop"], "LoopEngine", NoEngine)
+
+    result = runner.invoke(mini, ["loop", "_run", loop_id])
+
+    assert result.exit_code == 0, result.output
+    assert (f"Engine still running (pid {engine.pid}). Stop it first: mini loop stop {loop_id[:8]}"
+            in result.output)
+    assert db.get_loop(loop_id).status == JobStatus.STOPPED
+    assert engine.proc.poll() is None  # left alone
 
 
 def _stopped_loop(mock_config_dir, stop_reason):
@@ -3245,42 +3355,6 @@ def test_job_status_without_stop_reason_has_no_stopped_line(runner, mock_config_
 
     data = json.loads(runner.invoke(mini, ["job", "status", job.id, "--format", "json"]).output)
     assert "stop_reason" in data and data["stop_reason"] is None
-
-
-def test_loop_stop_dead_pid_skips_kill(runner, mock_config_dir, monkeypatch):
-    """`mini loop stop` on a RUNNING loop with a dead/None pid does not call os.kill."""
-    from minimise.models import LoopSpec, JobStatus
-    from minimise.storage.database import Database
-    from minimise.storage.loop_store import LoopStore
-
-    spec = {
-        "version": "1", "name": "Demo", "goal": "make it better", "max_iterations": 3,
-        "loop": {
-            "plan": {"prompt": "plan it"}, "implement": {"prompt": "do it"},
-            "evaluate": {"max_concurrent": 1, "dimensions": [{"name": "a", "rubric": "ra"}]},
-        },
-    }
-    db = Database(mock_config_dir / "minimise.db")
-    db.init_db()
-    store = LoopStore(db, mock_config_dir / "jobs")
-    loop_obj = store.create(LoopSpec.model_validate(spec), "example.yaml")
-    db.update_loop_status(loop_obj.loop_id, status=JobStatus.RUNNING, pid=12345)
-
-    loop_module = sys.modules["minimise.interfaces.cli.loop"]
-    loop_store_module = sys.modules["minimise.storage.loop_store"]
-    # Keep load()'s reconcile from downgrading the loop (pid was alive then),
-    # but simulate the pid having died by the time stop's own guard checks it.
-    monkeypatch.setattr(loop_store_module, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(loop_module, "_pid_alive", lambda pid: False)
-
-    def fail_kill(pid, sig):
-        raise AssertionError("os.kill should not be called for a dead/None pid")
-
-    monkeypatch.setattr(loop_module.os, "kill", fail_kill)
-
-    result = runner.invoke(mini, ["loop", "stop", loop_obj.loop_id])
-
-    assert result.exit_code == 0
 
 
 # --- mini job start --harness pi (dogfood, real pi binary, real API call) -------

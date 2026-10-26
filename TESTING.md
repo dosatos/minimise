@@ -234,6 +234,11 @@ mini job status b2c3d4e5
 # Try to stop a non-running job
 mini job stop b2c3d4e5
 # Expected error: "Job must be in RUNNING state to stop (current: stopped)"
+# (if its old engine were still alive, stop would kill it instead, and start
+#  would refuse: "Engine still running (pid N). Stop it first: mini job stop b2c3d4e5")
+
+# Loops behave the same: `mini loop stop <ID>` kills the loop's engine, agent
+# and hooks, and `mini loop start <ID>` refuses while the old engine is alive.
 ```
 
 ### 5. Test Resume via Idempotent Start (FAILED/STOPPED/crashed)

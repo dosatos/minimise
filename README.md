@@ -321,6 +321,12 @@ mini loop status <ID>                             # per-iteration progress
 Like `mini job start`, `mini loop start` is idempotent — re-running resumes from the
 journal anchor and backs off a live loop.
 
+`mini loop stop <ID>` kills the engine and everything it started (agent, hooks):
+SIGTERM to its process group, then SIGKILL after a 10 s grace period. If a stopped
+loop's old engine is somehow still alive, `mini loop start` refuses
+(`Engine still running (pid N). Stop it first: mini loop stop <ID>`), and
+`mini loop stop` kills it even though the loop is no longer RUNNING.
+
 ## Harness Configuration
 
 By default every task and loop step runs on `claude` with no explicit model. Override
@@ -582,7 +588,7 @@ mini loop start <ID>                          # Start/resume a loop in the backg
 mini loop start <ID> --harness pi             # Run with pi instead of claude (default: claude)
 mini loop start <ID> --harness codex          # Run with OpenAI Codex
 mini loop start <ID> --model claude-opus-4-8  # Override the default model for this loop
-mini loop stop <ID>                           # Stop a running loop
+mini loop stop <ID>                           # Stop a running loop and kill its engine, agent and hooks
 mini loop list                                # List all loops
 mini loop status <ID>                         # Iteration progress (per-iteration Gantt)
 mini loop status <ID> --format json           # JSON output for scripting
