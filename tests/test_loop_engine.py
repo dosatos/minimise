@@ -435,6 +435,22 @@ def test_rerun_failed_rechecks_carried_when_all_dispatched_pass(tmp_path):
     assert _one_valid_record_per_dimension(store, lid, 2, "ab")
 
 
+def test_rerun_failed_stop_during_first_wave_skips_the_recheck(tmp_path):
+    db, store, lid = _build(tmp_path, _rerun_spec(dims=("a", "b")))
+
+    def flip(key):
+        if key == ("evaluate", 2, "b"):  # the only first-wave evaluator in iteration 2
+            db.update_loop_status(lid, status=JobStatus.STOPPED)
+
+    h = StubHarness(_script({(1, "a"): "pass", (1, "b"): "fail",
+                             (2, "b"): "pass"}, stop_at=3), on_call=flip)
+    status = LoopEngine(factory=_fixed(h), store=store, db=db).run(lid)
+    assert status == JobStatus.STOPPED
+    assert db.get_loop(lid).status == JobStatus.STOPPED
+    assert ("evaluate", 2, "a") not in h.calls  # no re-check after the stop
+    assert journal.last_committed_iteration(store.journal_path(lid)) == 1
+
+
 def test_rerun_failed_rechecks_everything_when_all_carried(tmp_path):
     h = StubHarness(_script({(1, "a"): "pass", (1, "b"): "pass"}, stop_at=3))
     status, db, store, lid = _run(tmp_path, h, _rerun_spec(dims=("a", "b")))

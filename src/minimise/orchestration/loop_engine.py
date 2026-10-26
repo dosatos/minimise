@@ -218,6 +218,8 @@ class LoopEngine:
             context = self._journal_text(jpath)  # one snapshot -> every dim is blind to siblings
             self._fan_out(loop_id, spec, jpath, pending, iteration, context)
             if carry:
+                if self._stopped(loop_id):  # a stop during wave 1 must not start the re-check
+                    return JobStatus.STOPPED
                 self._settle_carried(loop_id, spec, jpath, iteration, carry, context)
 
         journal.write_commit_marker(jpath, iteration)  # journal-only, closes the iteration
