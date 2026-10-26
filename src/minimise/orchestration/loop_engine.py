@@ -207,28 +207,83 @@ class LoopEngine:
         spec = self._reload_spec(loop_id, spec)
         cfg = spec.loop
         done_dims = resume.pop("eval_done", set())
-        pending = [d for d in cfg.evaluate.dimensions if d.name not in done_dims]
-        if pending:
+        # rerun: failed — a pass from an earlier iteration under this plan_version
+        # is carried over (not dispatched). Computed from earlier iterations only,
+        # so a resumed iteration sees the same carry set.
+        carry = (_carried_passes(jpath, iteration, spec)
+                 if cfg.evaluate.rerun == "failed" else {})
+        pending = [d for d in cfg.evaluate.dimensions
+                   if d.name not in done_dims and d.name not in carry]
+        if pending or carry:
             context = self._journal_text(jpath)  # one snapshot -> every dim is blind to siblings
-            with ThreadPoolExecutor(max_workers=cfg.evaluate.max_concurrent) as pool:
-                futures = [
-                    pool.submit(
-                        self._run_step, loop_id, spec, jpath, "evaluate", dim, iteration,
-                        dimension=dim.name, rubric=dim.rubric, journal_context=context,
-                        allow_edits=True,  # evaluate runs commands to validate the work
-                    )
-                    for dim in pending
-                ]
-                for f in futures:
-                    f.result()  # re-raises StepGateExhausted -> engine maps to FAILED
+            self._fan_out(loop_id, spec, jpath, pending, iteration, context)
+            if carry:
+                self._settle_carried(loop_id, spec, jpath, iteration, carry, context)
 
         journal.write_commit_marker(jpath, iteration)  # journal-only, closes the iteration
         return None
 
+    def _fan_out(self, loop_id, spec, jpath, dims, iteration, context, recheck=False):
+        """Run one evaluator per dimension in parallel, capped by max_concurrent."""
+        if not dims:
+            return
+        with ThreadPoolExecutor(max_workers=spec.loop.evaluate.max_concurrent) as pool:
+            futures = [
+                pool.submit(
+                    self._run_step, loop_id, spec, jpath, "evaluate", dim, iteration,
+                    dimension=dim.name, rubric=dim.rubric, journal_context=context,
+                    allow_edits=True,  # evaluate runs commands to validate the work
+                    recheck=recheck,
+                )
+                for dim in dims
+            ]
+            for f in futures:
+                f.result()  # re-raises StepGateExhausted -> engine maps to FAILED
+
+    def _settle_carried(self, loop_id, spec, jpath, iteration, carry, context):
+        """Re-check the carried passes when everything that ran passed; else record
+        each as carried over (one journal record + one DB step).
+
+        Dimensions with a valid record in this iteration are already settled
+        (a resumed iteration), so they are neither re-dispatched nor re-recorded.
+        """
+        dims = spec.loop.evaluate.dimensions
+        done = _last_valid_evals(jpath, lambda it: it == iteration)
+        todo = [d for d in dims if d.name in carry and d.name not in done]
+        if all(_verdict(done.get(d.name)) == "pass" for d in dims if d.name not in carry):
+            # Never finish on an unchecked pass. Same snapshot as wave 1: the
+            # re-check stays blind to this iteration's verdicts.
+            self._fan_out(loop_id, spec, jpath, todo, iteration, context, recheck=True)
+            return
+        for dim in todo:
+            n = carry[dim.name]
+            step_id = new_id("step")
+            now = datetime.utcnow()
+            with self._db_lock:
+                self.db.create_loop_step(LoopStep(
+                    step_id=step_id, loop_id=loop_id, iteration=iteration,
+                    step_type="evaluate", dimension=dim.name, status=TaskStatus.COMPLETED,
+                    started_at=now, completed_at=now,
+                ))
+            record = _stamp(
+                {
+                    "control": "done", "verdict": "pass", "evaluated_in_iteration": n,
+                    "findings": (
+                        f"Not re-evaluated in iteration {iteration} (rerun: failed). "
+                        f"It passed when last evaluated, in iteration {n}."
+                    ),
+                },
+                loop_id=loop_id, step_id=step_id, iteration=iteration,
+                step_type="evaluate", dimension=dim.name, plan_version=spec.plan_version,
+            )
+            with self._journal_lock:
+                journal.append(jpath, record)
+
     # ---- one step + validation gate -----------------------------------------
 
     def _run_step(self, loop_id, spec, jpath, step_type, worker, iteration,
-                  dimension=None, rubric=None, allow_edits=False, journal_context=None) -> str:
+                  dimension=None, rubric=None, allow_edits=False, journal_context=None,
+                  recheck: bool = False) -> str:
         """Dispatch one step, gate its control line with bounded retries, return control."""
         system_prompt = self._resolve_worker_prompt(step_type, worker)
         harness = self._factory.for_worker(worker)
@@ -258,16 +313,12 @@ class LoopEngine:
             )
             line = journal.extract_last_json(result.output)
             if line is not None:  # engine is the sole writer — stamp routing keys for resume
-                stamped = {
-                    **line,
-                    "timestamp": datetime.utcnow().isoformat(timespec="seconds"),
-                    "loop_id": loop_id,
-                    "step_id": step_id,
-                    "iteration": iteration,
-                    "step_type": step_type,
-                    "dimension": dimension,
-                    "plan_version": spec.plan_version,
-                }
+                stamped = _stamp(
+                    line, loop_id=loop_id, step_id=step_id, iteration=iteration,
+                    step_type=step_type, dimension=dimension, plan_version=spec.plan_version,
+                )
+                if recheck:
+                    stamped["recheck"] = True
                 with self._journal_lock:
                     journal.append(jpath, stamped)
             try:
@@ -349,3 +400,54 @@ def _safe_control(rec) -> Optional[str]:
         return journal.parse_control(rec)
     except ValueError:
         return None
+
+
+def _stamp(line, *, loop_id, step_id, iteration, step_type, dimension, plan_version) -> dict:
+    """A journal record: the step's line plus the engine's routing keys."""
+    return {
+        **line,
+        "timestamp": datetime.utcnow().isoformat(timespec="seconds"),
+        "loop_id": loop_id,
+        "step_id": step_id,
+        "iteration": iteration,
+        "step_type": step_type,
+        "dimension": dimension,
+        "plan_version": plan_version,
+    }
+
+
+def _verdict(rec) -> Optional[str]:
+    """A record's normalized verdict; None for no record or a non-string verdict."""
+    v = (rec or {}).get("verdict")
+    return v.strip().lower() if isinstance(v, str) else None
+
+
+def _last_valid_evals(jpath, in_range) -> dict:
+    """dimension -> its last VALID evaluate record among iterations where in_range(it).
+
+    _run_step journals a line before gating it, so a rejected reply leaves a
+    record too; only records with a valid control count (as resume's eval_done).
+    """
+    out = {}
+    for r in journal.read(jpath):
+        it = r.get("iteration")
+        if ("marker" not in r and r.get("step_type") == "evaluate"
+                and isinstance(it, int) and in_range(it) and _safe_control(r) is not None):
+            out[r.get("dimension")] = r
+    return out
+
+
+def _carried_passes(jpath, iteration, spec) -> dict:
+    """rerun: failed — dimension -> evaluated_in_iteration for each spec dimension
+    whose last valid record before `iteration` is a pass under spec.plan_version.
+
+    evaluated_in_iteration is where an evaluator really ran: a carried record's
+    own value is copied, not its iteration.
+    """
+    last = _last_valid_evals(jpath, lambda it: it < iteration)
+    carry = {}
+    for dim in spec.loop.evaluate.dimensions:
+        r = last.get(dim.name)
+        if r is not None and _verdict(r) == "pass" and r.get("plan_version") == spec.plan_version:
+            carry[dim.name] = r.get("evaluated_in_iteration") or r["iteration"]
+    return carry

@@ -267,6 +267,8 @@ class Dimension(Worker):
 
 
 class EvaluateConfig(BaseModel):
+    # "failed": skip a dimension whose last pass is still valid (see LoopEngine).
+    rerun: Literal["all", "failed"] = "all"
     max_concurrent: int = Field(gt=0, strict=True, default=4)
     dimensions: list[Dimension] = Field(min_length=1)
 
