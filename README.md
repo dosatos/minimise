@@ -298,8 +298,9 @@ loop:
   from an earlier iteration is `pass`, its pass is carried over and no evaluator
   runs for it. `fail` and `blocked` both count as failed, so those dimensions
   always re-run, as does a dimension with no verdict yet.
-- A spec patch (`mini loop patch`, which bumps the plan version) carries no
-  earlier pass over, so the next iteration re-runs everything.
+- A spec patch (set `plan_version: N+1` in the spec, then run
+  `mini loop patch <ID>`) carries no earlier pass over, so the next iteration
+  re-runs everything.
 - Before finishing, the loop re-checks carried-over passes. When every dimension
   that ran in an iteration passes, the carried-over dimensions run too, in the
   same iteration, so a loop never finishes on a pass that wasn't re-checked.
