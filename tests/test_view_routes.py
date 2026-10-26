@@ -1599,7 +1599,7 @@ def test_loop_journal_api_renders_findings_list_as_readable_text(client, api_ser
     assert "\\u" not in entry["raw"] and "«Никто, никогда»" in entry["raw"]
 
 
-def _make_rerun_loop(api_server):
+def _make_select_failed_loop(api_server):
     from minimise.models import LoopSpec
 
     spec = LoopSpec.model_validate({
@@ -1610,7 +1610,7 @@ def _make_rerun_loop(api_server):
         "loop": {
             "plan": {}, "implement": {},
             "evaluate": {
-                "rerun": "failed",
+                "select": "failed",
                 "dimensions": [
                     {"name": "clarity", "rubric": "Clear?"},
                     {"name": "accuracy", "rubric": "Accurate?"},
@@ -1622,11 +1622,11 @@ def _make_rerun_loop(api_server):
 
 
 def test_get_loop_api_serves_carried_over_passes_and_rechecks(client, api_server, db):
-    """rerun: failed — iteration 2 carries clarity's pass from 1; iteration 3 re-checks it."""
+    """select: failed — iteration 2 carries clarity's pass from 1; iteration 3 re-checks it."""
     from minimise.models import JobStatus, LoopStep, TaskStatus
     from minimise.orchestration import loop_journal
 
-    loop = _make_rerun_loop(api_server)
+    loop = _make_select_failed_loop(api_server)
     db.update_loop_status(loop.loop_id, status=JobStatus.COMPLETED,
                           started_at=_at(0), completed_at=_at(100))
     jpath = api_server.loop_store.journal_path(loop.loop_id)
@@ -1653,7 +1653,7 @@ def test_get_loop_api_serves_carried_over_passes_and_rechecks(client, api_server
     step("eval-2c", 2, "evaluate", 45, 45, "clarity")  # carried: started_at == completed_at
     record("eval-2a", 2, "accuracy", "fail")
     record("eval-2c", 2, "clarity", "pass", evaluated_in_iteration=1, findings=(
-        "Not re-evaluated in iteration 2 (rerun: failed). "
+        "Not re-evaluated in iteration 2 (select: failed). "
         "It passed when last evaluated, in iteration 1."))
     step("eval-3a", 3, "evaluate", 50, 60, "accuracy")
     step("eval-3c", 3, "evaluate", 60, 70, "clarity")
@@ -1700,22 +1700,22 @@ def test_loop_timeline_carried_from_ignores_non_integer_values():
     assert group["passing"]["carried"] == 0
 
 
-def test_loop_detail_page_shows_the_rerun_figure(client, api_server):
+def test_loop_detail_page_shows_the_select_figure(client, api_server):
     import re
 
     def figures(loop):
         html = client.get(f"/loops/{loop.loop_id}/view").get_data(as_text=True)
         return re.findall(r"<div><strong>([^<]+)</strong><span>([^<]+)</span></div>", html)
 
-    assert ("failed", "rerun") in figures(_make_rerun_loop(api_server))
-    assert ("all", "rerun") in figures(_make_loop(api_server))  # the default
+    assert ("failed", "select") in figures(_make_select_failed_loop(api_server))
+    assert ("all", "select") in figures(_make_loop(api_server))  # the default
 
 
 def test_loop_journal_api_renders_carried_over_findings_as_readable_text(client, api_server):
     from minimise.orchestration import loop_journal
 
-    loop = _make_rerun_loop(api_server)
-    sentence = ("Not re-evaluated in iteration 5 (rerun: failed). "
+    loop = _make_select_failed_loop(api_server)
+    sentence = ("Not re-evaluated in iteration 5 (select: failed). "
                 "It passed when last evaluated, in iteration 3.")
     loop_journal.append(api_server.loop_store.journal_path(loop.loop_id), {
         "control": "done", "verdict": "pass", "evaluated_in_iteration": 3,

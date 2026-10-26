@@ -305,22 +305,31 @@ def test_evaluate_config_accepts_distinct_dimension_names():
     assert [d.name for d in cfg.dimensions] == ["coverage", "correctness"]
 
 
-def test_evaluate_rerun_defaults_to_all_and_accepts_failed(tmp_path):
+def test_evaluate_select_defaults_to_all_and_accepts_failed(tmp_path):
     from minimise.models import LoopSpec
     p = tmp_path / "loop.yaml"
     p.write_text(LOOP_YAML)
-    assert LoopSpec.from_yaml(p).loop.evaluate.rerun == "all"
+    assert LoopSpec.from_yaml(p).loop.evaluate.select == "all"
 
-    p.write_text(LOOP_YAML.replace("    max_concurrent: 2\n", "    rerun: failed\n    max_concurrent: 2\n"))
-    assert LoopSpec.from_yaml(p).loop.evaluate.rerun == "failed"
+    p.write_text(LOOP_YAML.replace("    max_concurrent: 2\n", "    select: failed\n    max_concurrent: 2\n"))
+    assert LoopSpec.from_yaml(p).loop.evaluate.select == "failed"
 
 
-def test_evaluate_rerun_rejects_unknown_value(tmp_path):
+def test_evaluate_select_rejects_unknown_value(tmp_path):
     from pydantic import ValidationError
     from minimise.models import LoopSpec
     p = tmp_path / "loop.yaml"
-    p.write_text(LOOP_YAML.replace("    max_concurrent: 2\n", "    rerun: failing\n    max_concurrent: 2\n"))
-    with pytest.raises(ValidationError, match="rerun"):
+    p.write_text(LOOP_YAML.replace("    max_concurrent: 2\n", "    select: failing\n    max_concurrent: 2\n"))
+    with pytest.raises(ValidationError, match="select"):
+        LoopSpec.from_yaml(p)
+
+
+def test_evaluate_rejects_unknown_field(tmp_path):
+    from pydantic import ValidationError
+    from minimise.models import LoopSpec
+    p = tmp_path / "loop.yaml"
+    p.write_text(LOOP_YAML.replace("    max_concurrent: 2\n", "    selct: failed\n    max_concurrent: 2\n"))
+    with pytest.raises(ValidationError, match="selct"):
         LoopSpec.from_yaml(p)
 
 

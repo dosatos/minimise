@@ -108,7 +108,7 @@ def _evaluate_records(steps: list[LoopStep], journal_records) -> dict[str, dict]
 
 
 def _carried_from(record: dict) -> Optional[int]:
-    """rerun: failed — the iteration a carried-over pass was really evaluated in."""
+    """select: failed — the iteration a carried-over pass was really evaluated in."""
     value = record.get("evaluated_in_iteration")
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
@@ -150,7 +150,7 @@ def _loop_timeline(
 
     A finished evaluate step carries its journaled ``verdict``, and an
     iteration with any verdict gets ``passing`` out of ``dimension_count``.
-    Under rerun: failed, a pass carried over from an earlier iteration has
+    Under select: failed, a pass carried over from an earlier iteration has
     ``carried_from`` (and no bar: nothing ran), and a re-check has ``recheck``.
     """
     origin = min(

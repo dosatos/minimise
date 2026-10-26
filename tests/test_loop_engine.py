@@ -291,13 +291,13 @@ def test_mid_run_patch_adds_dimension_and_stamps_plan_version(tmp_path):
     assert iter2 and all(r.get("plan_version") == 2 for r in iter2)
 
 
-# --- 9) evaluate.rerun: failed — carried-over passes and the re-check ----------
+# --- 9) evaluate.select: failed — carried-over passes and the re-check ----------
 
-def _rerun_spec(dims=("a", "b", "c"), rerun="failed", max_iterations=4, max_concurrent=2):
+def _select_spec(dims=("a", "b", "c"), select="failed", max_iterations=4, max_concurrent=2):
     evaluate = {"max_concurrent": max_concurrent,
                 "dimensions": [{"name": n, "rubric": f"r{n}"} for n in dims]}
-    if rerun is not None:
-        evaluate["rerun"] = rerun
+    if select is not None:
+        evaluate["select"] = select
     return {**SPEC, "max_iterations": max_iterations,
             "loop": {**SPEC["loop"], "evaluate": evaluate}}
 
@@ -363,13 +363,13 @@ class _PromptStub(StubHarness):
         return super().run(prompt, **kw)
 
 
-def test_rerun_omitted_dispatches_every_dimension_each_iteration(tmp_path):
-    spec = _rerun_spec(dims=("a", "b"), rerun=None)
+def test_select_omitted_dispatches_every_dimension_each_iteration(tmp_path):
+    spec = _select_spec(dims=("a", "b"), select=None)
     h = StubHarness(_script({(1, "a"): "pass", (1, "b"): "fail",
                              (2, "a"): "pass", (2, "b"): "fail"}, stop_at=3))
     status, db, store, lid = _run(tmp_path, h, spec)
     assert status == JobStatus.COMPLETED
-    assert store.load_spec(lid).loop.evaluate.rerun == "all"
+    assert store.load_spec(lid).loop.evaluate.select == "all"
     for i in (1, 2):
         assert sorted(_eval_calls(h, i)) == [("evaluate", i, "a"), ("evaluate", i, "b")]
     recs = [r for r in journal.read(store.journal_path(lid)) if "marker" not in r]
@@ -377,10 +377,10 @@ def test_rerun_omitted_dispatches_every_dimension_each_iteration(tmp_path):
     assert not any("recheck" in r for r in recs)
 
 
-def test_rerun_failed_carries_pass_and_reruns_fail_and_blocked(tmp_path):
+def test_select_failed_carries_pass_and_reruns_fail_and_blocked(tmp_path):
     h = StubHarness(_script({(1, "a"): "pass", (1, "b"): "fail", (1, "c"): "blocked",
                              (2, "b"): "fail", (2, "c"): "pass"}, stop_at=3))
-    status, db, store, lid = _run(tmp_path, h, _rerun_spec())
+    status, db, store, lid = _run(tmp_path, h, _select_spec())
     assert status == JobStatus.COMPLETED
     assert sorted(_eval_calls(h, 2)) == [("evaluate", 2, "b"), ("evaluate", 2, "c")]
 
@@ -389,7 +389,7 @@ def test_rerun_failed_carries_pass_and_reruns_fail_and_blocked(tmp_path):
     assert rec["control"] == "done"
     assert rec["evaluated_in_iteration"] == 1
     assert rec["findings"] == (
-        "Not re-evaluated in iteration 2 (rerun: failed). "
+        "Not re-evaluated in iteration 2 (select: failed). "
         "It passed when last evaluated, in iteration 1."
     )
     assert rec["loop_id"] == lid and rec["iteration"] == 2
@@ -404,10 +404,10 @@ def test_rerun_failed_carries_pass_and_reruns_fail_and_blocked(tmp_path):
     assert _one_valid_record_per_dimension(store, lid, 2, "abc")
 
 
-def test_rerun_failed_carry_copies_evaluated_in_iteration(tmp_path):
+def test_select_failed_carry_copies_evaluated_in_iteration(tmp_path):
     h = StubHarness(_script({(1, "a"): "pass", (1, "b"): "fail",
                              (2, "b"): "fail", (3, "b"): "fail"}, stop_at=4))
-    status, db, store, lid = _run(tmp_path, h, _rerun_spec(dims=("a", "b")))
+    status, db, store, lid = _run(tmp_path, h, _select_spec(dims=("a", "b")))
     assert status == JobStatus.COMPLETED
     assert ("evaluate", 2, "a") not in h.calls and ("evaluate", 3, "a") not in h.calls
     for i in (2, 3):
@@ -416,10 +416,10 @@ def test_rerun_failed_carry_copies_evaluated_in_iteration(tmp_path):
         assert rec["findings"].endswith("It passed when last evaluated, in iteration 1.")
 
 
-def test_rerun_failed_rechecks_carried_when_all_dispatched_pass(tmp_path):
+def test_select_failed_rechecks_carried_when_all_dispatched_pass(tmp_path):
     h = _PromptStub(_script({(1, "a"): "pass", (1, "b"): "fail",
                              (2, "a"): "pass", (2, "b"): "pass"}, stop_at=3))
-    status, db, store, lid = _run(tmp_path, h, _rerun_spec(dims=("a", "b")))
+    status, db, store, lid = _run(tmp_path, h, _select_spec(dims=("a", "b")))
     assert status == JobStatus.COMPLETED
     # a is re-checked in iteration 2, after the first wave (b).
     calls = _eval_calls(h, 2)
@@ -435,8 +435,8 @@ def test_rerun_failed_rechecks_carried_when_all_dispatched_pass(tmp_path):
     assert _one_valid_record_per_dimension(store, lid, 2, "ab")
 
 
-def test_rerun_failed_stop_during_first_wave_skips_the_recheck(tmp_path):
-    db, store, lid = _build(tmp_path, _rerun_spec(dims=("a", "b")))
+def test_select_failed_stop_during_first_wave_skips_the_recheck(tmp_path):
+    db, store, lid = _build(tmp_path, _select_spec(dims=("a", "b")))
 
     def flip(key):
         if key == ("evaluate", 2, "b"):  # the only first-wave evaluator in iteration 2
@@ -451,9 +451,9 @@ def test_rerun_failed_stop_during_first_wave_skips_the_recheck(tmp_path):
     assert journal.last_committed_iteration(store.journal_path(lid)) == 1
 
 
-def test_rerun_failed_rechecks_everything_when_all_carried(tmp_path):
+def test_select_failed_rechecks_everything_when_all_carried(tmp_path):
     h = StubHarness(_script({(1, "a"): "pass", (1, "b"): "pass"}, stop_at=3))
-    status, db, store, lid = _run(tmp_path, h, _rerun_spec(dims=("a", "b")))
+    status, db, store, lid = _run(tmp_path, h, _select_spec(dims=("a", "b")))
     assert status == JobStatus.COMPLETED
     assert sorted(_eval_calls(h, 2)) == [("evaluate", 2, "a"), ("evaluate", 2, "b")]
     assert all(r.get("recheck") is True for r in _eval_recs(store, lid, 2))
@@ -465,29 +465,29 @@ def test_rerun_failed_rechecks_everything_when_all_carried(tmp_path):
     _verdict_line("blocked"),
     '{"control":"done","findings":"no verdict"}',
 ], ids=["fail", "blocked", "no-verdict"])
-def test_rerun_failed_no_recheck_when_any_dispatched_dimension_not_pass(tmp_path, reply):
+def test_select_failed_no_recheck_when_any_dispatched_dimension_not_pass(tmp_path, reply):
     h = StubHarness(_script({(1, "a"): "pass", (1, "b"): "fail", (1, "c"): "fail",
                              (2, "b"): "pass", (2, "c"): [reply]}, stop_at=3))
-    status, db, store, lid = _run(tmp_path, h, _rerun_spec())
+    status, db, store, lid = _run(tmp_path, h, _select_spec())
     assert status == JobStatus.COMPLETED
     assert sorted(_eval_calls(h, 2)) == [("evaluate", 2, "b"), ("evaluate", 2, "c")]
     (rec,) = [r for r in _eval_recs(store, lid, 2) if r["dimension"] == "a"]
     assert rec["evaluated_in_iteration"] == 1 and "recheck" not in rec
 
 
-def test_rerun_failed_verdict_normalized_and_missing_not_carried(tmp_path):
+def test_select_failed_verdict_normalized_and_missing_not_carried(tmp_path):
     h = StubHarness(_script({(1, "a"): " PASS ",
                              (1, "b"): ['{"control":"done","findings":"no verdict"}'],
                              (2, "b"): "fail"}, stop_at=3))
-    status, db, store, lid = _run(tmp_path, h, _rerun_spec(dims=("a", "b")))
+    status, db, store, lid = _run(tmp_path, h, _select_spec(dims=("a", "b")))
     assert status == JobStatus.COMPLETED
     assert _eval_calls(h, 2) == [("evaluate", 2, "b")]
     (rec,) = [r for r in _eval_recs(store, lid, 2) if r["dimension"] == "a"]
     assert rec["evaluated_in_iteration"] == 1
 
 
-def test_rerun_failed_patch_bump_carries_nothing(tmp_path):
-    db, store, lid = _build(tmp_path, _rerun_spec(dims=("a", "b")))
+def test_select_failed_patch_bump_carries_nothing(tmp_path):
+    db, store, lid = _build(tmp_path, _select_spec(dims=("a", "b")))
 
     def bump(key):
         # A `mini loop patch` lands while iteration 2 plans: plan_version 1 -> 2.
@@ -506,8 +506,8 @@ def test_rerun_failed_patch_bump_carries_nothing(tmp_path):
     assert not any("evaluated_in_iteration" in r or "recheck" in r for r in recs)
 
 
-def test_rerun_failed_resume_after_carried_records_writes_no_duplicates(tmp_path, monkeypatch):
-    db, store, lid = _build(tmp_path, _rerun_spec(dims=("a", "b")))
+def test_select_failed_resume_after_carried_records_writes_no_duplicates(tmp_path, monkeypatch):
+    db, store, lid = _build(tmp_path, _select_spec(dims=("a", "b")))
     real_marker = journal.write_commit_marker
 
     def crash_before_commit_2(jpath, iteration):
@@ -535,8 +535,8 @@ def test_rerun_failed_resume_after_carried_records_writes_no_duplicates(tmp_path
 
 @pytest.mark.parametrize("c_replies", [[], ['{"control":"bogus","verdict":"pass"}']],
                          ids=["no-record", "invalid-control-record"])
-def test_rerun_failed_resume_mid_recheck_dispatches_only_missing(tmp_path, c_replies):
-    db, store, lid = _build(tmp_path, _rerun_spec())
+def test_select_failed_resume_mid_recheck_dispatches_only_missing(tmp_path, c_replies):
+    db, store, lid = _build(tmp_path, _select_spec())
     evals = {(1, "a"): "pass", (1, "b"): "fail", (1, "c"): "pass", (2, "b"): "pass"}
     if c_replies:
         evals[(2, "c")] = c_replies  # the reply lands in the journal, then the retry crashes
@@ -557,8 +557,8 @@ def test_rerun_failed_resume_mid_recheck_dispatches_only_missing(tmp_path, c_rep
     assert _one_valid_record_per_dimension(store, lid, 2, "abc")
 
 
-def test_rerun_failed_never_carries_invalid_control_pass(tmp_path):
-    db, store, lid = _build(tmp_path, _rerun_spec())
+def test_select_failed_never_carries_invalid_control_pass(tmp_path):
+    db, store, lid = _build(tmp_path, _select_spec())
     jpath = store.journal_path(lid)
     for rec in (
         {"control": "continue", "step_type": "plan", "dimension": None},

@@ -89,7 +89,7 @@ function renderLoopTimelineRows(loop) {
     }
 
     // A finished evaluator shows its journaled verdict in place of "completed".
-    // A pass carried over from an earlier iteration (rerun: failed) never ran
+    // A pass carried over from an earlier iteration (select: failed) never ran
     // here, so it names that iteration and gets no bar.
     function stepRow(s) {
         const label = s.dimension ? `${s.stage} · ${s.dimension}` : s.stage;

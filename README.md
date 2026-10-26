@@ -268,7 +268,7 @@ loop:
   implement:
     prompt: You are the IMPLEMENTER. Carry out the current plan by editing the tree.
   evaluate:
-    rerun: failed        # all (default) | failed: skip dimensions that already passed
+    select: failed        # all (default) | failed: skip dimensions that already passed
     max_concurrent: 8
     dimensions:
       - name: clarity
@@ -277,7 +277,7 @@ loop:
         rubric: Does it cover setup, usage, and testing without gaps?
 ```
 
-**`evaluate.rerun`** decides which dimensions run each iteration:
+**`evaluate.select`** decides which dimensions run each iteration:
 
 - `all` (the default) runs every dimension every iteration.
 - `failed` doesn't re-run a dimension that passed. If a dimension's latest verdict

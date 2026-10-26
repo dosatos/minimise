@@ -207,11 +207,11 @@ class LoopEngine:
         spec = self._reload_spec(loop_id, spec)
         cfg = spec.loop
         done_dims = resume.pop("eval_done", set())
-        # rerun: failed — a pass from an earlier iteration under this plan_version
+        # select: failed — a pass from an earlier iteration under this plan_version
         # is carried over (not dispatched). Computed from earlier iterations only,
         # so a resumed iteration sees the same carry set.
         carry = (_carried_passes(jpath, iteration, spec)
-                 if cfg.evaluate.rerun == "failed" else {})
+                 if cfg.evaluate.select == "failed" else {})
         pending = [d for d in cfg.evaluate.dimensions
                    if d.name not in done_dims and d.name not in carry]
         if pending or carry:
@@ -271,7 +271,7 @@ class LoopEngine:
                 {
                     "control": "done", "verdict": "pass", "evaluated_in_iteration": n,
                     "findings": (
-                        f"Not re-evaluated in iteration {iteration} (rerun: failed). "
+                        f"Not re-evaluated in iteration {iteration} (select: failed). "
                         f"It passed when last evaluated, in iteration {n}."
                     ),
                 },
@@ -440,7 +440,7 @@ def _last_valid_evals(jpath, in_range) -> dict:
 
 
 def _carried_passes(jpath, iteration, spec) -> dict:
-    """rerun: failed — dimension -> evaluated_in_iteration for each spec dimension
+    """select: failed — dimension -> evaluated_in_iteration for each spec dimension
     whose last valid record before `iteration` is a pass under spec.plan_version.
 
     evaluated_in_iteration is where an evaluator really ran: a carried record's

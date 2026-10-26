@@ -1388,7 +1388,7 @@ def test_render_loop_progress_shows_only_last_n_iterations(monkeypatch):
     assert loop_progress_summary(records) == "showing last 8 of 12 iterations"
 
 
-# --- rerun: failed — passes carried over from an earlier iteration ---
+# --- select: failed — passes carried over from an earlier iteration ---
 
 def _carried_rec(iteration, dimension, evaluated_in_iteration):
     """A carried-over pass as the engine journals it (no evaluator ran)."""
@@ -1418,7 +1418,7 @@ def test_render_loop_progress_carried_pass_shows_from_n_without_duration(base_ti
     assert _cell(table, 1, 0)[0] != "✓ from 1"
     assert table.columns[2].footer == "2/2"                 # the carried pass counts
     assert table.caption == (
-        "faded ✓ from N = pass carried over from iteration N, not re-run (rerun: failed)"
+        "faded ✓ from N = pass carried over from iteration N, not re-run (select: failed)"
     )
     tests_bar, lint_bar = table.columns[-1]._cells          # nothing ran: no bar
     assert tests_bar == "" and "█" in lint_bar

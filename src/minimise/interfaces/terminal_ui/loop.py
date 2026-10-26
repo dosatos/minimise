@@ -31,7 +31,7 @@ def _pivot_evaluate(journal_records) -> tuple:
 
 def _carried_cells(journal_records) -> dict:
     """{(dimension, iteration): evaluated_in_iteration} for heatmap cells whose
-    latest evaluate record is a pass carried over under rerun: failed (the
+    latest evaluate record is a pass carried over under select: failed (the
     engine records it without running an evaluator). Same last-record-wins
     keying as _pivot_evaluate."""
     carried: dict = {}
@@ -47,7 +47,7 @@ def _carried_cells(journal_records) -> dict:
     return carried
 
 
-_CARRIED_CAPTION = "faded ✓ from N = pass carried over from iteration N, not re-run (rerun: failed)"
+_CARRIED_CAPTION = "faded ✓ from N = pass carried over from iteration N, not re-run (select: failed)"
 
 
 def _verdict_cell(verdict, step=None) -> Text:
@@ -142,7 +142,7 @@ def render_loop_progress_table(
     `steps` supplies eval step state: no-verdict cells show ▸ (running) or a dim
     · (not dispatched / pending) based on the matching evaluate step's status.
 
-    A pass carried over from iteration N (rerun: failed) shows a faded "✓ from N"
+    A pass carried over from iteration N (select: failed) shows a faded "✓ from N"
     with no duration or timeline bar, still counts toward the passing footer, and
     adds a caption explaining it."""
     rows, iters = _pivot_evaluate(journal_records)
