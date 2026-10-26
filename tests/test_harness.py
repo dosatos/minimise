@@ -243,6 +243,79 @@ def test_command_includes_system_prompt_only_when_given(mock_popen):
     assert cmd[cmd.index("--system-prompt") + 1] == "PERSONA TEXT"
 
 
+def test_only_claude_code_supports_resume():
+    assert AgentHarness.supports_resume is False
+    assert ClaudeCodeHarness.supports_resume is True
+    assert PiHarness.supports_resume is False
+    assert CodexHarness.supports_resume is False
+
+
+SID = "0b6c1f0e-8f4e-4a59-9d33-5a1c2f9e7b10"
+
+
+def _without(cmd, flag):
+    """cmd minus `flag` and the value after it."""
+    i = cmd.index(flag)
+    return cmd[:i] + cmd[i + 2:]
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_command_first_run_assigns_the_session_id(mock_popen):
+    mock_popen.side_effect = make_fake_popen([])
+    ClaudeCodeHarness(model="claude-opus-4-8").run(
+        "hi", system_prompt="PERSONA", allow_edits=True, session_id=SID
+    )
+    cmd = mock_popen.call_args.args[0]
+    assert cmd[cmd.index("--session-id") + 1] == SID
+    assert "--resume" not in cmd
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_command_resumed_run_resumes_the_session_with_the_same_flags(mock_popen):
+    mock_popen.side_effect = make_fake_popen([])
+    harness = ClaudeCodeHarness(model="claude-opus-4-8")
+    flags = {"system_prompt": "PERSONA", "allow_edits": True}
+
+    harness.run("hi", session_id=SID, **flags)
+    first = mock_popen.call_args.args[0]
+    harness.run("only the control line", session_id=SID, resume=True, **flags)
+    resumed = mock_popen.call_args.args[0]
+
+    assert resumed[resumed.index("--resume") + 1] == SID
+    assert "--session-id" not in resumed
+    # Same system prompt, model and permissions, so the prompt cache prefix matches.
+    assert _without(resumed, "--resume") == _without(first, "--session-id")
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_command_without_session_id_has_no_session_flags(mock_popen):
+    mock_popen.side_effect = make_fake_popen([])
+    ClaudeCodeHarness().run("hi")
+    cmd = mock_popen.call_args.args[0]
+    assert "--session-id" not in cmd and "--resume" not in cmd
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_resume_without_session_id_fails_without_running(mock_popen):
+    result = ClaudeCodeHarness().run("hi", resume=True)
+    assert result.success is False and result.exit_reason == "agent_error"
+    assert "session_id" in result.error
+    mock_popen.assert_not_called()
+
+
+@pytest.mark.parametrize("harness_cls", [PiHarness, CodexHarness])
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_non_resumable_commands_ignore_session_id_and_resume(mock_popen, harness_cls):
+    mock_popen.side_effect = make_fake_popen([])
+    flags = {"system_prompt": "PERSONA", "allow_edits": True}
+
+    harness_cls(model="openai/gpt-5").run("hi", **flags)
+    plain = mock_popen.call_args.args[0]
+    for session in ({"session_id": SID}, {"session_id": SID, "resume": True}):
+        harness_cls(model="openai/gpt-5").run("hi", **flags, **session)
+        assert mock_popen.call_args.args[0] == plain
+
+
 @patch("minimise.agents.harness.subprocess.Popen")
 def test_run_passes_prompt_cwd(mock_popen):
     mock_popen.side_effect = make_fake_popen([])

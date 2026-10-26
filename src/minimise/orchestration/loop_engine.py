@@ -21,6 +21,7 @@ loops.stop_reason set (resume by hand with `mini loop start`).
 import json
 import os
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional
@@ -88,6 +89,12 @@ OUTPUT_CONTRACT = (
     '"changed" (a JSON array of the file paths you touched, [] if none); EVALUATOR -> '
     '"verdict" ("pass", "fail", or "blocked") and "findings". Do NOT write any file for this — just '
     "emit the line as the final line of your reply."
+)
+
+# The whole retry turn when a resumable harness resumes a step's session.
+_CONTROL_LINE_ONLY = (
+    "Your previous reply was REJECTED: {error}. Reply now with ONLY the single JSON "
+    "control line required by the output contract, on its own line, and nothing else."
 )
 
 
@@ -305,6 +312,10 @@ class LoopEngine:
                   recheck: bool = False) -> str:
         """Dispatch one step, gate its control line with bounded retries, return control.
 
+        A rejected reply from a run that finished cleanly is retried, on a
+        harness that supports_resume, by resuming that run's session and asking
+        only for the control line; otherwise the whole step re-runs with feedback.
+
         Raises LoopStopped without dispatching once the loop is stopped (an
         evaluator queued behind one that hit the usage limit never starts), and
         when the agent hits its usage limit: that is no malformed reply, so it
@@ -325,13 +336,20 @@ class LoopEngine:
             self.db.create_loop_step(step)
 
         feedback = ""
+        session_id = None  # the latest full run's session; resumable harnesses only
+        resume = False  # True: ask that session for just the control line
         for attempt in range(self.MAX_RETRIES + 1):
             if attempt and self._stopped(loop_id):  # spend no retry on a stopped loop
                 self._stop_step(loop_id, step_id)
                 raise LoopStopped(f"{step_type} step {step_id}: loop {loop_id} is stopped")
-            prompt = harness.wrap_prompt(self._build_prompt(spec, step_type, context, rubric, feedback))
+            if resume:
+                turn = _CONTROL_LINE_ONLY.format(error=error)
+            else:
+                turn = self._build_prompt(spec, step_type, context, rubric, feedback)
+                # A new id per full run: Claude Code may reject an id already in use.
+                session_id = str(uuid.uuid4()) if harness.supports_resume else None
             result = harness.run(
-                prompt, cwd=self.cwd, allow_edits=allow_edits,
+                harness.wrap_prompt(turn), cwd=self.cwd, allow_edits=allow_edits,
                 system_prompt=system_prompt + OUTPUT_CONTRACT,
                 log_path=str(self.store.loop_log_path(loop_id)),
                 log_fields={
@@ -340,6 +358,7 @@ class LoopEngine:
                     "plan_version": spec.plan_version,
                 },
                 log_filter=journal.strip_control_line,  # journal owns the control line; keep logs reasoning-only
+                session_id=session_id, resume=resume,
             )
             if result.usage_limit is not None:
                 reason = usage_limit_reason(result.usage_limit)
@@ -363,12 +382,17 @@ class LoopEngine:
                     )
                 return control
             except ValueError as e:
+                error = e
                 feedback = (
                     f"\n\nYour previous response was REJECTED: {e}. End your reply with a "
                     'single JSON line carrying a valid "control" (and "handover" if failed) — '
                     "put it on its own line, with a newline before the opening brace, not "
                     "appended directly onto your last sentence."
                 )
+                # A run that finished cleanly lacks only its control line, so resume its
+                # session and ask for that. A failed run may have stopped mid-work (edits
+                # or checks unfinished), so it re-runs whole in a new session.
+                resume = harness.supports_resume and result.success
                 if attempt < self.MAX_RETRIES:
                     with self._db_lock:
                         self.db.update_loop_step(step_id, retries=attempt + 1)

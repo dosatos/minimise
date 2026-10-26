@@ -202,6 +202,9 @@ def _feed_subprocess_stdin(proc: "subprocess.Popen", prompt: str) -> None:
 class AgentHarness(ABC):
     """Abstract interface for sending a prompt to an agent harness."""
 
+    # True: run() honours session_id/resume, so a caller can continue a session.
+    supports_resume: bool = False
+
     @abstractmethod
     def run(
         self,
@@ -214,6 +217,8 @@ class AgentHarness(ABC):
         log_path: Optional[Union[str, Path]] = None,
         log_fields: Optional[dict] = None,
         log_filter: Optional[Callable[[str], str]] = None,
+        session_id: Optional[str] = None,
+        resume: bool = False,
     ) -> HarnessResult:
         """Send a prompt to the harness and return its text output.
 
@@ -229,6 +234,10 @@ class AgentHarness(ABC):
         log_filter, when given, transforms each chunk's text before it is
         recorded (result.output is unaffected). A chunk that filters to empty
         is skipped.
+
+        session_id + resume, for a harness with supports_resume: session_id
+        names a new session (resume=False) or the session to continue with
+        *prompt* (resume=True). Other harnesses ignore both.
         """
         raise NotImplementedError
 
@@ -524,7 +533,12 @@ class _JsonlSubprocessHarness(AgentHarness):
 
     @abstractmethod
     def _build_command(
-        self, *, allow_edits: bool, system_prompt: Optional[str]
+        self,
+        *,
+        allow_edits: bool,
+        system_prompt: Optional[str],
+        session_id: Optional[str] = None,
+        resume: bool = False,
     ) -> list[str]:
         raise NotImplementedError
 
@@ -552,11 +566,16 @@ class _JsonlSubprocessHarness(AgentHarness):
         log_path: Optional[Union[str, Path]] = None,
         log_fields: Optional[dict] = None,
         log_filter: Optional[Callable[[str], str]] = None,
+        session_id: Optional[str] = None,
+        resume: bool = False,
     ) -> HarnessResult:
         try:
             capture = self._new_capture(log_path, log_fields, log_filter)
             cmd = self._build_command(
-                allow_edits=allow_edits, system_prompt=system_prompt
+                allow_edits=allow_edits,
+                system_prompt=system_prompt,
+                session_id=session_id,
+                resume=resume,
             )
             env = self._build_env()
         except Exception as e:
@@ -575,6 +594,8 @@ class _JsonlSubprocessHarness(AgentHarness):
 
 class ClaudeCodeHarness(_JsonlSubprocessHarness):
     """AgentHarness backed by the `claude -p` CLI subprocess."""
+
+    supports_resume = True
 
     def wrap_prompt(self, prompt: str) -> str:
         return _wrap_with_orchestration_guardrails(prompt)
@@ -618,6 +639,8 @@ class ClaudeCodeHarness(_JsonlSubprocessHarness):
         *,
         allow_edits: bool = False,
         system_prompt: Optional[str] = None,
+        session_id: Optional[str] = None,
+        resume: bool = False,
     ) -> list[str]:
         # stream-json lets the orchestrator read assistant output live;
         # the CLI requires --verbose alongside it.
@@ -629,6 +652,13 @@ class ClaudeCodeHarness(_JsonlSubprocessHarness):
             cmd += ["--model", model]
         if system_prompt is not None:
             cmd += ["--system-prompt", system_prompt]
+        # A resume keeps every flag above, so the prompt cache prefix still matches.
+        if resume:
+            if session_id is None:
+                raise ValueError("resume needs the session_id of the session to continue")
+            cmd += ["--resume", session_id]
+        elif session_id is not None:
+            cmd += ["--session-id", session_id]
         return cmd
 
     def _new_capture(self, log_path, log_fields, log_filter) -> _JsonlCapture:
@@ -716,6 +746,8 @@ class PiHarness(_JsonlSubprocessHarness):
         *,
         allow_edits: bool = False,
         system_prompt: Optional[str] = None,
+        session_id: Optional[str] = None,  # ignored: pi runs with --no-session
+        resume: bool = False,
     ) -> list[str]:
         # Pi accepts provider/id format natively via --model; no translation needed.
         # Pass canonical model string through unchanged.
@@ -796,6 +828,8 @@ class CodexHarness(_JsonlSubprocessHarness):
         *,
         allow_edits: bool = False,
         system_prompt: Optional[str] = None,
+        session_id: Optional[str] = None,  # ignored: codex runs --ephemeral
+        resume: bool = False,
     ) -> list[str]:
         cmd = [
             "codex",

@@ -10,13 +10,16 @@ import importlib
 import json
 import re
 import tempfile
+import threading
+import uuid
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
 from click.testing import CliRunner
 
-from minimise.agents.harness import AgentHarness, HarnessFactory, HarnessResult
+from minimise.agents.harness import AgentHarness, ClaudeCodeHarness, HarnessFactory, HarnessResult
 from minimise.models import JobStatus, LoopSpec, TaskStatus, Worker
 from minimise.orchestration import loop_journal as journal
 from minimise.orchestration.loop_engine import LoopEngine, _latest_valid_plan
@@ -191,6 +194,185 @@ def test_gate_exhausted_failed(tmp_path):
     assert db.get_loop(lid).status == JobStatus.FAILED
     # MAX_RETRIES + 1 attempts before the gate gives up.
     assert h.calls.count(("plan", 1, None)) == LoopEngine.MAX_RETRIES + 1
+
+
+# --- 4c) gate retry on a resumable harness: resume the session, ask for the line --
+
+IMPL = ("implement", 1, None)
+PLAN_LINE = '{"control":"continue","summary":"PLAN-MARKER: edit foo.py"}'
+
+
+class _SessionStub(StubHarness):
+    """StubHarness that records each run's prompt, session_id and resume flag."""
+
+    def __init__(self, *a, resumable=True, **kw):
+        super().__init__(*a, **kw)
+        self.supports_resume = resumable
+        self.runs = []
+
+    def wrap_prompt(self, prompt):
+        return "WRAPPED:" + prompt
+
+    def run(self, prompt, **kw):
+        f = kw.get("log_fields") or {}
+        self.runs.append({
+            "key": (f.get("step_type"), f.get("iteration"), f.get("dimension")),
+            "prompt": prompt, "session_id": kw.get("session_id"), "resume": kw.get("resume"),
+        })
+        return super().run(prompt, **kw)
+
+    def runs_for(self, key):
+        return [r for r in self.runs if r["key"] == key]
+
+
+def _impl_script(*impl_replies):
+    """Plan continues once, implement replies in order, then the next plan stops."""
+    return {
+        ("plan", 1, None): [PLAN_LINE], IMPL: list(impl_replies),
+        ("plan", 2, None): ['{"control":"done"}'],
+    }
+
+
+def _crashed(output="half done"):
+    return HarnessResult(success=False, output=output, error="boom", exit_reason="agent_error")
+
+
+def _is_full_run(run):
+    return "Goal: make it better" in run["prompt"] and "PLAN-MARKER" in run["prompt"]
+
+
+def test_resumable_retry_resumes_the_session_and_asks_only_for_the_control_line(tmp_path):
+    h = _SessionStub(_impl_script("I edited foo.py.", '{"control":"done","changed":["foo.py"]}'))
+    status, db, store, lid = _run(tmp_path, h)
+
+    assert status == JobStatus.COMPLETED
+    first, retry = h.runs_for(IMPL)
+    assert first["resume"] is False and _is_full_run(first)
+    assert str(uuid.UUID(first["session_id"])) == first["session_id"]
+    assert retry["resume"] is True and retry["session_id"] == first["session_id"]
+    # Only the short ask, still wrapped: no goal, no plan record, no journal.
+    assert retry["prompt"].startswith("WRAPPED:Your previous reply was REJECTED: ")
+    assert "control line" in retry["prompt"]
+    for absent in ("make it better", "PLAN-MARKER", "Current plan", "Journal so far"):
+        assert absent not in retry["prompt"]
+    [step] = _steps(db, lid, step_type="implement")
+    assert step.status == TaskStatus.COMPLETED and step.retries == 1
+    [rec] = [r for r in journal.read(store.journal_path(lid)) if r.get("step_type") == "implement"]
+    assert rec["changed"] == ["foo.py"] and rec["step_id"] == step.step_id
+
+
+def test_non_resumable_retry_reruns_the_whole_step_as_before(tmp_path):
+    h = _SessionStub(_impl_script("I edited foo.py.", '{"control":"done"}'), resumable=False)
+    status, db, store, lid = _run(tmp_path, h)
+
+    assert status == JobStatus.COMPLETED
+    first, retry = h.runs_for(IMPL)
+    assert _is_full_run(first) and _is_full_run(retry)
+    assert "REJECTED" in retry["prompt"]
+    assert all(r["session_id"] is None and r["resume"] is False for r in h.runs)
+    [step] = _steps(db, lid, step_type="implement")
+    assert step.status == TaskStatus.COMPLETED and step.retries == 1
+
+
+def test_failed_first_attempt_is_rerun_whole_in_a_new_session(tmp_path):
+    h = _SessionStub(_impl_script(_crashed(), '{"control":"done"}'))
+    status, db, store, lid = _run(tmp_path, h)
+
+    assert status == JobStatus.COMPLETED
+    first, retry = h.runs_for(IMPL)
+    assert retry["resume"] is False and _is_full_run(retry)
+    assert retry["session_id"] not in (None, first["session_id"])
+
+
+def test_failed_resume_is_followed_by_a_full_rerun_in_a_new_session(tmp_path):
+    h = _SessionStub(_impl_script("I edited foo.py.", _crashed(), '{"control":"done"}'))
+    status, db, store, lid = _run(tmp_path, h)
+
+    assert status == JobStatus.COMPLETED
+    first, resumed, rerun = h.runs_for(IMPL)
+    assert resumed["resume"] is True and resumed["session_id"] == first["session_id"]
+    assert rerun["resume"] is False and _is_full_run(rerun)
+    assert rerun["session_id"] not in (None, first["session_id"])
+    [step] = _steps(db, lid, step_type="implement")
+    assert step.retries == 2
+
+
+def test_each_full_run_gets_a_new_session_and_a_resume_targets_the_latest(tmp_path):
+    h = _SessionStub(_impl_script("no line", _crashed(), "no line again", '{"control":"done"}'))
+    status, db, store, lid = _run(tmp_path, h)
+
+    assert status == JobStatus.COMPLETED
+    runs = h.runs_for(IMPL)
+    assert [r["resume"] for r in runs] == [False, True, False, True]
+    a, b = runs[0]["session_id"], runs[2]["session_id"]
+    assert a != b
+    assert [r["session_id"] for r in runs] == [a, a, b, b]
+    # Every full run across the loop got its own session.
+    full_ids = [r["session_id"] for r in h.runs if not r["resume"]]
+    assert len(set(full_ids)) == len(full_ids)
+
+
+def test_resumed_retries_keep_max_retries(tmp_path):
+    h = _SessionStub({("plan", 1, None): ["no json at all"]})
+    status, db, store, lid = _run(tmp_path, h)
+
+    assert status == JobStatus.FAILED
+    runs = h.runs_for(("plan", 1, None))
+    assert len(runs) == LoopEngine.MAX_RETRIES + 1
+    assert [r["resume"] for r in runs] == [False] + [True] * LoopEngine.MAX_RETRIES
+    assert len({r["session_id"] for r in runs}) == 1
+
+
+def test_usage_limit_on_a_resumed_retry_stops_the_loop(tmp_path):
+    h = _SessionStub(_impl_script("I edited foo.py.", _limit()))
+    status, db, store, lid = _run(tmp_path, h)
+
+    assert status == JobStatus.STOPPED
+    loop = db.get_loop(lid)
+    assert loop.status == JobStatus.STOPPED and loop.stop_reason == REASON
+    first, resumed = h.runs_for(IMPL)
+    assert resumed["resume"] is True
+    assert h.runs[-1] is resumed  # no further retry, no later step
+    [step] = _steps(db, lid, step_type="implement")
+    assert step.status == TaskStatus.STOPPED and step.retries == 1
+
+
+def _stream_proc(text):
+    """A fake `claude -p` process: it reads its stdin prompt (kept in .prompt), then emits `text`."""
+    read = threading.Event()
+    proc = MagicMock()
+
+    def write(prompt):
+        proc.prompt = prompt
+        read.set()
+
+    def stdout():
+        read.wait(5)
+        yield json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
+
+    proc.stdin.write.side_effect = write
+    proc.stdout = stdout()
+    proc.stderr.read.return_value = ""
+    proc.returncode = 0
+    return proc
+
+
+def test_claude_code_gate_retry_resumes_the_session(tmp_path):
+    db, store, lid = _build(tmp_path)
+    procs = [_stream_proc("Planned it."), _stream_proc('{"control":"done"}')]
+    with patch("minimise.agents.harness.subprocess.Popen", side_effect=procs) as popen:
+        control = LoopEngine(factory=_fixed(ClaudeCodeHarness()), store=store, db=db)._run_step(
+            lid, store.load_spec(lid), store.journal_path(lid), "plan", Worker(prompt="plan it"), 1
+        )
+
+    assert control == "done"
+    first, resumed = (c.args[0] for c in popen.call_args_list)
+    sid = first[first.index("--session-id") + 1]
+    assert resumed[resumed.index("--resume") + 1] == sid and "--session-id" not in resumed
+    assert resumed[resumed.index("--system-prompt") + 1] == first[first.index("--system-prompt") + 1]
+    assert "Goal: make it better" in procs[0].prompt
+    assert "Goal:" not in procs[1].prompt
+    assert "ONLY the single JSON control line" in procs[1].prompt
 
 
 # --- 5) resume re-runs ONLY the missing dimension -------------------------------
