@@ -1646,6 +1646,7 @@ def _lstep(step_id, iteration, step_type, status=TaskStatus.COMPLETED, tokens=No
 
 @pytest.mark.parametrize("n, text", [
     (None, "—"), (0, "0"), (999, "999"), (1_000, "1.0K"), (12_400, "12.4K"),
+    (999_949, "999.9K"), (999_950, "1.0M"), (999_999, "1.0M"),
     (2_800_000, "2.8M"), (243_100_000, "243.1M"),
 ])
 def test_format_tokens(n, text):

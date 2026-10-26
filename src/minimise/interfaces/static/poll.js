@@ -144,8 +144,9 @@ function formatSecs(secs) {
 // up where Python rounds it to even (1250 -> 1.2K), so a half goes to even first.
 function formatTokens(n) {
     if (n == null) return "—";
-    for (const [size, unit] of [[1e6, "M"], [1e3, "K"]]) {
-        if (n < size) continue;
+    // From 999950 up it's M: that rounds to 1.0M, never "1000.0K".
+    for (const [size, unit, from] of [[1e6, "M", 999950], [1e3, "K", 1e3]]) {
+        if (n < from) continue;
         const half = n % (size / 2) === size / 4;
         const value = half ? 2 * Math.round(n * 5 / size) / 10 : n / size;
         return `${value.toFixed(1)}${unit}`;

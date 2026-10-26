@@ -160,7 +160,7 @@ def format_tokens(n: Optional[int]) -> str:
     """243.1M, 12.4K or the plain integer; an em dash when not reported."""
     if n is None:
         return "\u2014"
-    if n >= 1_000_000:
+    if n >= 999_950:  # rounds to 1.0M; never "1000.0K"
         return f"{n / 1_000_000:.1f}M"
     if n >= 1_000:
         return f"{n / 1_000:.1f}K"
