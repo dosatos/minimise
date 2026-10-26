@@ -40,12 +40,42 @@ def read(journal_path) -> list:
     return out
 
 
+def _trailing_object(text: str) -> Optional[tuple]:
+    """The last complete JSON object at the very end of text, as (start, obj).
+
+    Scans '{' positions from the end and decodes each with raw_decode, so braces
+    inside strings are handled and the object may span several lines. Accepted
+    only when nothing but whitespace follows it; None otherwise.
+    """
+    text = (text or "").rstrip()
+    if not text.endswith("}"):
+        return None
+    decoder = json.JSONDecoder()
+    pos = text.rfind("{")
+    while pos != -1:
+        try:
+            obj, end = decoder.raw_decode(text, pos)
+        except json.JSONDecodeError:
+            pass
+        else:
+            if end == len(text) and isinstance(obj, dict):
+                return pos, obj
+        pos = text.rfind("{", 0, pos)
+    return None
+
+
 def extract_last_json(text: str) -> Optional[dict]:
     """Pull the last JSON object out of an agent's raw output.
 
-    Tolerant of prose before/around the control line. Returns None if no line
-    parses to a JSON object (the validation gate treats None as malformed).
+    Tolerant of prose before/around the control line. First the object that
+    ends the text, even split over several lines; only if there is none, the
+    last line that is one JSON object (an inner line of a pretty-printed object
+    must not win over the whole). Returns None if neither finds an object (the
+    validation gate treats None as malformed).
     """
+    found = _trailing_object(text)
+    if found is not None:
+        return found[1]
     for line in reversed((text or "").splitlines()):
         line = line.strip()
         if not (line.startswith("{") and line.endswith("}")):
@@ -60,15 +90,18 @@ def extract_last_json(text: str) -> Optional[dict]:
 
 
 def strip_control_line(text: str) -> str:
-    """Drop the trailing control-JSON line from a chunk of agent output.
+    """Drop the trailing control JSON from a chunk of agent output.
 
     The OUTPUT_CONTRACT makes every step end its reply with a lone control
-    line; the journal owns that line authoritatively, so `loop logs` records
-    only the reasoning. Non-control text is returned untouched (rstrip'd)."""
+    line; the journal owns it authoritatively, so `loop logs` records only the
+    reasoning. Strips the object that ends the text, one line or several (the
+    same end-anchored check extract_last_json tries first). Non-control text
+    is returned untouched (rstrip'd)."""
+    found = _trailing_object(text)
+    if found is not None:
+        text = text[:found[0]]
     lines = (text or "").splitlines()
     while lines and not lines[-1].strip():
-        lines.pop()
-    if lines and extract_last_json(lines[-1]) is not None:
         lines.pop()
     return "\n".join(lines)
 
@@ -116,6 +149,8 @@ def demo():
     # extract_last_json: prose before, then the control line
     assert extract_last_json("thinking...\nblah\n{\"control\": \"stop\"}") == {"control": "stop"}
     assert extract_last_json("no json here") is None
+    # ...or a control object split over several lines at the end
+    assert extract_last_json('ok\n{\n  "control": "done"\n}\n') == {"control": "done"}
 
     # parse_control: happy paths + rejections
     assert parse_control({"control": "continue"}) == "continue"
@@ -131,6 +166,7 @@ def demo():
     assert strip_control_line('reasoning here\nmore\n{"control": "done"}') == "reasoning here\nmore"
     assert strip_control_line('just prose, no control') == "just prose, no control"
     assert strip_control_line('{"control": "continue"}') == ""
+    assert strip_control_line('reasoning\n{\n  "control": "done"\n}') == "reasoning"
     assert strip_control_line('') == ""
 
     # commit markers + resume boundary (partial trailing line tolerated)

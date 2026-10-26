@@ -46,6 +46,70 @@ def test_extract_last_json_none_when_no_object():
     assert lj.extract_last_json("") is None
 
 
+def test_extract_last_json_accepts_a_pretty_printed_control_object_at_the_end():
+    text = 'reasoning first\n{\n  "control": "done",\n  "summary": "all good"\n}\n\n'
+    assert lj.extract_last_json(text) == {"control": "done", "summary": "all good"}
+
+
+def test_extract_last_json_multi_line_object_with_braces_inside_strings():
+    text = 'thinking\n{\n  "control": "continue",\n  "summary": "fix {x} in f() { return 1; }"\n}'
+    assert lj.extract_last_json(text) == {
+        "control": "continue", "summary": "fix {x} in f() { return 1; }",
+    }
+
+
+def test_extract_last_json_multi_line_object_followed_by_prose_is_not_taken():
+    text = 'reasoning\n{\n  "control": "done"\n}\nThat is my verdict.'
+    assert lj.extract_last_json(text) is None
+
+
+def test_extract_last_json_single_line_object_followed_by_prose_still_found():
+    # today's single-line scan is the fallback, unchanged
+    text = 'reasoning\n{"control": "done"}\nThat is my verdict.'
+    assert lj.extract_last_json(text) == {"control": "done"}
+
+
+def test_extract_last_json_final_single_line_control_beats_an_earlier_snippet():
+    text = (
+        'I first tried this config:\n{\n  "control": "stop",\n  "x": 1\n}\n'
+        'and also {"inline": true} in prose.\n'
+        '{"control": "done", "summary": "final"}'
+    )
+    assert lj.extract_last_json(text) == {"control": "done", "summary": "final"}
+
+
+def test_extract_last_json_pretty_printed_findings_array_returns_the_whole_object():
+    text = (
+        "Reviewed everything.\n"
+        "{\n"
+        '  "control": "done",\n'
+        '  "verdict": "fail",\n'
+        '  "findings": [\n'
+        '    {"file": "a.py", "issue": "bug"},\n'
+        '    {"file": "b.py", "issue": "typo"}\n'
+        "  ]\n"
+        "}\n"
+    )
+    assert lj.extract_last_json(text) == {
+        "control": "done", "verdict": "fail",
+        "findings": [{"file": "a.py", "issue": "bug"}, {"file": "b.py", "issue": "typo"}],
+    }
+
+
+def test_strip_control_line_removes_a_multi_line_control_object():
+    text = 'reasoning here\nmore reasoning\n{\n  "control": "done",\n  "findings": [\n    {"a": 1}\n  ]\n}\n'
+    assert lj.strip_control_line(text) == "reasoning here\nmore reasoning"
+
+
+def test_strip_control_line_single_line_and_plain_prose_unchanged():
+    assert lj.strip_control_line('reasoning\n{"control": "done"}') == "reasoning"
+    assert lj.strip_control_line('{"control": "continue"}') == ""
+    assert lj.strip_control_line("just prose, no control\n\n") == "just prose, no control"
+    # an object followed by prose is reasoning, not a trailing control: kept
+    text = 'reasoning\n{\n  "control": "done"\n}\nmore prose'
+    assert lj.strip_control_line(text) == text
+
+
 def test_parse_control_accepts_valid():
     for c in ("continue", "stop", "done"):
         assert lj.parse_control({"control": c}) == c

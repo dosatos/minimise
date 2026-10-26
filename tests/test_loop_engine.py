@@ -169,6 +169,19 @@ def test_malformed_control_retried_then_succeeds(tmp_path):
     assert h.calls.count(("plan", 1, None)) == 2  # one reject + one accept
 
 
+def test_pretty_printed_control_object_passes_the_gate_without_a_retry(tmp_path):
+    h = StubHarness({
+        ("plan", 1, None): ['Planned it.\n{\n  "control": "done",\n  "summary": "stop here"\n}\n'],
+    })
+    status, db, store, lid = _run(tmp_path, h)
+    assert status == JobStatus.COMPLETED
+    assert h.calls.count(("plan", 1, None)) == 1
+    (step,) = [s for s in db.list_loop_steps(lid) if s.step_type == "plan"]
+    assert step.status == TaskStatus.COMPLETED and step.retries == 0
+    rec = journal.read(store.journal_path(lid))[-1]
+    assert rec["control"] == "done" and rec["summary"] == "stop here"
+
+
 # --- 4b) retries exhausted -> FAILED --------------------------------------------
 
 def test_gate_exhausted_failed(tmp_path):
