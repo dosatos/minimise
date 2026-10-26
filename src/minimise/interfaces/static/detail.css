@@ -135,7 +135,7 @@
 
 .live-summary {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 1px;
     margin: 1rem 0 1.5rem;
     border: 1px solid var(--border);
@@ -188,6 +188,9 @@
 .timeline-table .col-duration { width: 6.5rem; }
 .timeline-table .col-estimate { width: 6.5rem; }
 .timeline-table .col-timeout { width: 6rem; }
+.timeline-table .col-tokens { width: 5.5rem; }
+/* A token figure's title holds its four-bucket breakdown. */
+.tokens[title] { cursor: help; }
 .timeline-table th small {
     margin-left: 0.5rem;
     color: var(--muted);
@@ -793,6 +796,7 @@
 
 @media (max-width: 760px) {
     .live-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .live-summary > div:last-child { grid-column: 1 / -1; }
 }
 
 @media (max-width: 640px) {

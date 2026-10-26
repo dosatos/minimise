@@ -14,9 +14,9 @@
 /* Why the loop stopped on its own (a usage limit); .detail-meta's flex beats [hidden]. */
 #loop-stop-reason { color: var(--status-stopped); }
 #loop-stop-reason[hidden] { display: none; }
-/* The loop strip has a fifth tile, "Avg / iteration"; the job page keeps four. */
+/* The loop strip has six tiles ("Avg / iteration" is the extra); the job page has five. */
 .loop-page .live-summary {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
 .loop-spec-board {
@@ -296,7 +296,7 @@
 
 @media (max-width: 760px) {
     .loop-page .live-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .loop-page .live-summary > div:last-child { grid-column: 1 / -1; }
+    .loop-page .live-summary > div:last-child { grid-column: auto; }
     .loop-spec-overview { grid-template-columns: 1fr; align-items: start; }
     .loop-spec-stats { width: 100%; }
     .loop-spec-footer { display: block; }

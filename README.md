@@ -676,6 +676,61 @@ Only the Claude harness detects the limit. Hooks that call `claude -p` (such as 
 `/minimise:review-implementation` post-hook) are shell commands, so a limit there
 counts as an ordinary hook failure.
 
+## Token Usage
+
+Each loop step and each job task attempt records how many tokens its agent used.
+
+- **What's recorded:** Claude Code runs only. Pi and Codex report nothing yet, so
+  their runs show `—`. Hooks are shell commands and are never captured, so a job's
+  total covers its task agents only. There's no dollar cost anywhere: tokens only.
+- **Where it shows:** `mini loop status <ID>` prints a `Tokens:` line and a `tokens`
+  row with each iteration's total. `mini job status <ID>` prints a
+  `Tokens (task agents only):` line and a Tokens column with each attempt's total.
+  Both carry the objects below in `--format json`. The web loop and job pages show the
+  same figures; hover one for its four buckets.
+- Figures print as `243.1M`, `12.4K` or the plain integer. `—` means not reported.
+
+### The tokens object
+
+One run (a loop step or a task attempt) has `tokens`: `null` when nothing was
+reported, otherwise
+
+```json
+{"input": 120412, "cache_read": 218600000, "cache_write": 21600000, "output": 2800000, "total": 243120412}
+```
+
+- The four buckets don't overlap: `input` is the tokens neither read from nor written
+  to the cache, `cache_read` and `cache_write` the cached ones, `output` what the
+  model wrote.
+- `total` is the sum of the four. A bucket is `null` when it wasn't reported, and
+  `total` sums the rest.
+
+A rollup (a loop, an iteration, a job task, a job) has `tokens_total`, which is always
+an object, never `null`:
+
+```json
+{"input": 120412, "cache_read": 218600000, "cache_write": 21600000, "output": 2800000, "total": 243120412, "not_reported": 3}
+```
+
+- Each bucket, and `total`, is the sum over the counted runs that reported it, or
+  `null` if none did.
+- `not_reported` is the number of counted runs whose `tokens` is `null`. When it's
+  above 0, the sums are a lower bound.
+- A run is counted when an agent ran in it and it has finished: it started, and it
+  ended `completed`, `failed` or `stopped`. Running and pending runs aren't counted.
+  Neither is a pass carried over under `evaluate.select: failed`, a hook, or the
+  failed task row a failing pre-task hook writes: no agent ran in those.
+
+| Where | `tokens` (per run) | `tokens_total` (rollup) |
+|---|---|---|
+| `mini loop status <ID> --format json` | `steps[]` | top level (the loop) |
+| `mini job status <ID> --format json` | — | top level (the job), each `tasks[]` |
+| `GET /api/loops/<ID>` (web) | `steps[]`, `timeline.groups[].steps[]` | top level (the loop), each `timeline.groups[]` (an iteration) |
+| `GET /jobs/<ID>` (web) | `timeline.groups[].steps[]` (`null` on hooks) | `timeline` (the job), each `timeline.groups[]` |
+
+Change policy: keys are only ever added; a key never changes meaning. No JSON carries
+reasoning tokens, per-model counts, model names or cost.
+
 ## Architecture
 
 - **CLI** → **REST API** (Flask)

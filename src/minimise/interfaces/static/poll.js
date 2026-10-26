@@ -139,6 +139,42 @@ function formatSecs(secs) {
     return rest ? `${m}m ${rest}s` : `${m}m`;
 }
 
+// Token counts as the CLI's format_tokens prints them: 243.1M, 12.4K or the
+// plain integer; an em dash when not reported. toFixed rounds an exact half
+// up where Python rounds it to even (1250 -> 1.2K), so a half goes to even first.
+function formatTokens(n) {
+    if (n == null) return "—";
+    for (const [size, unit] of [[1e6, "M"], [1e3, "K"]]) {
+        if (n < size) continue;
+        const half = n % (size / 2) === size / 4;
+        const value = half ? 2 * Math.round(n * 5 / size) / 10 : n / size;
+        return `${value.toFixed(1)}${unit}`;
+    }
+    return String(n);
+}
+
+// "(3 steps not reported)" when a tokens_total left some counted runs out.
+function tokensNotReported(rollup, noun) {
+    const n = rollup ? rollup.not_reported : 0;
+    return n ? `(${n} ${noun}${n === 1 ? "" : "s"} not reported)` : "";
+}
+
+// A run's tokens, or a rollup's tokens_total given its noun: the total, with
+// the four buckets (in tokens_summary's order) and any not-reported count in
+// its title.
+function tokensFigure(tokens, noun) {
+    if (!tokens) return "—";
+    const title = [
+        tokens.total == null ? "" : `input ${formatTokens(tokens.input)}`
+            + ` · cache write ${formatTokens(tokens.cache_write)}`
+            + ` · cache read ${formatTokens(tokens.cache_read)}`
+            + ` · output ${formatTokens(tokens.output)}`,
+        noun ? tokensNotReported(tokens, noun) : "",
+    ].filter(Boolean).join(" ");
+    const text = formatTokens(tokens.total);
+    return title ? `<span class="tokens" title="${title}">${text}</span>` : text;
+}
+
 // The API serializes naive UTC datetimes; read them as UTC.
 function parseUtc(iso) {
     if (!iso) return null;
@@ -209,6 +245,10 @@ function renderJobSummary(job) {
             : `started ${clockTime(jobStart)}`);
     }
 
+    setHtml("job-tokens", tokensFigure(tl.tokens_total, "run"));
+    setText("job-tokens-note",
+        ["task agents only", tokensNotReported(tl.tokens_total, "run")].filter(Boolean).join(" "));
+
     const tasks = job.tasks || [];
     const done = tasks.filter(t => t.status === "completed").length;
     setText("job-progress", `${done}/${tasks.length}`);
@@ -268,7 +308,7 @@ function renderTimelineRows(job) {
     if (!tbody) return;
     const tl = job.timeline;
     if (!tl.groups.length) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty">No tasks</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="empty">No tasks</td></tr>';
         return;
     }
     const live = ["running", "pending"].includes(job.status);
@@ -278,7 +318,8 @@ function renderTimelineRows(job) {
 
     setText("timeline-scale", `0 → ${formatSecs(tl.total_secs)}${live && nowOff != null ? " projected" : ""}`);
 
-    // The aggregate row: wall-time duration and summed estimate, no bar or timeout.
+    // The aggregate row: wall-time duration, summed estimate and the task
+    // agents' tokens, no bar or timeout.
     function groupRow(g) {
         const sub = g.kind === "task" && g.task_id
             ? `<span class="timeline-sub">${escapeHtml(g.task_id)}</span>` : "";
@@ -288,6 +329,7 @@ function renderTimelineRows(job) {
             <td data-label="Duration">${timelineDuration(g, nowOff)}</td>
             <td class="timeline-estimate" data-label="Estimate">${g.estimate_secs ? formatSecs(g.estimate_secs) : "—"}</td>
             <td data-label="Timeout"></td>
+            <td class="timeline-tokens" data-label="Tokens">${tokensFigure(g.tokens_total, "run")}</td>
             <td data-label="Timeline"></td>
         </tr>`;
     }
@@ -328,6 +370,7 @@ function renderTimelineRows(job) {
             <td data-label="Duration">${timelineDuration(s, nowOff)}</td>
             <td class="timeline-estimate" data-label="Estimate">${s.estimate_secs ? formatSecs(s.estimate_secs) : "—"}</td>
             <td class="timeline-estimate" data-label="Timeout">${s.timeout_secs ? formatSecs(s.timeout_secs) : "—"}</td>
+            <td class="timeline-tokens" data-label="Tokens">${tokensFigure(s.tokens)}</td>
             <td data-label="Timeline">${track}</td>
         </tr>`;
     }

@@ -606,3 +606,109 @@ def test_job_page_hides_the_stop_reason_when_there_is_none(client, mock_job_cont
     assert client.get(f"/jobs/{job.id}").get_json()["stop_reason"] is None
     html = client.get(f"/jobs/{job.id}/view").get_data(as_text=True)
     assert '<p id="job-stop-reason" class="detail-meta" hidden></p>' in html
+
+
+def test_job_api_timeline_carries_tokens_for_task_agents_only(client, mock_job_controller, db):
+    """Task rows carry their attempt's tokens, hook rows null; groups and the
+    timeline carry tokens_total over task agents only. Job.to_dict and
+    Task.to_dict (the list endpoint's shape) carry no tokens."""
+    from datetime import timedelta
+    from minimise.interfaces.formatting import tokens_total
+    from minimise.models import Execution, TokenUsage
+
+    plan = Plan.model_validate({
+        "name": "usage",
+        "pre_hooks": [{"name": "review-plan", "shell": "true", "estimated_duration_min": 1}],
+        "tasks": [
+            {"id": "t1", "name": "Build", "description": "d", "goal": "g",
+             "estimated_duration_min": 10,
+             "post_hooks": [{"name": "tests", "shell": "true", "estimated_duration_min": 1}]},
+            {"id": "t2", "name": "Docs", "description": "d", "goal": "g",
+             "estimated_duration_min": 5},
+            {"id": "t3", "name": "Ship", "description": "d", "goal": "g",
+             "estimated_duration_min": 5,
+             "pre_hooks": [{"name": "lint", "shell": "false", "estimated_duration_min": 1}]},
+        ],
+    })
+    job = mock_job_controller.store.create(plan, base_commit="abc123", plan_path="/tmp/plan.yaml")
+    build, docs, ship = (task.id for task in job.tasks)
+    t0 = datetime(2026, 1, 1, 12, 0, 0)
+    at = lambda secs: t0 + timedelta(seconds=secs)
+    db.update_job_status(job.id, JobStatus.FAILED, started_at=t0, completed_at=at(100))
+    for ex in (
+        Execution(job_id=job.id, task_id=None, attempt=0, execution_type="pre_plan",
+                  hook_name="review-plan", status=TaskStatus.COMPLETED,
+                  started_at=at(0), completed_at=at(5)),
+        Execution(job_id=job.id, task_id=build, attempt=0, status=TaskStatus.FAILED,
+                  started_at=at(5), completed_at=at(20),
+                  tokens=TokenUsage(100, 2_000_000, 50_000, 1500, reasoning=7,
+                                    by_model={"claude-opus-5-5": {"input": 100}})),
+        Execution(job_id=job.id, task_id=build, attempt=1, status=TaskStatus.COMPLETED,
+                  started_at=at(20), completed_at=at(40), tokens=TokenUsage(20, None, 0, 30)),
+        Execution(job_id=job.id, task_id=build, attempt=1, execution_type="post_task",
+                  hook_name="tests", status=TaskStatus.COMPLETED,
+                  started_at=at(40), completed_at=at(50)),
+        Execution(job_id=job.id, task_id=docs, attempt=0, status=TaskStatus.COMPLETED,
+                  started_at=at(50), completed_at=at(80)),  # ran, reported nothing
+        Execution(job_id=job.id, task_id=ship, attempt=0, execution_type="pre_task",
+                  hook_name="lint", status=TaskStatus.FAILED,
+                  started_at=at(80), completed_at=at(90)),
+        # the FAILED task row a failed pre-task hook writes: no agent ran
+        Execution(job_id=job.id, task_id=ship, attempt=0, status=TaskStatus.FAILED),
+    ):
+        db.save_execution(ex)
+
+    response = client.get(f"/jobs/{job.id}")
+    timeline = response.get_json()["timeline"]
+
+    rows = [(s["name"], s["kind"], s["tokens"]) for g in timeline["groups"] for s in g["steps"]]
+    assert rows == [
+        ("review-plan", "hook", None),
+        ("Build", "task", {"input": 100, "cache_read": 2_000_000, "cache_write": 50_000,
+                           "output": 1500, "total": 2_051_600}),
+        ("Build", "task", {"input": 20, "cache_read": None, "cache_write": 0,
+                           "output": 30, "total": 50}),
+        ("tests", "hook", None),
+        ("Docs", "task", None),
+        ("lint", "hook", None),
+        ("Ship", "task", None),
+    ]
+    nothing = {"input": None, "cache_read": None, "cache_write": None, "output": None,
+               "total": None}
+    assert [(g["name"], g["tokens_total"]) for g in timeline["groups"]] == [
+        ("Before all tasks", {**nothing, "not_reported": 0}),  # hooks sum nothing
+        ("Build", {"input": 120, "cache_read": 2_000_000, "cache_write": 50_000,
+                   "output": 1530, "total": 2_051_650, "not_reported": 0}),
+        ("Docs", {**nothing, "not_reported": 1}),
+        ("Ship", {**nothing, "not_reported": 0}),  # pre-task hook failed: no agent ran
+    ]
+    assert timeline["tokens_total"] == {
+        "input": 120, "cache_read": 2_000_000, "cache_write": 50_000, "output": 1530,
+        "total": 2_051_650, "not_reported": 1,
+    }
+    # the same rollup `mini job status --format json` prints
+    assert timeline["tokens_total"] == tokens_total(db.list_executions_for_job(job.id))
+
+    body = response.get_data(as_text=True)
+    for hidden in ("reasoning", "by_model", "claude-opus", "cost", "usd"):
+        assert hidden not in body.lower(), hidden
+    data = response.get_json()
+    assert "tokens" not in data and "tokens_total" not in data
+    assert not any(key.startswith("tokens") for task in data["tasks"] for key in task)
+    loaded = mock_job_controller.store.load(job.id)
+    assert "tokens" not in json.dumps(loaded.to_dict(), default=str)
+    assert "tokens" not in client.get("/jobs").get_data(as_text=True)
+    assert "tokens" not in client.get(f"/jobs/{job.id}/tasks/{build}").get_data(as_text=True)
+
+
+def test_job_api_unstarted_job_reports_no_tokens(client, mock_job_controller):
+    job = mock_job_controller.store.create(_make_plan_yaml(None), base_commit="abc123",
+                                           plan_path="/tmp/plan.yaml")
+
+    timeline = client.get(f"/jobs/{job.id}").get_json()["timeline"]
+
+    assert timeline["tokens_total"] == {"input": None, "cache_read": None, "cache_write": None,
+                                        "output": None, "total": None, "not_reported": 0}
+    [group] = timeline["groups"]
+    assert group["tokens_total"] == timeline["tokens_total"]
+    assert group["steps"][0]["tokens"] is None  # pending

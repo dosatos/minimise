@@ -31,6 +31,12 @@ class Step:
     tokens: Optional[TokenUsage] = None  # task attempts only; None = not reported
 
     @property
+    def execution_type(self) -> str:
+        """The phase under its Execution name, so tokens_total counts a Step
+        the way it counts the execution behind it: task attempts only."""
+        return self.phase
+
+    @property
     def label(self) -> str:
         """Name with the attempt suffix the job log uses for its `step` field."""
         return f"{self.name}  · try {self.attempt}" if self.attempt else self.name

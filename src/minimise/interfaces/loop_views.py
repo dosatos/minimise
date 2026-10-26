@@ -10,10 +10,12 @@ from flask import Flask, jsonify, render_template, request
 
 from minimise.interfaces.formatting import (
     carried_from,
+    counted_loop_steps,
     evaluate_records,
     format_duration,
     loop_step_json,
     shown_loop_steps,
+    tokens_total,
 )
 from minimise.interfaces.prompt_preview import worker_prompt_preview
 from minimise.models import JobStatus, Loop, LoopSpec, LoopStep, TaskStatus
@@ -128,6 +130,7 @@ def _loop_timeline(
     iteration with any verdict gets ``passing`` out of ``dimension_count``.
     Under select: failed, a pass carried over from an earlier iteration has
     ``carried_from`` (and no bar: nothing ran), and a re-check has ``recheck``.
+    Each iteration's ``tokens_total`` leaves carried-over passes out.
 
     A RUNNING step of a loop that isn't running shows as stopped (shown_loop_steps).
     """
@@ -137,6 +140,7 @@ def _loop_timeline(
         default=None,
     )
     records = evaluate_records(steps, journal_records)
+    counted = {step.step_id for step in counted_loop_steps(steps, journal_records)}
     if loop.status == JobStatus.RUNNING:
         end = now
     else:
@@ -196,6 +200,7 @@ def _loop_timeline(
                 if first and last and status != "running" else None
             ),
             "passing": _iteration_passing(parts, dimension_count),
+            "tokens_total": tokens_total(step for step in members if step.step_id in counted),
             "steps": parts,
         })
 
@@ -245,6 +250,7 @@ def _serialize_loop(
     if include_steps:
         result["stop_reason"] = loop.stop_reason
         result["steps"] = [_serialize_step(step) for step in steps]
+        result["tokens_total"] = tokens_total(counted_loop_steps(steps, journal_records))
         result["timeline"] = _loop_timeline(
             loop,
             steps,

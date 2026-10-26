@@ -54,7 +54,9 @@ mini job start <id>            # starts in the background and returns immediatel
 ```
 
 5. **Monitor** with `mini job status <id>` (add `--format json` to poll from a script) and
-   `mini job logs <id> -f` for live narration.
+   `mini job logs <id> -f` for live narration. Token figures: `mini job status` prints
+   `Tokens (task agents only):` and a Tokens column per attempt; `--format json` has
+   `tokens_total` for the job and each task (hooks never count). README → Token Usage.
 6. **Report** with `mini job results diff <id>` and `mini job results logs <id>`. Summarize
    what landed and what the review hooks said — the user delegated so they would not have to
    read the logs.

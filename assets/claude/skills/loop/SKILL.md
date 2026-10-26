@@ -106,3 +106,7 @@ two endings mean very different things and the user needs to know which one they
 **`Status: completed` only means the planner chose to stop — it does not mean every dimension
 passed.** Always surface the verdict table (or journal verdicts) alongside a "completed" report;
 a planner can stop with failing dimensions if it judged that acceptable.
+
+Token figures: `mini loop status` prints the loop's `Tokens:` line and a `tokens` row per iteration
+(Claude Code runs only; `—` = not reported); `--format json` has `tokens_total` and each step's
+`tokens`. README → Token Usage documents the object.

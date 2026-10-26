@@ -38,6 +38,11 @@
             <small id="job-elapsed-note"></small>
         </div>
         <div>
+            <span>Tokens</span>
+            <strong id="job-tokens">—</strong>
+            <small id="job-tokens-note">task agents only</small>
+        </div>
+        <div>
             <span id="job-remaining-label">Remaining</span>
             <strong id="job-remaining">—</strong>
             <small id="job-remaining-note"></small>
@@ -51,7 +56,7 @@
     <div class="table-wrap">
         <table class="timeline-table">
             <colgroup>
-                <col class="col-step"><col class="col-status"><col class="col-duration"><col class="col-estimate"><col class="col-timeout"><col>
+                <col class="col-step"><col class="col-status"><col class="col-duration"><col class="col-estimate"><col class="col-timeout"><col class="col-tokens"><col>
             </colgroup>
             <thead>
                 <tr>
@@ -60,11 +65,12 @@
                     <th>Duration</th>
                     <th>Estimate</th>
                     <th>Timeout</th>
+                    <th>Tokens</th>
                     <th>Timeline<small id="timeline-scale"></small></th>
                 </tr>
             </thead>
             <tbody id="timeline-rows">
-                <tr><td colspan="6" class="empty">Loading timeline…</td></tr>
+                <tr><td colspan="7" class="empty">Loading timeline…</td></tr>
             </tbody>
         </table>
     </div>
