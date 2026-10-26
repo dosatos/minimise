@@ -417,15 +417,16 @@ class TestRenderTaskTableWithGantt:
         # Check that table was created
         assert table is not None
         # Check that table has the expected columns
-        assert len(table.columns) == 8
+        assert len(table.columns) == 9
         assert table.columns[0].header == "Task Name"
         assert table.columns[1].header == "Assignee"
         assert table.columns[2].header == "Status"
         assert table.columns[3].header == "Duration"
         assert table.columns[4].header == "Expected"
-        assert table.columns[5].header == "Timeline (relative)"
-        assert table.columns[6].header == "Type"
-        assert table.columns[7].header == "Reason"
+        assert table.columns[5].header == "Tokens"
+        assert table.columns[6].header == "Timeline (relative)"
+        assert table.columns[7].header == "Type"
+        assert table.columns[8].header == "Reason"
 
     def test_render_execution_table_with_gantt_row_count(self, sample_job, sample_tasks, base_time):
         """Test that table has correct number of rows."""
@@ -440,7 +441,7 @@ class TestRenderTaskTableWithGantt:
 
         assert table is not None
         assert len(table.rows) == 0
-        assert len(table.columns) == 8
+        assert len(table.columns) == 9
 
     def test_render_execution_table_with_gantt_contains_duration_data(self, sample_job, sample_tasks, base_time):
         """Test that table includes duration information."""
@@ -651,7 +652,7 @@ class TestRenderTaskTableWithGantt:
         assert table.columns[2]._cells[1].plain == "pending"
         # Expected column reflects the pending task's estimated duration; bar is empty.
         assert table.columns[4]._cells[1] == "7m 0s"
-        assert table.columns[5]._cells[1] == "—"
+        assert table.columns[6]._cells[1] == "—"
 
     def test_all_tasks_pending_with_empty_executions(self, sample_job, base_time):
         """First status call (no executions yet) shows the full plan as PENDING rows in order."""
@@ -731,7 +732,7 @@ def test_type_column_marks_hook_vs_task():
     tasks = [Task(id="task-1", job_id="j1", name="Build", description="d",
                   estimated_duration_min=3, goal="g")]
     table = render_execution_table_with_gantt(job, tasks, plan=plan)
-    assert table.columns[6]._cells == ["hook", "task"]
+    assert table.columns[7]._cells == ["hook", "task"]
 
 
 def test_assignee_column_shown_on_plan_projected_path():
@@ -766,8 +767,8 @@ def test_reason_column_shows_exit_reason():
                    exit_reason="timeout")
     table = render_execution_table_with_gantt(job, tasks, executions=[ex])
 
-    assert table.columns[7].header == "Reason"
-    assert table.columns[7]._cells == ["timeout"]
+    assert table.columns[8].header == "Reason"
+    assert table.columns[8]._cells == ["timeout"]
 
 
 def test_project_steps_chains_pending_after_completed():
@@ -1620,3 +1621,204 @@ def test_headers_seed_column_now_only_while_running():
         table = render_loop_progress_table(_loop(status), [], ["tests"], steps)
         assert _headers(table) == ["—"]
         assert table.columns[-2].footer == "—"  # seed footer unchanged
+
+
+# --- tokens: shared helpers (formatting.py), the stage-timing row, the Tokens column ---
+
+_RUN_KEYS = {"input", "cache_read", "cache_write", "output", "total"}
+_ROLLUP_KEYS = _RUN_KEYS | {"not_reported"}
+
+
+def _usage(input=1, cache_read=2, cache_write=3, output=4, **extra):
+    from minimise.models import TokenUsage
+    return TokenUsage(input, cache_read, cache_write, output, **extra)
+
+
+def _lstep(step_id, iteration, step_type, status=TaskStatus.COMPLETED, tokens=None,
+           started_at=datetime(2026, 1, 1), dimension=None):
+    from minimise.models import LoopStep
+    return LoopStep(step_id=step_id, loop_id="loop-1", iteration=iteration,
+                    step_type=step_type, dimension=dimension, status=status,
+                    started_at=started_at,
+                    completed_at=started_at + timedelta(seconds=5) if started_at else None,
+                    tokens=tokens)
+
+
+@pytest.mark.parametrize("n, text", [
+    (None, "—"), (0, "0"), (999, "999"), (1_000, "1.0K"), (12_400, "12.4K"),
+    (2_800_000, "2.8M"), (243_100_000, "243.1M"),
+])
+def test_format_tokens(n, text):
+    from minimise.interfaces.formatting import format_tokens
+    assert format_tokens(n) == text
+
+
+def test_tokens_json_has_the_four_buckets_and_total_only():
+    from minimise.interfaces.formatting import tokens_json
+    usage = _usage(10, None, 30, 40, reasoning=99, by_model={"m": {"input": 10}})
+    assert tokens_json(usage) == {"input": 10, "cache_read": None, "cache_write": 30,
+                                  "output": 40, "total": 80}  # reasoning never added
+    assert tokens_json(None) is None
+
+
+def test_tokens_total_counts_only_finished_runs_an_agent_ran_in():
+    from minimise.interfaces.formatting import tokens_total
+    runs = [
+        _lstep("done", 1, "plan", tokens=_usage(1, 2, 3, 4)),
+        _lstep("failed", 1, "implement", TaskStatus.FAILED, tokens=_usage(10, 20, 30, 40)),
+        _lstep("stopped-null", 1, "evaluate", TaskStatus.STOPPED),  # counted, not reported
+        _lstep("running", 2, "plan", TaskStatus.RUNNING, tokens=_usage(1000, 0, 0, 0)),
+        _lstep("pending", 2, "implement", TaskStatus.PENDING, started_at=None),
+    ]
+    rollup = tokens_total(runs)
+    assert rollup == {"input": 11, "cache_read": 22, "cache_write": 33, "output": 44,
+                      "total": 110, "not_reported": 1}
+    assert set(rollup) == _ROLLUP_KEYS
+
+
+def test_tokens_total_leaves_hooks_and_the_pre_task_hook_failure_row_out():
+    from minimise.interfaces.formatting import tokens_total
+    t0 = datetime(2026, 1, 1)
+    attempt = Execution(task_id="t1", attempt=0, status=TaskStatus.COMPLETED,
+                        started_at=t0, completed_at=t0, tokens=_usage(5, 0, 0, 5))
+    hook = Execution(task_id="t1", attempt=0, execution_type="post_task", hook_name="tests",
+                     status=TaskStatus.COMPLETED, started_at=t0, completed_at=t0)
+    plan_hook = Execution(task_id=None, attempt=0, execution_type="pre_plan",
+                          hook_name="review-plan", status=TaskStatus.FAILED,
+                          started_at=t0, completed_at=t0)
+    pre_hook_failed = Execution(task_id="t2", attempt=0, status=TaskStatus.FAILED,
+                                completed_at=t0)  # job_executor: no agent ran, no start
+    rollup = tokens_total([attempt, hook, plan_hook, pre_hook_failed])
+    assert rollup == {"input": 5, "cache_read": 0, "cache_write": 0, "output": 5,
+                      "total": 10, "not_reported": 0}
+
+
+def test_tokens_total_bucket_null_in_every_run_stays_null():
+    from minimise.interfaces.formatting import tokens_total
+    runs = [_lstep("a", 1, "plan", tokens=_usage(1, None, 3, 4)),
+            _lstep("b", 1, "implement", tokens=_usage(10, None, 30, 40))]
+    rollup = tokens_total(runs)
+    assert rollup["cache_read"] is None
+    assert (rollup["input"], rollup["total"]) == (11, 88)
+
+
+def test_tokens_total_is_always_an_object():
+    from minimise.interfaces.formatting import tokens_total
+    assert tokens_total([]) == dict.fromkeys(_RUN_KEYS) | {"not_reported": 0}
+    nothing = tokens_total([_lstep("a", 1, "plan"), _lstep("b", 1, "implement")])
+    assert nothing == dict.fromkeys(_RUN_KEYS) | {"not_reported": 2}
+
+
+def test_counted_loop_steps_drops_only_carried_over_passes():
+    from minimise.interfaces.formatting import counted_loop_steps
+    steps = [_lstep("plan", 2, "plan"),
+             _lstep("carried", 2, "evaluate", dimension="a"),
+             _lstep("ran", 2, "evaluate", dimension="b"),
+             _lstep("not-int", 2, "evaluate", dimension="c"),
+             _lstep("bool", 2, "evaluate", dimension="d")]
+    records = [
+        {"step_type": "evaluate", "step_id": "carried", "iteration": 2, "dimension": "a",
+         "verdict": "pass", "evaluated_in_iteration": 1},
+        {"step_type": "evaluate", "step_id": "ran", "iteration": 2, "dimension": "b",
+         "verdict": "pass"},
+        {"step_type": "evaluate", "step_id": "not-int", "iteration": 2, "dimension": "c",
+         "evaluated_in_iteration": "1"},
+        {"step_type": "evaluate", "step_id": "bool", "iteration": 2, "dimension": "d",
+         "evaluated_in_iteration": True},
+    ]
+    kept = [s.step_id for s in counted_loop_steps(steps, records)]
+    assert kept == ["plan", "ran", "not-int", "bool"]
+
+
+def test_loop_step_json_has_exactly_six_keys():
+    from minimise.interfaces.formatting import loop_step_json
+    step = _lstep("s1", 3, "evaluate", dimension="clarity",
+                  tokens=_usage(1, 2, 3, 4, reasoning=7, by_model={"m": {"input": 1}}))
+    assert loop_step_json(step) == {
+        "step_id": "s1", "iteration": 3, "step_type": "evaluate", "dimension": "clarity",
+        "status": "completed",
+        "tokens": {"input": 1, "cache_read": 2, "cache_write": 3, "output": 4, "total": 10},
+    }
+    assert loop_step_json(_lstep("s2", 1, "plan"))["tokens"] is None
+
+
+def test_tokens_summary_line():
+    from minimise.interfaces.formatting import tokens_summary
+    rollup = {"input": 120_400, "cache_read": 218_600_000, "cache_write": 21_600_000,
+              "output": 2_800_000, "total": 243_120_400, "not_reported": 0}
+    assert tokens_summary(rollup, "step") == (
+        "243.1M (input 120.4K · cache write 21.6M · cache read 218.6M · output 2.8M)")
+    assert tokens_summary({**rollup, "not_reported": 3}, "step").endswith(
+        "output 2.8M) (3 steps not reported)")
+    assert tokens_summary({**rollup, "not_reported": 1}, "run").endswith(
+        "output 2.8M) (1 run not reported)")
+    assert tokens_summary({**rollup, "cache_read": None}, "step") == (
+        "243.1M (input 120.4K · cache write 21.6M · cache read — · output 2.8M)")
+    nothing = dict.fromkeys(_RUN_KEYS) | {"not_reported": 0}
+    assert tokens_summary(nothing, "step") == "—"
+    assert tokens_summary({**nothing, "not_reported": 2}, "run") == "— (2 runs not reported)"
+
+
+def test_stage_timing_tokens_row_per_iteration():
+    # Iteration 1: plan + implement reported; a carried-over pass (no tokens) is
+    # left out. Iteration 2: nothing reported -> "—". Iteration 3 (loop running):
+    # a RUNNING step's partial tokens aren't counted yet.
+    from minimise.interfaces.terminal_ui import render_loop_stage_timing
+    steps = [
+        _lstep("p1", 1, "plan", tokens=_usage(1_000, 2_000, 3_000, 4_000)),
+        _lstep("i1", 1, "implement", tokens=_usage(400, 0, 0, 0)),
+        _lstep("e1", 1, "evaluate", dimension="a"),
+        _lstep("p2", 2, "plan"),
+        _lstep("p3", 3, "plan", tokens=_usage(5, 5, 5, 5)),
+        _lstep("i3", 3, "implement", TaskStatus.RUNNING, tokens=_usage(9_000, 0, 0, 0)),
+    ]
+    records = [{"step_type": "evaluate", "step_id": "e1", "iteration": 1, "dimension": "a",
+                "verdict": "pass", "evaluated_in_iteration": 0}]
+    table = render_loop_stage_timing(_loop(), steps, ["a"], records)
+    assert table.columns[0]._cells == ["plan", "implement", "eval", "iter total", "tokens"]
+    assert [col._cells[4] for col in table.columns[1:]] == ["10.4K", "—", "20"]
+
+
+def test_stage_timing_tokens_row_without_journal_records(base_time):
+    from minimise.interfaces.terminal_ui import render_loop_stage_timing
+    table = render_loop_stage_timing(_loop(), [_lstep("p1", 1, "plan", tokens=_usage(1, 1, 1, 1))])
+    assert table.columns[1]._cells[4] == "4"
+
+
+def test_tokens_column_shows_attempt_totals_and_dashes_on_hooks(sample_job, base_time):
+    from minimise.models import Plan
+    plan = Plan.model_validate({
+        "name": "P",
+        "pre_hooks": [{"name": "review-plan", "shell": "true", "estimated_duration_min": 1}],
+        "tasks": [
+            {"id": "t1", "name": "Build", "description": "d", "goal": "g",
+             "estimated_duration_min": 3,
+             "post_hooks": [{"name": "tests", "shell": "true", "estimated_duration_min": 1}]},
+            {"id": "t2", "name": "Ship", "description": "d", "goal": "g",
+             "estimated_duration_min": 3},
+        ],
+    })
+    tasks = [Task(id="task-1", job_id="job-001", name="Build", description="d",
+                  estimated_duration_min=3, status=TaskStatus.COMPLETED),
+             Task(id="task-2", job_id="job-001", name="Ship", description="d",
+                  estimated_duration_min=3)]
+    t = base_time
+    executions = [
+        Execution(task_id=None, attempt=0, execution_type="pre_plan", hook_name="review-plan",
+                  status=TaskStatus.COMPLETED, started_at=t, completed_at=t),
+        Execution(task_id="task-1", attempt=0, status=TaskStatus.FAILED,
+                  started_at=t, completed_at=t),  # nothing reported
+        Execution(task_id="task-1", attempt=1, status=TaskStatus.COMPLETED, started_at=t,
+                  completed_at=t, tokens=_usage(2, 11_334, 18_110, 4)),
+        Execution(task_id="task-1", attempt=0, execution_type="post_task", hook_name="tests",
+                  status=TaskStatus.COMPLETED, started_at=t, completed_at=t),
+    ]
+    table = render_execution_table_with_gantt(sample_job, tasks, now=t, executions=executions,
+                                              plan=plan)
+    assert table.columns[5].header == "Tokens"
+    rows = dict(zip(table.columns[0]._cells, table.columns[5]._cells))
+    assert rows == {"review-plan": "—", "Build  · try 1": "—", "Build  · try 2": "29.4K",
+                    "tests": "—", "Ship": "—"}
+
+    fallback = render_execution_table_with_gantt(sample_job, tasks, now=t, executions=executions)
+    assert fallback.columns[5]._cells == ["—", "—", "29.4K", "—", "—"]

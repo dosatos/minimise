@@ -8,7 +8,13 @@ from typing import Callable, Optional
 
 from flask import Flask, jsonify, render_template, request
 
-from minimise.interfaces.formatting import format_duration, shown_loop_steps
+from minimise.interfaces.formatting import (
+    carried_from,
+    evaluate_records,
+    format_duration,
+    loop_step_json,
+    shown_loop_steps,
+)
 from minimise.interfaces.prompt_preview import worker_prompt_preview
 from minimise.models import JobStatus, Loop, LoopSpec, LoopStep, TaskStatus
 from minimise.orchestration import loop_journal
@@ -41,12 +47,8 @@ def _current_stage(steps: list[LoopStep]) -> str:
 
 def _serialize_step(step: LoopStep) -> dict:
     return {
-        "step_id": step.step_id,
-        "iteration": step.iteration,
-        "step_type": step.step_type,
+        **loop_step_json(step),  # the CLI's step shape; the web only adds keys
         "stage": _stage_label(step.step_type),
-        "dimension": step.dimension,
-        "status": step.status.value,
         "retries": step.retries,
         "started_at": step.started_at.isoformat() if step.started_at else None,
         "completed_at": step.completed_at.isoformat() if step.completed_at else None,
@@ -85,33 +87,6 @@ def _normalize_verdict(value) -> Optional[str]:
         return None
     verdict = value.strip().lower()
     return verdict if verdict in _VERDICTS else None
-
-
-def _evaluate_records(steps: list[LoopStep], journal_records) -> dict[str, dict]:
-    """Map evaluate step_id -> its journal record; the last matching record wins.
-
-    The engine stamps step_id on every record; older records without one
-    fall back to (iteration, dimension), resolved to that slot's latest step.
-    """
-    evaluate = [step for step in steps if step.step_type == "evaluate"]
-    step_ids = {step.step_id for step in evaluate}
-    by_slot = {(step.iteration, step.dimension): step.step_id for step in evaluate}
-    matched: dict[str, dict] = {}
-    for record in journal_records:
-        if record.get("step_type") != "evaluate":
-            continue
-        step_id = record.get("step_id")
-        if not step_id:
-            step_id = by_slot.get((record.get("iteration"), record.get("dimension")))
-        if step_id in step_ids:
-            matched[step_id] = record
-    return matched
-
-
-def _carried_from(record: dict) -> Optional[int]:
-    """select: failed — the iteration a carried-over pass was really evaluated in."""
-    value = record.get("evaluated_in_iteration")
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _iteration_passing(members: list[dict], dimension_count: int) -> Optional[dict]:
@@ -161,7 +136,7 @@ def _loop_timeline(
         [t for t in (loop.started_at, *(step.started_at for step in steps)) if t],
         default=None,
     )
-    records = _evaluate_records(steps, journal_records)
+    records = evaluate_records(steps, journal_records)
     if loop.status == JobStatus.RUNNING:
         end = now
     else:
@@ -181,7 +156,7 @@ def _loop_timeline(
             if step.step_type == "evaluate" and step.status != TaskStatus.RUNNING
             else {}
         )
-        carried_from = _carried_from(record)
+        carried = carried_from(record)
         return {
             **_serialize_step(step),
             "start_offset": start,
@@ -189,12 +164,12 @@ def _loop_timeline(
                 round((step.completed_at - step.started_at).total_seconds(), 1)
                 if step.started_at and step.completed_at else None
             ),
-            "bar": None if start is None or carried_from is not None else {
+            "bar": None if start is None or carried is not None else {
                 "start": start,
                 "end": max(start, offset(step.completed_at or end)),
             },
             "verdict": _normalize_verdict(record.get("verdict")),
-            "carried_from": carried_from,
+            "carried_from": carried,
             "recheck": record.get("recheck") is True,
         }
 

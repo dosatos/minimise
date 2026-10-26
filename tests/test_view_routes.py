@@ -1421,6 +1421,36 @@ def test_get_loop_api_includes_timeline_and_list_is_unchanged(client, api_server
                            "started_at", "completed_at", "elapsed"}
 
 
+def test_loop_api_steps_share_the_clis_step_shape(client, api_server, db):
+    """The web's steps are loop_step_json (the shape `mini loop status --format json`
+    prints) plus the web's own keys, so the two can't drift."""
+    from minimise.interfaces.formatting import loop_step_json
+    from minimise.models import JobStatus, LoopStep, TaskStatus, TokenUsage
+
+    loop = _make_loop(api_server)
+    db.update_loop_status(loop.loop_id, status=JobStatus.COMPLETED,
+                          started_at=_at(0), completed_at=_at(8))
+    db.create_loop_step(LoopStep(
+        step_id="step-plan", loop_id=loop.loop_id, iteration=1, step_type="plan",
+        status=TaskStatus.COMPLETED, started_at=_at(0), completed_at=_at(2),
+        tokens=TokenUsage(1, 2, 3, 4, reasoning=5, by_model={"claude-opus-5-5": {"input": 1}}),
+    ))
+    db.create_loop_step(LoopStep(
+        step_id="step-impl", loop_id=loop.loop_id, iteration=1, step_type="implement",
+        status=TaskStatus.COMPLETED, started_at=_at(2), completed_at=_at(4),
+    ))
+
+    data = client.get(f"/api/loops/{loop.loop_id}").get_json()
+
+    for step, served in zip(db.list_loop_steps(loop.loop_id), data["steps"]):
+        assert loop_step_json(step).items() <= served.items()
+    assert data["steps"][0]["tokens"] == {"input": 1, "cache_read": 2, "cache_write": 3,
+                                          "output": 4, "total": 10}
+    assert data["steps"][1]["tokens"] is None
+    body = client.get(f"/api/loops/{loop.loop_id}").get_data(as_text=True)
+    assert "reasoning" not in body and "by_model" not in body and "claude-opus" not in body
+
+
 def test_loop_api_shows_a_failed_loops_running_step_as_stopped(client, api_server, db):
     """A dead engine left its implement step RUNNING; a later run re-did it and
     failed at evaluate. Nothing runs that orphan, so it reads as stopped."""

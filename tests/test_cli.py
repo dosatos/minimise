@@ -3503,3 +3503,249 @@ def test_mini_doctor_exit_code_healthy_with_key_and_harness(runner, mock_config_
     monkeypatch.setattr("subprocess.run", fake_run)
     result = runner.invoke(mini, ["doctor"])
     assert result.exit_code == 0, result.output
+
+
+# --- tokens in `mini loop status` / `mini job status` -------------------------
+
+_TOKEN_RUN_KEYS = {"input", "cache_read", "cache_write", "output", "total"}
+_TOKEN_ROLLUP_KEYS = _TOKEN_RUN_KEYS | {"not_reported"}
+_HEADER_TOKENS = "243.1M (input 120.4K · cache write 21.6M · cache read 218.6M · output 2.8M)"
+
+
+def _no_hidden_token_keys(text):
+    """Never reasoning, by_model, model names or cost in any JSON."""
+    for leaked in ("reasoning", "by_model", "claude-", "cost", "usd"):
+        assert leaked not in text.lower(), leaked
+
+
+def _token_loop(mock_config_dir):
+    """A RUNNING select: failed loop (its engine is this live process). Iteration 1:
+    plan + implement reported, eval "a" STOPPED and eval "b" COMPLETED with nothing
+    reported. Iteration 2: eval "a" is a pass carried over from iteration 1; plan
+    RUNNING with partial tokens."""
+    import os
+    import yaml
+    from datetime import timedelta
+    from minimise.models import LoopSpec, LoopStep, TokenUsage
+    from minimise.orchestration import loop_journal
+    from minimise.storage.loop_store import LoopStore
+
+    spec = {
+        "version": "1", "name": "Demo", "goal": "make it better", "max_iterations": 3,
+        "loop": {
+            "plan": {"prompt": "plan it"}, "implement": {"prompt": "do it"},
+            "evaluate": {"select": "failed", "max_concurrent": 1, "dimensions": [
+                {"name": "a", "rubric": "ra"}, {"name": "b", "rubric": "rb"}]},
+        },
+    }
+    plan_path = mock_config_dir / "loop.yaml"
+    plan_path.write_text(yaml.safe_dump(spec))
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+    store = LoopStore(db, mock_config_dir / "jobs")
+    loop_obj = store.create(LoopSpec.model_validate(spec), str(plan_path))
+    start = datetime.utcnow() - timedelta(minutes=5)
+    db.update_loop_status(loop_obj.loop_id, status=JobStatus.RUNNING, started_at=start,
+                          pid=os.getpid())
+    by_model = {"claude-opus-5-5": {"input": 120_000, "cache_read": 218_000_000,
+                                    "cache_write": 21_000_000, "output": 2_000_000}}
+    rows = [
+        ("plan-1", 1, "plan", None, TaskStatus.COMPLETED,
+         TokenUsage(120_000, 218_000_000, 21_000_000, 2_000_000, reasoning=55, by_model=by_model)),
+        ("impl-1", 1, "implement", None, TaskStatus.COMPLETED,
+         TokenUsage(400, 600_000, 600_000, 800_000)),
+        ("eval-1a", 1, "evaluate", "a", TaskStatus.STOPPED, None),
+        ("eval-1b", 1, "evaluate", "b", TaskStatus.COMPLETED, None),
+        ("eval-2a", 2, "evaluate", "a", TaskStatus.COMPLETED, None),  # carried over
+        ("plan-2", 2, "plan", None, TaskStatus.RUNNING, TokenUsage(9_000_000, 0, 0, 0)),
+    ]
+    for i, (step_id, it, step_type, dim, status, tokens) in enumerate(rows):
+        began = start + timedelta(seconds=10 * i)
+        db.create_loop_step(LoopStep(
+            step_id=step_id, loop_id=loop_obj.loop_id, iteration=it, step_type=step_type,
+            dimension=dim, status=status, started_at=began,
+            completed_at=None if status == TaskStatus.RUNNING else began + timedelta(seconds=5),
+            tokens=tokens,
+        ))
+    jpath = store.journal_path(loop_obj.loop_id)
+    for record in (
+        {"step_id": "eval-1a", "iteration": 1, "dimension": "a", "verdict": "pass"},
+        {"step_id": "eval-1b", "iteration": 1, "dimension": "b", "verdict": "fail"},
+        {"step_id": "eval-2a", "iteration": 2, "dimension": "a", "verdict": "pass",
+         "evaluated_in_iteration": 1},
+    ):
+        loop_journal.append(jpath, {"step_type": "evaluate", **record})
+    return loop_obj.loop_id
+
+
+def test_loop_status_shows_the_tokens_header_row_and_hint(runner, mock_config_dir, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "200")
+    loop_id = _token_loop(mock_config_dir)
+
+    result = runner.invoke(mini, ["loop", "status", loop_id])
+
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    elapsed_at = next(i for i, line in enumerate(lines) if line.startswith("Elapsed:"))
+    # The running step's tokens and the carried-over pass are left out;
+    # the stopped and completed evaluators that reported nothing are counted.
+    assert lines[elapsed_at + 1] == f"Tokens: {_HEADER_TOKENS} (2 steps not reported)"
+    tokens_row = next(line for line in lines if line.startswith("│ tokens "))
+    assert [cell.strip() for cell in tokens_row.split("│")[1:-1]] == ["tokens", "243.1M", "—"]
+    journal_at = next(i for i, line in enumerate(lines) if line.startswith("View journal with:"))
+    assert lines[journal_at + 1] == f"Tokens per step: mini loop status {loop_id[:8]} --format json"
+    assert "$" not in result.output
+
+
+def test_loop_status_tokens_line_with_nothing_reported(runner, mock_config_dir, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "200")
+    loop_id = _stopped_loop(mock_config_dir, None)  # no steps at all
+
+    result = runner.invoke(mini, ["loop", "status", loop_id])
+
+    assert result.exit_code == 0, result.output
+    assert "Tokens: —" in result.output.splitlines()
+
+
+def test_loop_status_json_carries_tokens_total_and_steps(runner, mock_config_dir):
+    loop_id = _token_loop(mock_config_dir)
+
+    result = runner.invoke(mini, ["loop", "status", loop_id, "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["tokens_total"] == {
+        "input": 120_400, "cache_read": 218_600_000, "cache_write": 21_600_000,
+        "output": 2_800_000, "total": 243_120_400, "not_reported": 2,
+    }
+    steps = {s["step_id"]: s for s in data["steps"]}
+    assert list(steps) == ["plan-1", "impl-1", "eval-1a", "eval-1b", "eval-2a", "plan-2"]
+    for step in data["steps"]:
+        assert set(step) == {"step_id", "iteration", "step_type", "dimension", "status", "tokens"}
+        assert step["tokens"] is None or set(step["tokens"]) == _TOKEN_RUN_KEYS
+    assert steps["plan-1"]["tokens"] == {"input": 120_000, "cache_read": 218_000_000,
+                                         "cache_write": 21_000_000, "output": 2_000_000,
+                                         "total": 241_120_000}
+    assert steps["eval-1a"] == {"step_id": "eval-1a", "iteration": 1, "step_type": "evaluate",
+                                "dimension": "a", "status": "stopped", "tokens": None}
+    assert steps["plan-2"]["status"] == "running"
+    assert steps["plan-2"]["tokens"]["total"] == 9_000_000  # shown per step, not in the rollup
+    _no_hidden_token_keys(result.output)
+
+
+def test_loop_status_json_tokens_total_with_no_steps(runner, mock_config_dir):
+    loop_id = _stopped_loop(mock_config_dir, None)
+
+    data = json.loads(runner.invoke(mini, ["loop", "status", loop_id, "--format", "json"]).output)
+
+    assert data["tokens_total"] == {"input": None, "cache_read": None, "cache_write": None,
+                                    "output": None, "total": None, "not_reported": 0}
+    assert data["steps"] == []
+
+
+def _token_job(mock_config_dir):
+    """A FAILED job: T1 attempt 0 failed with nothing reported, attempt 1 completed with
+    tokens, then its post-task hook; T2's pre-task hook failed, leaving the never-started
+    FAILED task row job_executor writes. A plan hook ran too."""
+    import yaml as _yaml
+    from datetime import timedelta
+    from minimise.models import TokenUsage
+
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+    job = Job(id=str(uuid.uuid4()), name="Token Job", status=JobStatus.FAILED,
+              plan_path="/path/to/plan.yaml")
+    db.create_job(job)
+    for task_id, name, status in (("t1", "T1", TaskStatus.COMPLETED), ("t2", "T2", TaskStatus.FAILED)):
+        db.create_task(Task(id=task_id, job_id=job.id, name=name, description="d",
+                            status=status, estimated_duration_min=1))
+    job_dir = mock_config_dir / "jobs" / job.id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    hook = {"shell": "true", "estimated_duration_min": 1}
+    (job_dir / "plan.yaml").write_text(_yaml.safe_dump({
+        "name": "Token Job",
+        "pre_hooks": [{"name": "review-plan", **hook}],
+        "tasks": [
+            {"id": "t1", "name": "T1", "goal": "g", "description": "d", "estimated_duration_min": 1,
+             "post_hooks": [{"name": "tests", **hook}]},
+            {"id": "t2", "name": "T2", "goal": "g", "description": "d", "estimated_duration_min": 1,
+             "pre_hooks": [{"name": "setup", **hook}]},
+        ],
+    }))
+    t0 = datetime.utcnow() - timedelta(minutes=10)
+    at = lambda m: t0 + timedelta(minutes=m)
+    for ex in (
+        Execution(task_id=None, attempt=0, job_id=job.id, execution_type="pre_plan",
+                  hook_name="review-plan", status=TaskStatus.COMPLETED,
+                  started_at=at(0), completed_at=at(1)),
+        Execution(task_id="t1", attempt=0, job_id=job.id, status=TaskStatus.FAILED,
+                  started_at=at(1), completed_at=at(2)),
+        Execution(task_id="t1", attempt=1, job_id=job.id, status=TaskStatus.COMPLETED,
+                  started_at=at(2), completed_at=at(3),
+                  tokens=TokenUsage(2, 11_334, 18_110, 4, reasoning=9,
+                                    by_model={"claude-opus-5-5": {"input": 2}})),
+        Execution(task_id="t1", attempt=0, job_id=job.id, execution_type="post_task",
+                  hook_name="tests", status=TaskStatus.COMPLETED, started_at=at(3), completed_at=at(4)),
+        Execution(task_id="t2", attempt=0, job_id=job.id, execution_type="pre_task",
+                  hook_name="setup", status=TaskStatus.FAILED, started_at=at(4), completed_at=at(5)),
+        Execution(task_id="t2", attempt=0, job_id=job.id, status=TaskStatus.FAILED,
+                  completed_at=at(5)),  # pre-task hook failed: no agent ran
+    ):
+        db.save_execution(ex)
+    return job.id
+
+
+def test_job_status_shows_task_agent_tokens_and_a_tokens_column(runner, mock_config_dir, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "250")
+    job_id = _token_job(mock_config_dir)
+
+    result = runner.invoke(mini, ["job", "status", job_id])
+
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert ("Tokens (task agents only): 29.4K (input 2 · cache write 18.1K · cache read 11.3K"
+            " · output 4) (1 run not reported)") in lines
+    header = next(line for line in lines if "Task Name" in line)
+    columns = [c.strip() for c in header.split("┃")[1:-1]]
+    tokens_col = columns.index("Tokens")
+
+    def tokens_cell(label):
+        row = next(line for line in lines if line.startswith(f"│ {label} "))
+        return row.split("│")[1:-1][tokens_col].strip()
+
+    assert tokens_cell("T1  · try 2") == "29.4K"
+    assert tokens_cell("T1  · try 1") == "—"  # nothing reported
+    for hook in ("review-plan", "tests", "setup"):
+        assert tokens_cell(hook) == "—"
+    assert "$" not in result.output
+
+
+def test_job_status_tokens_line_with_nothing_reported(runner, mock_config_dir, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "250")
+    _, job = _make_start_job(mock_config_dir, JobStatus.PENDING)
+
+    result = runner.invoke(mini, ["job", "status", job.id])
+
+    assert result.exit_code == 0, result.output
+    assert "Tokens (task agents only): —" in result.output.splitlines()
+
+
+def test_job_status_json_carries_tokens_totals_for_task_agents_only(runner, mock_config_dir):
+    job_id = _token_job(mock_config_dir)
+
+    result = runner.invoke(mini, ["job", "status", job_id, "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    t1_total = {"input": 2, "cache_read": 11_334, "cache_write": 18_110, "output": 4,
+                "total": 29_450, "not_reported": 1}
+    assert data["tokens_total"] == t1_total  # hooks and T2's never-started row left out
+    tasks = {t["id"]: t for t in data["tasks"]}
+    assert tasks["t1"]["tokens_total"] == t1_total
+    assert tasks["t2"]["tokens_total"] == {"input": None, "cache_read": None, "cache_write": None,
+                                           "output": None, "total": None, "not_reported": 0}
+    assert set(data["tokens_total"]) == _TOKEN_ROLLUP_KEYS
+    for task in data["tasks"]:
+        assert set(task["tokens_total"]) == _TOKEN_ROLLUP_KEYS
+        assert "tokens" not in task  # no per-execution array
+    _no_hidden_token_keys(result.output)

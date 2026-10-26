@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-from minimise.models import Plan, TaskStatus
+from minimise.models import Plan, TaskStatus, TokenUsage
 
 
 @dataclass
@@ -28,6 +28,7 @@ class Step:
     task_id: Optional[str] = None
     attempt: Optional[int] = None  # 1-based; set only on task attempts that ran
     timeout: Optional[int] = None  # minutes, from the plan's timeout_min; None = unbounded
+    tokens: Optional[TokenUsage] = None  # task attempts only; None = not reported
 
     @property
     def label(self) -> str:
@@ -75,7 +76,7 @@ def build_steps(plan: Plan, tasks: list, executions: list) -> list:
                                   timeout=ptask.timeout_min, status=e.status,
                                   started_at=e.started_at, ended_at=e.completed_at,
                                   exit_reason=e.exit_reason or "", assignee=assignee,
-                                  task_id=task_id))
+                                  task_id=task_id, tokens=e.tokens))
         else:
             steps.append(Step(name=ptask.name, estimate=ptask.estimated_duration_min,
                               timeout=ptask.timeout_min,
@@ -144,7 +145,7 @@ def steps_from_executions(tasks: list, executions: list) -> list:
                               status=ex.status, started_at=ex.started_at,
                               ended_at=ex.completed_at, exit_reason=ex.exit_reason or "",
                               assignee=(task.assignee or "") if task else "",
-                              task_id=ex.task_id))
+                              task_id=ex.task_id, tokens=ex.tokens))
         else:
             steps.append(Step(name=ex.hook_name or ex.execution_type, estimate=None,
                               status=ex.status, started_at=ex.started_at,

@@ -17,6 +17,7 @@ from rich.text import Text
 import minimise.interfaces.cli as _cli  # patchable constants; read at call time
 from minimise.agents.harness import SUPPORTED_HARNESSES, HarnessNotFoundError
 from minimise.models import JobStatus, TaskStatus, Plan
+from minimise.interfaces.formatting import tokens_summary, tokens_total
 from minimise.interfaces.terminal_ui import get_status_color, render_execution_table_with_gantt, humanize_duration
 from minimise.interfaces.cli._shared import (
     console,
@@ -484,6 +485,8 @@ def job_status(job_id: str, format: str):
         except Exception:
             plan = None
         est_total = job_estimate_total(job_obj.tasks, plan)
+        executions = db.list_executions_for_job(job_obj.id)
+        job_tokens = tokens_total(executions)  # counts task attempts only, never hooks
 
         if format == "json":
             # Build JSON output with task metadata
@@ -500,6 +503,7 @@ def job_status(job_id: str, format: str):
                 }
                 task_execs = [e for e in db.list_executions_for_task(task.id) if e.execution_type == "task"]
                 task_data["exit_reason"] = task_execs[-1].exit_reason if task_execs else None
+                task_data["tokens_total"] = tokens_total(task_execs)
                 # Add duration_seconds if both start and end times exist
                 if task.started_at and task.completed_at:
                     duration = (task.completed_at - task.started_at).total_seconds()
@@ -523,6 +527,7 @@ def job_status(job_id: str, format: str):
                 "created_at": job_obj.created_at.isoformat() if job_obj.created_at else None,
                 "started_at": job_obj.started_at.isoformat() if job_obj.started_at else None,
                 "completed_at": job_obj.completed_at.isoformat() if job_obj.completed_at else None,
+                "tokens_total": job_tokens,
                 "tasks": tasks_data,
                 "tasks_summary": {
                     "total": len(job_obj.tasks),
@@ -543,6 +548,9 @@ def job_status(job_id: str, format: str):
             if job_obj.started_at and job_obj.completed_at:
                 elapsed = (job_obj.completed_at - job_obj.started_at).total_seconds()
                 console.print(f"[bold]Total Time:[/bold] {humanize_duration(elapsed)}")
+            console.print(
+                f"[bold]Tokens (task agents only):[/bold] {tokens_summary(job_tokens, 'run')}"
+            )
             console.print(f"[bold]Plan Path:[/bold] {job_obj.plan_path}")
             console.print(f"[bold]Base Commit:[/bold] {job_obj.base_commit or 'N/A'}")
             console.print(
@@ -563,7 +571,6 @@ def job_status(job_id: str, format: str):
             # Display task progress with Gantt chart
             if job_obj.tasks:
                 console.print(f"\n[bold]Task Progress[/bold]")
-                executions = db.list_executions_for_job(job_obj.id)
                 table = render_execution_table_with_gantt(
                     job_obj,
                     job_obj.tasks,

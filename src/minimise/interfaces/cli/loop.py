@@ -29,6 +29,13 @@ from minimise.interfaces.terminal_ui import (
     loop_stage_breadcrumb,
     format_duration,
 )
+from minimise.interfaces.formatting import (
+    counted_loop_steps,
+    loop_step_json,
+    shown_loop_steps,
+    tokens_summary,
+    tokens_total,
+)
 from minimise.orchestration import loop_journal
 from minimise.interfaces.cli._shared import (
     console,
@@ -406,6 +413,11 @@ def loop_status(loop_id: str, format: str):
         except Exception:
             pass
 
+        records = loop_journal.read(_get_store(db).journal_path(loop_id))
+        steps = db.list_loop_steps(loop_id)
+        shown = shown_loop_steps(loop_obj, steps)
+        loop_tokens = tokens_total(counted_loop_steps(shown, records))
+
         if format == "json":
             output = {
                 "loop_id": loop_obj.loop_id,
@@ -420,6 +432,8 @@ def loop_status(loop_id: str, format: str):
                 "created_at": loop_obj.created_at.isoformat() if loop_obj.created_at else None,
                 "started_at": loop_obj.started_at.isoformat() if loop_obj.started_at else None,
                 "completed_at": loop_obj.completed_at.isoformat() if loop_obj.completed_at else None,
+                "tokens_total": loop_tokens,
+                "steps": [loop_step_json(step) for step in shown],
             }
             console.out(json.dumps(output, indent=2))
         else:
@@ -446,14 +460,13 @@ def loop_status(loop_id: str, format: str):
                     is_running=(loop_obj.status == JobStatus.RUNNING), now=None,
                 )
                 console.print(f"[bold]Elapsed:[/bold] {elapsed}")
-            records = loop_journal.read(_get_store(db).journal_path(loop_id))
-            steps = db.list_loop_steps(loop_id)
+            console.print(f"[bold]Tokens:[/bold] {tokens_summary(loop_tokens, 'step')}")
             if loop_obj.started_at:
                 console.print("[bold]Stage:[/bold] ", end="")
                 console.print(loop_stage_breadcrumb(loop_obj, steps))
                 console.print()
                 console.print("[bold]Stage timing[/bold]")
-                console.print(render_loop_stage_timing(loop_obj, steps, dims))
+                console.print(render_loop_stage_timing(loop_obj, steps, dims, records))
                 console.print()
                 console.print("[bold]Verdicts[/bold]")
                 console.print(render_loop_progress_table(loop_obj, records, dims, steps))
@@ -461,6 +474,7 @@ def loop_status(loop_id: str, format: str):
                 if summary:
                     console.print(f"[dim]{summary}[/dim]")
             console.print(f"[dim]View journal with: mini loop journal {loop_id[:8]}[/dim]")
+            console.print(f"[dim]Tokens per step: mini loop status {loop_id[:8]} --format json[/dim]")
 
     except SystemExit:
         raise
