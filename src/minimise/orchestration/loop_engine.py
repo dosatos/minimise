@@ -47,7 +47,8 @@ DEFAULT_PROMPTS = {
         "for the implementer."
     ),
     "implement": (
-        "You are the IMPLEMENTER in a refinement loop. Execute the current plan by "
+        "You are the IMPLEMENTER in a refinement loop. You receive the goal and the "
+        "current plan record, not the journal. Execute the current plan by "
         "mutating the working tree. For real code changes, STRONGLY PREFER delegating "
         "the work to a `mini job`: write a plan YAML, gate it with the `/minimise:review-plan` "
         "skill, run `mini job new`/`mini job start`, and wire a `/minimise:review-implementation` "
@@ -61,7 +62,8 @@ DEFAULT_PROMPTS = {
     ),
     "evaluate": (
         "You are an EVALUATOR in a refinement loop, judging ONE dimension only and "
-        "blind to the other evaluators. Assess the current state of the work against "
+        "blind to the other evaluators. You receive the goal and your rubric only, "
+        "with no journal or earlier verdicts. Assess the current state of the work against "
         "your rubric and emit findings (no scores). Emit 'pass' only if you actually "
         "ran the checks the rubric requires and they succeeded — intent is NOT "
         "verification. If the environment blocked a check you needed (permission "
@@ -214,18 +216,16 @@ class LoopEngine:
                  if cfg.evaluate.select == "failed" else {})
         pending = [d for d in cfg.evaluate.dimensions
                    if d.name not in done_dims and d.name not in carry]
-        if pending or carry:
-            context = self._journal_text(jpath)  # one snapshot -> every dim is blind to siblings
-            self._fan_out(loop_id, spec, jpath, pending, iteration, context)
-            if carry:
-                if self._stopped(loop_id):  # a stop during wave 1 must not start the re-check
-                    return JobStatus.STOPPED
-                self._settle_carried(loop_id, spec, jpath, iteration, carry, context)
+        self._fan_out(loop_id, spec, jpath, pending, iteration)
+        if carry:
+            if self._stopped(loop_id):  # a stop during wave 1 must not start the re-check
+                return JobStatus.STOPPED
+            self._settle_carried(loop_id, spec, jpath, iteration, carry)
 
         journal.write_commit_marker(jpath, iteration)  # journal-only, closes the iteration
         return None
 
-    def _fan_out(self, loop_id, spec, jpath, dims, iteration, context, recheck=False):
+    def _fan_out(self, loop_id, spec, jpath, dims, iteration, recheck=False):
         """Run one evaluator per dimension in parallel, capped by max_concurrent."""
         if not dims:
             return
@@ -233,7 +233,7 @@ class LoopEngine:
             futures = [
                 pool.submit(
                     self._run_step, loop_id, spec, jpath, "evaluate", dim, iteration,
-                    dimension=dim.name, rubric=dim.rubric, journal_context=context,
+                    dimension=dim.name, rubric=dim.rubric,
                     allow_edits=True,  # evaluate runs commands to validate the work
                     recheck=recheck,
                 )
@@ -242,7 +242,7 @@ class LoopEngine:
             for f in futures:
                 f.result()  # re-raises StepGateExhausted -> engine maps to FAILED
 
-    def _settle_carried(self, loop_id, spec, jpath, iteration, carry, context):
+    def _settle_carried(self, loop_id, spec, jpath, iteration, carry):
         """Re-check the carried passes when everything that ran passed; else record
         each as carried over (one journal record + one DB step).
 
@@ -253,9 +253,9 @@ class LoopEngine:
         done = _last_valid_evals(jpath, lambda it: it == iteration)
         todo = [d for d in dims if d.name in carry and d.name not in done]
         if all(_verdict(done.get(d.name)) == "pass" for d in dims if d.name not in carry):
-            # Never finish on an unchecked pass. Same snapshot as wave 1: the
+            # Never finish on an unchecked pass. Evaluators get no journal, so the
             # re-check stays blind to this iteration's verdicts.
-            self._fan_out(loop_id, spec, jpath, todo, iteration, context, recheck=True)
+            self._fan_out(loop_id, spec, jpath, todo, iteration, recheck=True)
             return
         for dim in todo:
             n = carry[dim.name]
@@ -284,12 +284,12 @@ class LoopEngine:
     # ---- one step + validation gate -----------------------------------------
 
     def _run_step(self, loop_id, spec, jpath, step_type, worker, iteration,
-                  dimension=None, rubric=None, allow_edits=False, journal_context=None,
+                  dimension=None, rubric=None, allow_edits=False,
                   recheck: bool = False) -> str:
         """Dispatch one step, gate its control line with bounded retries, return control."""
         system_prompt = self._resolve_worker_prompt(step_type, worker)
         harness = self._factory.for_worker(worker)
-        context = journal_context if journal_context is not None else self._journal_text(jpath)
+        context = self._step_context(jpath, step_type)
 
         step_id = new_id("step")
         step = LoopStep(
@@ -356,15 +356,31 @@ class LoopEngine:
         return prompt if prompt is not None else DEFAULT_PROMPTS[step_type]
 
     def _build_prompt(self, spec, step_type, context, rubric, feedback) -> str:
-        """The runtime turn: goal + journal history (+ dimension rubric) + retry feedback."""
-        parts = [f"Goal: {spec.goal}", ""]
-        parts.append("Journal so far:")
-        parts.append(context or "(empty — this is the first step)")
-        if step_type == "evaluate" and rubric:
+        """The runtime turn: goal + the step's context (_step_context) + retry feedback.
+
+        plan: the journal so far. implement: the current plan. evaluate: its
+        dimension rubric only — no journal, it judges the current state of the work.
+        """
+        parts = [f"Goal: {spec.goal}"]
+        if step_type == "plan":
+            parts += ["", "Journal so far:", context or "(empty — this is the first step)"]
+        elif step_type == "implement":
+            parts += ["", "Current plan:", context or "(none — the journal has no valid plan record)"]
+        elif rubric:
             parts += ["", f"Evaluate the current work against this dimension.\nRubric: {rubric}"]
         if feedback:
             parts.append(feedback)
         return "\n".join(parts)
+
+    def _step_context(self, jpath, step_type) -> str:
+        """The journal a step sees: plan all of it, implement the newest valid plan
+        record, evaluate none."""
+        if step_type == "plan":
+            return self._journal_text(jpath)
+        if step_type == "implement":
+            rec = _latest_valid_plan(journal.read(jpath))
+            return json.dumps(rec, ensure_ascii=False) if rec is not None else ""
+        return ""
 
     def _journal_text(self, jpath) -> str:
         # Raw characters: a \uXXXX escape costs ~4.5 tokens, the character itself ~0.5.
@@ -403,6 +419,18 @@ def _safe_control(rec) -> Optional[str]:
         return journal.parse_control(rec)
     except ValueError:
         return None
+
+
+def _latest_valid_plan(records) -> Optional[dict]:
+    """The newest plan record with a valid control line, else None.
+
+    _run_step journals a line before gating it, so a rejected planner reply
+    leaves a record too; only a valid one is the current plan (as resume).
+    """
+    for r in reversed(records):
+        if "marker" not in r and r.get("step_type") == "plan" and _safe_control(r) is not None:
+            return r
+    return None
 
 
 def _stamp(line, *, loop_id, step_id, iteration, step_type, dimension, plan_version) -> dict:

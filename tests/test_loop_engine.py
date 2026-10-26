@@ -19,7 +19,7 @@ from click.testing import CliRunner
 from minimise.agents.harness import AgentHarness, HarnessFactory, HarnessResult
 from minimise.models import JobStatus, LoopSpec, TaskStatus, Worker
 from minimise.orchestration import loop_journal as journal
-from minimise.orchestration.loop_engine import LoopEngine
+from minimise.orchestration.loop_engine import LoopEngine, _latest_valid_plan
 from minimise.personas import Persona
 from minimise.storage.database import Database
 from minimise.storage.loop_store import LoopStore
@@ -372,9 +372,74 @@ def test_prompt_carries_non_ascii_journal_text_raw(tmp_path):
     })
     status, db, store, lid = _run(tmp_path, h)
     assert status == JobStatus.COMPLETED
-    for key in [("implement", 1, None), ("evaluate", 1, "a"), ("plan", 2, None)]:
+    for key in [("implement", 1, None), ("plan", 2, None)]:
         assert "Глава первая" in h.prompts[key]
         assert "\\u" not in h.prompts[key]
+
+
+# --- each step gets only the journal it needs -----------------------------------
+
+def _two_iteration_prompts(tmp_path):
+    """Iteration 1 plans, implements and evaluates; iteration 2 re-plans (its
+    first reply is rejected), implements again and the planner stops in 3."""
+    h = _PromptStub({
+        ("plan", 1, None): ['{"control":"continue","summary":"PLAN-ONE"}'],
+        ("implement", 1, None): ['{"control":"done","summary":"IMPL-ONE"}'],
+        ("evaluate", 1, "a"): ['{"control":"done","verdict":"fail","findings":"FIND-A1"}'],
+        ("evaluate", 1, "b"): ['{"control":"done","verdict":"pass","findings":"FIND-B1"}'],
+        ("plan", 2, None): ['{"control":"bogus","summary":"PLAN-REJECTED"}',
+                            '{"control":"continue","summary":"PLAN-TWO"}'],
+        ("implement", 2, None): ['{"control":"done","summary":"IMPL-TWO"}'],
+        ("evaluate", 2, "a"): ['{"control":"done","verdict":"pass","findings":"FIND-A2"}'],
+        ("evaluate", 2, "b"): ['{"control":"done","verdict":"pass","findings":"FIND-B2"}'],
+        ("plan", 3, None): ['{"control":"done"}'],
+    })
+    status, db, store, lid = _run(tmp_path, h)
+    assert status == JobStatus.COMPLETED
+    return h
+
+
+def test_evaluator_prompt_holds_goal_and_rubric_and_no_journal(tmp_path):
+    h = _two_iteration_prompts(tmp_path)
+    for dim, rubric, other in (("a", "ra", "FIND-B1"), ("b", "rb", "FIND-A1")):
+        prompt = h.prompts[("evaluate", 2, dim)]
+        assert "Goal: make it better" in prompt
+        assert f"Rubric: {rubric}" in prompt
+        assert "Journal so far:" not in prompt
+        for absent in ("step_id", "PLAN-ONE", "PLAN-TWO", "IMPL-TWO", other):
+            assert absent not in prompt
+
+
+def test_implementer_prompt_holds_only_newest_valid_plan_record(tmp_path):
+    h = _two_iteration_prompts(tmp_path)
+    prompt = h.prompts[("implement", 2, None)]
+    assert "Goal: make it better" in prompt
+    assert "Current plan:" in prompt and "Journal so far:" not in prompt
+    assert "PLAN-TWO" in prompt
+    for absent in ("PLAN-ONE", "PLAN-REJECTED", "IMPL-ONE", "FIND-A1", "FIND-B1"):
+        assert absent not in prompt
+
+
+def test_planner_prompt_holds_the_whole_journal(tmp_path):
+    h = _two_iteration_prompts(tmp_path)
+    prompt = h.prompts[("plan", 2, None)]
+    assert "Journal so far:" in prompt
+    for present in ("PLAN-ONE", "IMPL-ONE", "FIND-A1", "FIND-B1"):
+        assert present in prompt
+
+
+def test_latest_valid_plan_skips_a_newer_invalid_plan_record():
+    recs = [
+        {"control": "continue", "summary": "old", "step_type": "plan", "iteration": 1},
+        {"control": "done", "step_type": "implement", "iteration": 1},
+        {"marker": "commit", "iteration": 1},
+        {"control": "continue", "summary": "valid", "step_type": "plan", "iteration": 2},
+        {"control": "done", "verdict": "pass", "step_type": "evaluate", "iteration": 2},
+        {"control": "bogus", "summary": "invalid", "step_type": "plan", "iteration": 2},
+        {"control": "failed", "summary": "no handover", "step_type": "plan", "iteration": 2},
+    ]
+    assert _latest_valid_plan(recs)["summary"] == "valid"
+    assert _latest_valid_plan([r for r in recs if r.get("step_type") != "plan"]) is None
 
 
 def test_select_omitted_dispatches_every_dimension_each_iteration(tmp_path):

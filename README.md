@@ -244,6 +244,15 @@ runs three steps against a shared journal:
 3. **evaluate** — scores the result across named dimensions (fanned out in parallel,
    capped by `max_concurrent`); findings feed forward into the next iteration's plan.
 
+Each step is a fresh agent that gets only the part of the journal it needs:
+
+- **plan** gets the goal and the whole journal: earlier plans, implementer
+  handovers and every evaluator's findings.
+- **implement** gets the goal and the current plan (the newest valid planner
+  record), not the journal.
+- **evaluate** gets the goal and its dimension's rubric only, with no journal and
+  no earlier verdicts. It judges the current state of the work against that rubric.
+
 Termination is the planner's call — it reads the evaluator findings and chooses to
 continue or stop. The built-in planner prompt treats a failing evaluate dimension
 as a default reason to `continue`; it only stops early if its summary states why
