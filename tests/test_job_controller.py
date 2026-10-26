@@ -210,6 +210,83 @@ def test_start_job_default_harness_keeps_claude(job_controller, plan_file):
     assert isinstance(harness, ClaudeCodeHarness)
 
 
+_LIMIT_REASON = "usage limit: resets 4:40am (America/Los_Angeles)"
+
+
+def _usage_limited():
+    from minimise.agents.harness import HarnessResult
+    return HarnessResult(
+        success=False, exit_reason="agent_error",
+        output="You've hit your session limit · resets 4:40am (America/Los_Angeles)",
+        usage_limit="resets 4:40am (America/Los_Angeles)",
+    )
+
+
+def _done():
+    from minimise.agents.harness import HarnessResult
+    return HarnessResult(success=True, output="done", exit_reason="success")
+
+
+class _ScriptedHarness:
+    """Stub agent: each run writes a file in the repo (its work), records the
+    prompt, and returns the next scripted HarnessResult."""
+
+    def __init__(self, *results):
+        self.results = list(results)
+        self.prompts = []
+
+    def wrap_prompt(self, prompt):
+        return prompt
+
+    def run(self, prompt, *, cwd, **kwargs):
+        self.prompts.append(prompt)
+        (Path(cwd) / f"work-{len(self.prompts)}.txt").write_text("work")
+        return self.results.pop(0)
+
+
+class _OneHarnessFactory:
+    def __init__(self, harness):
+        self.harness = harness
+
+    def for_task(self, task):
+        return self.harness
+
+    def resolve_prompt_for_task(self, task):
+        return None
+
+
+def test_usage_limit_stops_the_job_and_start_resumes_it(temp_db_dir, git_repo, plan_file):
+    """End to end through start_job: a usage limit in task 1 stops the job (not FAILED)
+    before task 2; starting again runs task 1 and task 2 and clears the reason."""
+    from minimise.orchestration.job_controller import RAN_STOPPED
+
+    db = Database(temp_db_dir / "test.db")
+    db.init_db()
+    harness = _ScriptedHarness(_usage_limited())
+    controller = JobController(db, GitTracker(git_repo), temp_db_dir / "jobs", git_repo,
+                               factory=_OneHarnessFactory(harness))
+    job_id = controller.create_job(plan_file).id
+
+    assert controller.start_job(job_id) == RAN_STOPPED
+    assert len(harness.prompts) == 1  # no retry
+    job = db.get_job(job_id)
+    assert job.status == JobStatus.STOPPED and job.stop_reason == _LIMIT_REASON
+    first, second = db.list_tasks_for_job(job_id)
+    assert first.status == TaskStatus.STOPPED
+    assert [(e.attempt, e.exit_reason) for e in db.list_executions_for_task(first.id)] == [(0, "usage_limit")]
+    assert second.status == TaskStatus.PENDING
+    assert db.list_executions_for_task(second.id) == []  # never started
+    assert (git_repo / "work-1.txt").exists()  # the interrupted work waits in the tree
+
+    harness.results = [_done(), _done()]  # the limit has reset
+    assert controller.start_job(job_id) == RAN_OK
+    assert "Task: Task 1\n" in harness.prompts[1] and "Task: Task 2\n" in harness.prompts[2]
+    job = db.get_job(job_id)
+    assert job.status == JobStatus.COMPLETED and job.stop_reason is None
+    assert [t.status for t in db.list_tasks_for_job(job_id)] == [TaskStatus.COMPLETED] * 2
+    assert [e.exit_reason for e in db.list_executions_for_task(first.id)] == ["success"]
+
+
 def test_cancel_job_basic(job_controller, plan_file):
     """Test cancel job cancels a job and its tasks."""
     created_job = job_controller.create_job(plan_file)

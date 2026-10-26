@@ -357,6 +357,11 @@ function startJobDetailPolling(jobId, intervalMs) {
             statusEl.textContent = job.status;
             statusEl.className = statusClass(job.status);
         }
+        const stopReason = document.getElementById("job-stop-reason");
+        if (stopReason) {
+            stopReason.hidden = !job.stop_reason;
+            stopReason.textContent = job.stop_reason ? `Stopped: ${job.stop_reason}` : "";
+        }
         jobClock.nowOffset = job.timeline.now_offset;
         jobClock.fetchedAt = performance.now();
         jobClock.live = job.status === "running";

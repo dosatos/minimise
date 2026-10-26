@@ -1,3 +1,4 @@
+import re
 import pytest
 import tempfile
 import subprocess
@@ -167,7 +168,7 @@ def test_task_completion_without_base_commit(temp_db_dir, db, git_repo):
 
     # Mock Claude Code to succeed
     def mock_invoke(harness, context):
-        return True, "Task completed", "success"
+        return True, "Task completed", "success", None
 
     executor._invoke_agent = mock_invoke
 
@@ -215,7 +216,7 @@ def test_task_commits_against_base_commit(temp_db_dir, db, git_repo):
         # Create a change in the repo
         test_file = git_repo / "changes.txt"
         test_file.write_text("changes made by task")
-        return True, "Changes made", "success"
+        return True, "Changes made", "success", None
 
     executor._invoke_agent = mock_invoke
 
@@ -267,7 +268,7 @@ def test_task_commit_message_format(temp_db_dir, db, git_repo):
     def mock_invoke(harness, context):
         test_file = git_repo / "fix.txt"
         test_file.write_text("fixed")
-        return True, "Fixed", "success"
+        return True, "Fixed", "success", None
 
     executor._invoke_agent = mock_invoke
 
@@ -315,7 +316,7 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, db, git_repo):
     def mock_invoke_task1(harness, context):
         test_file = git_repo / "file1.txt"
         test_file.write_text("task1 content")
-        return True, "Task 1 done", "success"
+        return True, "Task 1 done", "success", None
 
     executor._invoke_agent = mock_invoke_task1
 
@@ -341,7 +342,7 @@ def test_task_diff_excludes_prior_task_changes(temp_db_dir, db, git_repo):
     def mock_invoke_task2(harness, context):
         test_file = git_repo / "file2.txt"
         test_file.write_text("task2 content")
-        return True, "Task 2 done", "success"
+        return True, "Task 2 done", "success", None
 
     executor._invoke_agent = mock_invoke_task2
 
@@ -384,8 +385,8 @@ def test_failed_attempt_handover_injected_into_retry(temp_db_dir, db, git_repo):
         seen_plan_context.append((context["plan_name"], context["plan_briefing"]))
         # Fail first attempt, succeed second.
         if len(seen_handovers) == 1:
-            return False, "boom: missing import", "agent_error"
-        return True, "ok", "success"
+            return False, "boom: missing import", "agent_error", None
+        return True, "ok", "success", None
 
     executor._invoke_agent = mock_invoke
     success, _ = executor.execute_task(
@@ -427,7 +428,7 @@ def test_retry_reads_prior_attempt_agent_written_handoff(temp_db_dir, db, git_re
         seen.append(context["handover"])
         # Each attempt writes its own handoff file.
         Path(context["handoff_path"]).write_text(f"HANDOFF-{len(seen) - 1}")
-        return (False, "err", "agent_error") if len(seen) == 1 else (True, "ok", "success")
+        return (False, "err", "agent_error", None) if len(seen) == 1 else (True, "ok", "success", None)
 
     executor._invoke_agent = mock_invoke
     success, _ = executor.execute_task(task, job_id, "ORIG")
@@ -454,7 +455,7 @@ def test_missing_handoff_returns_autogen_fallback(temp_db_dir, db, git_repo):
     next_task = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
                      name="NEXT_TASK_NAME", description="nd", status=TaskStatus.PENDING)
 
-    executor._invoke_agent = lambda harness, context: (True, "did the work", "success")
+    executor._invoke_agent = lambda harness, context: (True, "did the work", "success", None)
     success, handover = executor.execute_task(task, job_id, "", next_task=next_task)
 
     assert success
@@ -482,7 +483,7 @@ def test_three_attempts_leave_three_handoff_files(temp_db_dir, db, git_repo):
     def mock_invoke(harness, context):
         calls.append(1)
         Path(context["handoff_path"]).write_text(f"h{len(calls) - 1}")
-        return (False, "x", "agent_error") if len(calls) < 3 else (True, "ok", "success")
+        return (False, "x", "agent_error", None) if len(calls) < 3 else (True, "ok", "success", None)
 
     executor._invoke_agent = mock_invoke
     success, _ = executor.execute_task(task, job_id, "")
@@ -510,7 +511,7 @@ def test_last_task_persists_handoff_when_agent_wrote_none(temp_db_dir, db, git_r
     db.create_task(task)
 
     # Agent succeeds but writes NO handoff file, and there is no next_task.
-    executor._invoke_agent = lambda harness, context: (True, "did the work", "success")
+    executor._invoke_agent = lambda harness, context: (True, "did the work", "success", None)
     success, _ = executor.execute_task(task, job_id, "", next_task=None)
 
     assert success
@@ -538,10 +539,10 @@ def test_executions_recorded_across_retry(temp_db_dir, db, git_repo):
     def mock_invoke(harness, context):
         calls.append(1)
         if len(calls) == 1:
-            return False, "boom", "agent_error"
+            return False, "boom", "agent_error", None
         # Second attempt makes a real change so a commit (and SHA) is produced.
         (git_repo / "out.txt").write_text("done by retry")
-        return True, "ok", "success"
+        return True, "ok", "success", None
 
     executor._invoke_agent = mock_invoke
     success, _ = executor.execute_task(task, job_id, "")
@@ -623,13 +624,88 @@ def test_no_hooks_records_only_attempts(temp_db_dir, db, git_repo):
     git_tracker = GitTracker(git_repo)
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
     job_id, task = _setup_job_and_task(db, git_tracker)
-    executor._invoke_agent = lambda harness, context: (True, "ok", "success")
+    executor._invoke_agent = lambda harness, context: (True, "ok", "success", None)
 
     executor.execute_task(task, job_id, "")
 
     types = {e.execution_type for e in db.list_executions_for_job(job_id)}
     assert "pre_task" not in types
     assert "post_task" not in types
+
+
+_LIMIT_MESSAGE = "You've hit your session limit · resets 4:40am (America/Los_Angeles)"
+_LIMIT_REASON = "usage limit: resets 4:40am (America/Los_Angeles)"
+
+
+def _limited(success=False, reset="resets 4:40am (America/Los_Angeles)"):
+    """The HarnessResult the Claude harness returns when the agent hits its usage limit."""
+    return HarnessResult(success=success, output=_LIMIT_MESSAGE,
+                         exit_reason="success" if success else "agent_error", usage_limit=reset)
+
+
+@pytest.mark.parametrize("agent_success", [False, True])
+def test_usage_limit_stops_the_task_and_job_without_a_retry(temp_db_dir, db, git_repo, agent_success):
+    """A usage-limit reply spends no retry and runs no hook, even if the agent exited 0:
+    the task and the job end STOPPED with the reason, and JobStopped ends the run."""
+    from minimise.models import JobStatus
+    from minimise.orchestration.task_executor import JobStopped
+
+    git_tracker = GitTracker(git_repo)
+    fake = Mock(spec=AgentHarness)
+    fake.wrap_prompt.side_effect = lambda p: p
+    fake.run.return_value = _limited(success=agent_success)
+    store = JobStore(db, temp_db_dir)
+    executor = TaskExecutor(store, git_tracker, factory=_FixedHarnessFactory(fake))
+    job_id, task = _setup_job_and_task(db, git_tracker)
+    db.update_job_status(job_id, JobStatus.RUNNING)
+    (git_repo / "partial.txt").write_text("half done")  # the attempt's work so far
+    verified = []
+
+    with pytest.raises(JobStopped, match=re.escape(_LIMIT_REASON)):
+        executor.execute_task(task, job_id, "", verify=lambda attempt: verified.append(attempt) or ("ok", ""))
+
+    assert fake.run.call_count == 1  # not retried at once
+    assert verified == []            # no post_task hook on a limited attempt
+    stopped_task = db.get_task(task.id)
+    assert stopped_task.status == TaskStatus.STOPPED and stopped_task.retries == 0
+    assert [(e.attempt, e.status, e.exit_reason) for e in db.list_executions_for_task(task.id)] == [
+        (0, TaskStatus.STOPPED, "usage_limit"),
+    ]
+    job = db.get_job(job_id)
+    assert job.status == JobStatus.STOPPED and job.stop_reason == _LIMIT_REASON
+    # Nothing committed or stashed: the resumed task picks the work up from the tree.
+    assert git_tracker.get_current_commit() == task.base_commit
+    assert (git_repo / "partial.txt").read_text() == "half done"
+    log = store.job_log_path(job_id).read_text()
+    assert f"Stopped: {_LIMIT_REASON}. Resume with: mini job start {job_id}" in log
+
+
+def test_usage_limit_on_a_retry_stops_at_once(temp_db_dir, db, git_repo):
+    """A limit after an ordinary failed attempt stops right there; no retries left are spent."""
+    from minimise.models import JobStatus
+    from minimise.orchestration.task_executor import JobStopped
+
+    git_tracker = GitTracker(git_repo)
+    fake = Mock(spec=AgentHarness)
+    fake.wrap_prompt.side_effect = lambda p: p
+    fake.run.side_effect = [
+        HarnessResult(success=False, output="boom", exit_reason="agent_error"),
+        _limited(reset=""),  # no reset time in the message
+        HarnessResult(success=True, output="ok", exit_reason="success"),
+    ]
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, factory=_FixedHarnessFactory(fake))
+    job_id, task = _setup_job_and_task(db, git_tracker)
+
+    with pytest.raises(JobStopped, match="^usage limit$"):
+        executor.execute_task(task, job_id, "")
+
+    assert fake.run.call_count == 2
+    assert [(e.attempt, e.status, e.exit_reason) for e in db.list_executions_for_task(task.id)] == [
+        (0, TaskStatus.FAILED, "agent_error"), (1, TaskStatus.STOPPED, "usage_limit"),
+    ]
+    assert db.get_task(task.id).status == TaskStatus.STOPPED
+    job = db.get_job(job_id)
+    assert job.status == JobStatus.STOPPED and job.stop_reason == "usage limit"
 
 
 def test_execution_completed_at_is_agent_finish_not_lifecycle_end(temp_db_dir, db, git_repo):
@@ -641,7 +717,7 @@ def test_execution_completed_at_is_agent_finish_not_lifecycle_end(temp_db_dir, d
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
     job_id, task = _setup_job_and_task(db, git_tracker)
 
-    executor._invoke_agent = lambda harness, context: (True, "ok", "success")
+    executor._invoke_agent = lambda harness, context: (True, "ok", "success", None)
 
     # A gating post_task hook that burns wall-clock time. The Execution window
     # must NOT include it; the task-row's completed_at (stamped after) must.
@@ -664,7 +740,7 @@ def test_hook_retry_attempt_is_not_recorded_as_success(temp_db_dir, db, git_repo
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
     job_id, task = _setup_job_and_task(db, git_tracker)
 
-    executor._invoke_agent = lambda harness, context: (True, "ok", "success")
+    executor._invoke_agent = lambda harness, context: (True, "ok", "success", None)
     verify = lambda attempt: ("retry", "findings") if attempt == 0 else ("fail", "nope")
 
     success, _ = executor.execute_task(task, job_id, "", verify=verify)
@@ -717,11 +793,12 @@ def test_invoke_delegates_to_harness_and_propagates_success(temp_db_dir, db, git
         "task_goal": "A working widget",
         "handover": "prior context",
     }
-    success, output, exit_reason = executor._invoke_agent(fake, context)
+    success, output, exit_reason, usage_limit = executor._invoke_agent(fake, context)
 
     assert success is True
     assert output == "agent did the work"
     assert exit_reason == "success"
+    assert usage_limit is None
 
     # harness.run called once with allow_edits=True and cwd at the repo root.
     fake.run.assert_called_once()
@@ -767,7 +844,7 @@ def test_invoke_failure_returns_error_when_present(temp_db_dir, db, git_repo):
     )
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, factory=_FixedHarnessFactory(fake))
 
-    success, output, exit_reason = executor._invoke_agent(fake, {"task_name": "T", "task_description": "D"})
+    success, output, exit_reason, usage_limit = executor._invoke_agent(fake, {"task_name": "T", "task_description": "D"})
 
     assert success is False
     assert output == "boom: it failed"
@@ -781,10 +858,23 @@ def test_invoke_failure_falls_back_to_output_when_no_error(temp_db_dir, db, git_
     fake.run.return_value = HarnessResult(success=False, output="just stdout", error=None)
     executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, factory=_FixedHarnessFactory(fake))
 
-    success, output, exit_reason = executor._invoke_agent(fake, {"task_name": "T", "task_description": "D"})
+    success, output, exit_reason, usage_limit = executor._invoke_agent(fake, {"task_name": "T", "task_description": "D"})
 
     assert success is False
     assert output == "just stdout"
+
+
+def test_invoke_returns_the_harness_usage_limit(temp_db_dir, db, git_repo):
+    """_invoke_agent hands HarnessResult.usage_limit back as its fourth value."""
+    git_tracker = GitTracker(git_repo)
+    fake = Mock(spec=AgentHarness)
+    fake.run.return_value = _limited()
+    fake.wrap_prompt.side_effect = lambda p: p
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker, factory=_FixedHarnessFactory(fake))
+
+    success, output, exit_reason, usage_limit = executor._invoke_agent(fake, {"task_name": "T", "task_description": "D"})
+
+    assert (success, output, usage_limit) == (False, _LIMIT_MESSAGE, "resets 4:40am (America/Los_Angeles)")
 
 
 def test_execute_task_passes_job_log_path_to_harness(temp_db_dir, db, git_repo):
@@ -882,7 +972,7 @@ def test_execute_task_step_marks_retry_attempt(temp_db_dir, db, git_repo):
     def mock_invoke(harness, context):
         seen_steps.append(context["log_fields"]["step"])
         calls["n"] += 1
-        return (calls["n"] > 1), ("boom" if calls["n"] == 1 else "ok"), "agent_error"
+        return (calls["n"] > 1), ("boom" if calls["n"] == 1 else "ok"), "agent_error", None
 
     executor._invoke_agent = mock_invoke
     executor.execute_task(task, job_id, "")
@@ -954,7 +1044,7 @@ def test_failed_task_stashes_uncommitted_work(temp_db_dir, db, git_repo):
         (git_repo / "test.txt").write_text("edited by agent")   # tracked
         (git_repo / "new_pkg").mkdir(exist_ok=True)
         (git_repo / "new_pkg" / "mod.py").write_text("untracked work")
-        return False, "boom", "agent_error"
+        return False, "boom", "agent_error", None
 
     original = executor._invoke_agent
     executor._invoke_agent = mock_invoke

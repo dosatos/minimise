@@ -3,7 +3,8 @@
 Pure orchestration: run plan hooks, execute each task in order while flowing
 a handover report to the next, and report success. It touches no storage —
 JobController loads the job/plan and marks RUNNING/COMPLETED/FAILED around
-this call; per-task persistence lives in TaskExecutor.
+this call; per-task persistence lives in TaskExecutor. A task that hits the
+agent's usage limit raises JobStopped, which ends the run before the next task.
 """
 
 from minimise.models import Job, Plan, TaskStatus

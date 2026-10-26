@@ -177,6 +177,19 @@ class JobStore:
                 completed_at=datetime.utcnow(), conn=conn,
             )
 
+    def mark_task_usage_limited(self, task: Task, stop_reason: str, ended_at: Optional[datetime] = None) -> None:
+        """The agent hit its usage limit: close the attempt as "usage_limit", stop the
+        task (resumable, as `mini job stop` leaves it) and stop its job with the reason."""
+        with self._close_attempt(task, task.retries, TaskStatus.STOPPED, ended_at=ended_at, exit_reason="usage_limit") as conn:
+            self.db.update_task_status(
+                task.id, TaskStatus.STOPPED, retries=task.retries,
+                completed_at=datetime.utcnow(), conn=conn,
+            )
+            self.db.update_job_status(
+                task.job_id, JobStatus.STOPPED, completed_at=datetime.utcnow(),
+                stop_reason=stop_reason, conn=conn,
+            )
+
     @contextmanager
     def _close_attempt(self, task: Task, attempt: int, status: TaskStatus, ended_at: Optional[datetime] = None, **exec_fields):
         """Run the caller's task-status write in a txn, then close the attempt's

@@ -5,6 +5,7 @@ from minimise.storage.git_tracker import GitTracker
 from minimise.storage.job_store import JobStore
 from minimise.orchestration.handover_manager import HandoverManager
 from minimise.logging.backend import JsonlLogBackend
+from minimise.agents.harness import usage_limit_reason
 
 
 def render_task_prompt(
@@ -53,6 +54,11 @@ Context from previous tasks:
 Execute this task by modifying the codebase as needed. When done, write a summary of what you implemented.{handoff_section}"""
 
 
+class JobStopped(Exception):
+    """A task stopped its job on its own: the agent hit its usage limit. The task
+    and the job are already STOPPED, with the reason; `mini job start` resumes."""
+
+
 class TaskExecutor:
     """Executes individual tasks with retry logic. Hooks run in JobExecutor."""
 
@@ -91,6 +97,10 @@ class TaskExecutor:
         a marked fallback when the agent wrote nothing). Plan name/briefing stay
         fixed while that handover evolves. Hooks run in JobExecutor (via
         HookExecutor), not here.
+
+        Raises JobStopped when the agent hits its usage limit: that attempt is
+        no failure, so it spends no retry and runs no hook, and its work stays
+        in the tree for the resumed task.
         """
         if not self.store.load(job_id):
             return False, f"Job {job_id} not found"
@@ -135,7 +145,7 @@ class TaskExecutor:
             )
             handoff_path = self.store.handoff_path(job_id, task.id, attempt)
             harness = self._factory.for_task(task)
-            success, output, exit_reason = self._invoke_agent(harness, {
+            success, output, exit_reason, usage_limit = self._invoke_agent(harness, {
                 "handover": attempt_handover,
                 "plan_name": plan_name,
                 "plan_briefing": plan_briefing,
@@ -155,6 +165,15 @@ class TaskExecutor:
             })
             agent_end = datetime.utcnow()  # honest end of the attempt's work, before gating hook
             final_output = output
+
+            if usage_limit is not None:
+                reason = usage_limit_reason(usage_limit)
+                log_backend.record(
+                    str(job_log_path), {"type": "task", "step": _step_label(attempt)},
+                    f"Stopped: {reason}. Resume with: mini job start {job_id}", level="warning",
+                )
+                self.store.mark_task_usage_limited(task, reason, ended_at=agent_end)
+                raise JobStopped(reason)
 
             if success:
                 # verify (post_task hooks) gates the commit. None => today's behavior.
@@ -238,7 +257,7 @@ class TaskExecutor:
             return f"(agent-written handoff)\n\n{content}"
         return f"WARNING auto-generated from diff - not reviewed\n\n{fallback()}"
 
-    def _invoke_agent(self, harness, context: dict) -> tuple[bool, str, str]:
+    def _invoke_agent(self, harness, context: dict) -> tuple[bool, str, str, Optional[str]]:
         """
         Delegate to the injected agent harness.
 
@@ -252,7 +271,8 @@ class TaskExecutor:
             context: Task fields, stable plan context, and evolving handover.
 
         Returns:
-            (success, output, exit_reason)
+            (success, output, exit_reason, usage_limit) — usage_limit is
+            HarnessResult.usage_limit: None unless the agent hit its usage limit.
         """
         task_name = context.get("task_name", "Task")
         task_description = context.get("task_description", "")
@@ -289,4 +309,4 @@ class TaskExecutor:
         )
         return result.success, (
             result.output if result.success else (result.error or result.output)
-        ), result.exit_reason
+        ), result.exit_reason, result.usage_limit

@@ -10,6 +10,7 @@ from typing import Optional
 import click
 import pydantic
 import yaml
+from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
@@ -352,6 +353,12 @@ def job_run(job_id: str, harness: str | None, model: str | None):
         if outcome == controller.RAN_FAILED:
             console.print(f"[red]Error: Job failed[/red]")
             raise SystemExit(1)
+        if outcome == controller.RAN_STOPPED:  # a usage limit: a pause, not a failure
+            stop_reason = job_controller.store.load(job_id).stop_reason
+            console.print(f"[yellow]Job stopped: {escape(stop_reason)}[/yellow]" if stop_reason
+                          else "[yellow]Job stopped[/yellow]")
+            console.print(f"[dim]Resume with: mini job start {job_id[:8]}[/dim]")
+            return
         if outcome == controller.BACKED_OFF:
             console.print(f"[yellow]Job already running (pid {job_obj.pid})[/yellow]")
             return
@@ -506,6 +513,7 @@ def job_status(job_id: str, format: str):
                 "id": job_obj.id,
                 "name": job_obj.name,
                 "status": job_obj.status.value,
+                "stop_reason": job_obj.stop_reason,
                 "created_at": job_obj.created_at.isoformat() if job_obj.created_at else None,
                 "started_at": job_obj.started_at.isoformat() if job_obj.started_at else None,
                 "completed_at": job_obj.completed_at.isoformat() if job_obj.completed_at else None,
@@ -523,6 +531,8 @@ def job_status(job_id: str, format: str):
             console.print(f"[bold]ID:[/bold] {job_obj.id}")
             console.print(f"[bold]Name:[/bold] {job_obj.name}")
             console.print(f"[bold]Status:[/bold] {job_obj.status.value}")
+            if job_obj.stop_reason:
+                console.print(f"[bold]Stopped:[/bold] {escape(job_obj.stop_reason)}")
             console.print(f"[bold]Estimated Duration:[/bold] {est_total} min")
             if job_obj.started_at and job_obj.completed_at:
                 elapsed = (job_obj.completed_at - job_obj.started_at).total_seconds()

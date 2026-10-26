@@ -584,3 +584,25 @@ def test_cors_enabled(api_server):
         response = client.get("/jobs")
         # Check for CORS headers
         assert "Access-Control-Allow-Origin" in response.headers or response.status_code == 200
+
+
+def test_job_page_and_api_show_the_usage_limit_stop_reason(client, mock_job_controller, db):
+    """A job a usage limit stopped carries stop_reason in the job API and shows it on its page."""
+    job = mock_job_controller.store.create(_make_plan_yaml(None), base_commit="abc123", plan_path="/tmp/plan.yaml")
+    reason = "usage limit: resets 4:40am (America/Los_Angeles)"
+    db.update_job_status(job.id, JobStatus.STOPPED, stop_reason=reason)
+
+    data = client.get(f"/jobs/{job.id}").get_json()
+    assert data["status"] == "stopped" and data["stop_reason"] == reason
+    assert client.get("/jobs").get_json()[0]["stop_reason"] == reason
+
+    html = client.get(f"/jobs/{job.id}/view").get_data(as_text=True)
+    assert f'<p id="job-stop-reason" class="detail-meta">Stopped: {reason}</p>' in html
+
+
+def test_job_page_hides_the_stop_reason_when_there_is_none(client, mock_job_controller):
+    job = mock_job_controller.store.create(_make_plan_yaml(None), base_commit="abc123", plan_path="/tmp/plan.yaml")
+
+    assert client.get(f"/jobs/{job.id}").get_json()["stop_reason"] is None
+    html = client.get(f"/jobs/{job.id}/view").get_data(as_text=True)
+    assert '<p id="job-stop-reason" class="detail-meta" hidden></p>' in html

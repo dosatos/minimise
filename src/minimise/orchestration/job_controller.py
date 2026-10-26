@@ -15,7 +15,7 @@ from minimise.models import Job, JobStatus, TaskStatus, Plan
 from minimise.storage.database import Database
 from minimise.storage.git_tracker import GitTracker
 from minimise.storage.job_store import JobStore, _pid_alive
-from minimise.orchestration.task_executor import TaskExecutor
+from minimise.orchestration.task_executor import JobStopped, TaskExecutor
 from minimise.orchestration.hook_executor import HookExecutor
 from minimise.orchestration.job_executor import JobExecutor
 from minimise.logging.backend import JsonlLogBackend
@@ -24,6 +24,7 @@ from minimise.utils import ensure_directory
 # start_job outcomes (a crashed RUNNING job arrives reconciled to FAILED).
 RAN_OK = "ran_ok"                 # executed to completion
 RAN_FAILED = "ran_failed"         # executed but the run failed
+RAN_STOPPED = "ran_stopped"       # a task stopped it (usage limit); resumable
 BACKED_OFF = "backed_off"         # a live RUNNING job — left alone
 ALREADY_COMPLETE = "already_complete"
 
@@ -82,8 +83,8 @@ class JobController:
 
     def start_job(self, job_id: str) -> Optional[str]:
         """Idempotent start: run/resume the job, or step aside. Returns an outcome
-        constant (RAN_OK / RAN_FAILED / BACKED_OFF / ALREADY_COMPLETE), or None if
-        the job doesn't exist.
+        constant (RAN_OK / RAN_FAILED / RAN_STOPPED / BACKED_OFF / ALREADY_COMPLETE),
+        or None if the job doesn't exist.
 
         store.load already reconciled the job, so a crashed RUNNING job arrives as
         FAILED; anything still RUNNING is genuinely live.
@@ -111,7 +112,11 @@ class JobController:
         self.store.mark_job_running(job_id)
         self.hook_executor.job_id = job_id
         self.hook_executor.log_path = self.store.job_log_path(job_id)
-        success = self.executor.execute(job, plan)
+        try:
+            success = self.executor.execute(job, plan)
+        except JobStopped:
+            # The task already stopped the job with its reason; FAILED would bury it.
+            return RAN_STOPPED
         if success:
             self.store.mark_job_completed(job_id)
         else:

@@ -74,6 +74,11 @@ def _usage_limit_reset(message: Optional[str]) -> Optional[str]:
     return resets.group(0).strip() if resets else ""
 
 
+def usage_limit_reason(reset: str) -> str:
+    """The stop_reason a loop or job stores for HarnessResult.usage_limit."""
+    return f"usage limit: {reset}" if reset else "usage limit"
+
+
 def _extract_text(event: dict) -> str:
     """Extract assistant text from a single stream-json event.
 

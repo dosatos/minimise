@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional
 
-from minimise.agents.harness import HarnessFactory
+from minimise.agents.harness import HarnessFactory, usage_limit_reason
 from minimise.logging.backend import JsonlLogBackend
 from minimise.models import JobStatus, LoopStep, TaskStatus
 from minimise.orchestration import loop_journal as journal
@@ -339,7 +339,7 @@ class LoopEngine:
                 log_filter=journal.strip_control_line,  # journal owns the control line; keep logs reasoning-only
             )
             if result.usage_limit is not None:
-                reason = f"usage limit: {result.usage_limit}" if result.usage_limit else "usage limit"
+                reason = usage_limit_reason(result.usage_limit)
                 self._stop_step(loop_id, step_id, stop_reason=reason)
                 raise LoopStopped(f"{step_type} step {step_id}: {reason}")
             line = journal.extract_last_json(result.output)

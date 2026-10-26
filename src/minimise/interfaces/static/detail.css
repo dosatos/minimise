@@ -56,6 +56,9 @@
 .detail-meta code {
     color: var(--fg);
 }
+/* Why the job stopped on its own (a usage limit); .detail-meta's flex beats [hidden]. */
+#job-stop-reason { color: var(--status-stopped); }
+#job-stop-reason[hidden] { display: none; }
 .detail-tab-list {
     display: flex;
     gap: 0;

@@ -626,6 +626,7 @@ the first non-complete task; on a live RUNNING job it backs off.
 |------|-----|---------|-----------|
 | PENDING | RUNNING | `mini job start <ID>` | Job in PENDING state |
 | RUNNING | STOPPED | `mini job stop <ID>` | Job must be in RUNNING state |
+| RUNNING | STOPPED | (automatic) | The agent hits its Claude usage limit (see [Usage Limits](#usage-limits)) |
 | STOPPED/FAILED | RUNNING | `mini job start <ID>` | Resumes from the first non-complete task |
 | RUNNING | RUNNING | `mini job start <ID>` | Backs off — a live job is left alone |
 | RUNNING | COMPLETED | (automatic) | All tasks complete successfully |
@@ -638,6 +639,27 @@ the first non-complete task; on a live RUNNING job it backs off.
 - **📊 Centralized visibility** — Monitor multiple jobs from one command
 - **🔁 Crash resilience** — An idempotent, reconcile-on-read start resumes a crashed job from the first non-complete task and backs off a live one
 - **✅ Fresh context** — Each task starts with clean environment
+
+## Usage Limits
+
+When Claude Code hits your subscription limit, its whole reply is one line, such as
+`You've hit your session limit · resets 4:40am (America/Los_Angeles)`. Loops and
+jobs treat that as a pause, not a failure:
+
+- No retries are spent on it, and the step or task isn't retried at once.
+- The loop or job ends `stopped`, not `failed`. `mini loop status` / `mini job status`
+  print the reason under the status line
+  (`Stopped: usage limit: resets 4:40am (America/Los_Angeles)`); `--format json`
+  carries it as `stop_reason`, and the web page shows it under the status. The
+  job task's attempt has the Reason `usage_limit`.
+- Nothing resumes on its own. After the limit resets, run `mini loop start <ID>` or
+  `mini job start <ID>`: it continues from the interrupted step or task, and
+  finished ones don't run again. Starting again clears the reason. A job leaves
+  the interrupted task's uncommitted work in the tree for the resumed run.
+
+Only the Claude harness detects the limit. Hooks that call `claude -p` (such as a
+`/minimise:review-implementation` post-hook) are shell commands, so a limit there
+counts as an ordinary hook failure.
 
 ## Architecture
 

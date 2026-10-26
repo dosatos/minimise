@@ -127,6 +127,7 @@ class Job:
             "id": self.id,
             "name": self.name,
             "status": self.status.value,
+            "stop_reason": self.stop_reason,
             "plan_path": self.plan_path,
             "base_commit": self.base_commit,
             "created_at": self.created_at.isoformat(),

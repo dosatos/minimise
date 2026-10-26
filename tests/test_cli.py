@@ -3061,6 +3061,103 @@ def test_loop_status_without_stop_reason_has_no_stopped_line(runner, mock_config
     assert "stop_reason" in data and data["stop_reason"] is None
 
 
+_TWO_TASK_PLAN = """
+name: Two Tasks
+tasks:
+  - id: t1
+    name: First
+    description: d1
+    goal: g1
+    estimated_duration_min: 5
+  - id: t2
+    name: Second
+    description: d2
+    goal: g2
+    estimated_duration_min: 5
+"""
+
+
+def test_job_usage_limit_stops_the_run_and_status_shows_why(
+    runner, mock_config_dir, isolated_repo, tmp_path, monkeypatch
+):
+    """`mini job _run` reports a usage limit as a stop (exit 0, not "Job failed"), and
+    `mini job status` text/JSON carry the reason and the attempt's usage_limit Reason."""
+    from minimise.agents.harness import ClaudeCodeHarness, HarnessResult
+
+    reason = "usage limit: resets 4:40am (America/Los_Angeles)"
+    plan = tmp_path / "plan.yaml"
+    plan.write_text(_TWO_TASK_PLAN)
+    monkeypatch.delenv("MINIMISE_HARNESS", raising=False)
+    monkeypatch.setattr("minimise.agents.harness.shutil.which", lambda name: f"/usr/local/bin/{name}")
+    calls = []
+
+    def limited(self, prompt, **kwargs):
+        calls.append(prompt)
+        return HarnessResult(
+            success=False, exit_reason="agent_error",
+            output="You've hit your session limit · resets 4:40am (America/Los_Angeles)",
+            usage_limit="resets 4:40am (America/Los_Angeles)",
+        )
+
+    monkeypatch.setattr(ClaudeCodeHarness, "run", limited)
+    new = runner.invoke(mini, ["job", "new", "--plan", str(plan)])
+    assert new.exit_code == 0, new.output
+    job_id = Database(mock_config_dir / "minimise.db").list_jobs(limit=1)[0].id
+
+    run = runner.invoke(mini, ["job", "_run", job_id])
+    assert run.exit_code == 0, run.output
+    assert f"Job stopped: {reason}" in run.output
+    assert "Job failed" not in run.output
+    assert len(calls) == 1
+
+    text = runner.invoke(mini, ["job", "status", job_id])
+    assert text.exit_code == 0, text.output
+    lines = text.output.splitlines()
+    status_at = lines.index("Status: stopped")
+    assert lines[status_at + 1] == f"Stopped: {reason}"
+
+    data = json.loads(runner.invoke(mini, ["job", "status", job_id, "--format", "json"]).output)
+    assert data["status"] == "stopped" and data["stop_reason"] == reason
+    assert [(t["status"], t["exit_reason"]) for t in data["tasks"]] == [
+        ("stopped", "usage_limit"), ("pending", None),
+    ]
+
+
+def test_job_status_reason_column_shows_usage_limit(mock_config_dir):
+    """The status table's Reason column names the limited attempt "usage_limit"."""
+    import io
+    from rich.console import Console
+    from minimise.interfaces.terminal_ui import render_execution_table_with_gantt
+    from minimise.storage.job_store import JobStore
+
+    db, job = _make_start_job(mock_config_dir, JobStatus.RUNNING)
+    store = JobStore(db, mock_config_dir / "jobs")
+    task = store.load(job.id).tasks[0]
+    store.mark_running(task, 0)
+    store.mark_task_usage_limited(task, "usage limit: resets 4:40am (America/Los_Angeles)")
+
+    job = store.load(job.id)
+    plan = store.load_plan(job.id)
+    table = render_execution_table_with_gantt(
+        job, job.tasks, now=datetime.utcnow(), executions=db.list_executions_for_job(job.id), plan=plan,
+    )
+    buf = io.StringIO()
+    Console(file=buf, width=250, legacy_windows=False).print(table)
+    row = next(line for line in buf.getvalue().splitlines() if "T1" in line)
+    assert "stopped" in row and "usage_limit" in row
+
+
+def test_job_status_without_stop_reason_has_no_stopped_line(runner, mock_config_dir):
+    _, job = _make_start_job(mock_config_dir, JobStatus.STOPPED)  # e.g. a manual `mini job stop`
+
+    text = runner.invoke(mini, ["job", "status", job.id])
+    assert text.exit_code == 0, text.output
+    assert "Stopped:" not in text.output
+
+    data = json.loads(runner.invoke(mini, ["job", "status", job.id, "--format", "json"]).output)
+    assert "stop_reason" in data and data["stop_reason"] is None
+
+
 def test_loop_stop_dead_pid_skips_kill(runner, mock_config_dir, monkeypatch):
     """`mini loop stop` on a RUNNING loop with a dead/None pid does not call os.kill."""
     from minimise.models import LoopSpec, JobStatus

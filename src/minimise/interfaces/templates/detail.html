@@ -11,6 +11,7 @@
         <h2>{{ job.name }}</h2>
         <span id="job-status" class="status status-{{ job.status.value }}">{{ job.status.value }}</span>
     </div>
+    <p id="job-stop-reason" class="detail-meta"{% if not job.stop_reason %} hidden{% endif %}>{% if job.stop_reason %}Stopped: {{ job.stop_reason }}{% endif %}</p>
     <p class="detail-meta">
         <code>{{ job.id }}</code>
         <span>Created <time datetime="{{ job.created_at.isoformat() }}Z" data-local-time>{{ job.created_at.strftime("%Y-%m-%d %H:%M") }} UTC</time></span>
