@@ -1,6 +1,6 @@
 ---
 name: loop
-description: Run open-ended iteration on one artifact as a minimise refinement loop — plan → implement → evaluate, repeating until the goal is met or max_iterations is hit.
+description: Run open-ended iteration on one artifact as a minimise refinement loop — plan → implement → evaluate, repeating until the goal is met or max_iterations is hit. Also the reference for the loop spec — read it before writing, patching, reviewing or explaining one, or answering how a loop or its evaluators work; `mini loop new --help` lists the fields only briefly. Fields: goal, max_iterations, plan_version, loop.plan / loop.implement (prompt | prompt_file | persona, harness, model), loop.evaluate.dimensions (name, rubric, prompt | prompt_file | persona), evaluate.select (all | failed), evaluate.max_concurrent.
 ---
 
 # Refining an artifact with a minimise loop

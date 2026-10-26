@@ -59,7 +59,27 @@ def loop():
     pass
 
 
-@loop.command(name="new")
+LOOP_SPEC_FIELDS = """\b
+Spec fields (YAML):
+  version: "1", name, goal (say when the loop should stop)
+  max_iterations: N
+  plan_version: N              bump it, then `mini loop patch`
+  loop.plan, loop.implement:   one of prompt | prompt_file | persona;
+                               harness, model
+  loop.evaluate:
+    select: all | failed       failed skips a dimension whose last verdict
+                               passed, and re-checks it before finishing
+    max_concurrent: N          default 4
+    dimensions:                each: name, rubric, and one of
+                               prompt | prompt_file | persona
+
+\b
+Full reference: the /minimise:loop skill and examples/example-loop.yaml.
+Built-in reviewer personas: `mini persona list`.
+"""
+
+
+@loop.command(name="new", epilog=LOOP_SPEC_FIELDS)
 @click.option("--plan", required=True, help="Path to loop spec YAML file")
 def loop_new(plan: str):
     """Register a loop from a spec file (does not execute)."""

@@ -90,6 +90,21 @@ def test_mini_job_help(runner):
     assert "logs" in result.output
 
 
+def test_new_commands_list_their_spec_fields(runner):
+    """`mini loop new --help` and `mini job new --help` name the spec fields,
+    so an agent that reads --help sees fields like evaluate.select."""
+    loop_help = runner.invoke(mini, ["loop", "new", "--help"])
+    assert loop_help.exit_code == 0
+    for field in ("max_iterations", "plan_version", "select: all | failed",
+                  "max_concurrent", "dimensions", "persona", "/minimise:loop"):
+        assert field in loop_help.output
+    job_help = runner.invoke(mini, ["job", "new", "--help"])
+    assert job_help.exit_code == 0
+    for field in ("briefing", "estimated_duration_min", "on_failure",
+                  "assignee", "/minimise:job"):
+        assert field in job_help.output
+
+
 def test_mini_view_help(runner):
     """Test that view commands have help text."""
     result = runner.invoke(mini, ["view", "--help"])

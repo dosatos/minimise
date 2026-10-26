@@ -211,7 +211,24 @@ def job():
     pass
 
 
-@job.command(name="new")
+PLAN_FIELDS = """\b
+Plan fields (YAML, under a top-level `plan:` key):
+  name, briefing               briefing: context every task reads
+  tasks:                       each: id, name, goal, description,
+                               estimated_duration_min (required), timeout_min,
+                               assignee (a persona) | harness + model,
+                               pre_hooks, post_hooks
+  pre_hooks, post_hooks:       plan-level gates; each: name, shell,
+                               estimated_duration_min (required), timeout_min,
+                               on_failure: fail | retry | skip
+
+\b
+Full reference: the /minimise:job skill (reference/plan-schema.md) and
+examples/example-plan.yaml.
+"""
+
+
+@job.command(name="new", epilog=PLAN_FIELDS)
 @click.option("--plan", required=True, help="Path to plan.yaml file")
 def job_new(plan: str):
     """Create a new job from a plan file (does not execute)."""

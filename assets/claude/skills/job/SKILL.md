@@ -1,6 +1,6 @@
 ---
 name: job
-description: Run multi-step work as a background minimise job — authors a plan YAML, wires the review gates, runs it, and reports what landed.
+description: Run multi-step work as a background minimise job — authors a plan YAML, wires the review gates, runs it, and reports what landed. Also the reference for the job plan (reference/plan-schema.md) — read it before writing, reviewing or explaining one; `mini job new --help` lists the fields only briefly. Fields: plan.name, plan.briefing, plan.tasks (id, name, goal, description, estimated_duration_min, timeout_min, assignee | harness + model, pre_hooks, post_hooks), plan-level pre_hooks / post_hooks (name, shell, estimated_duration_min, timeout_min, on_failure).
 ---
 
 # Running work as a minimise job
