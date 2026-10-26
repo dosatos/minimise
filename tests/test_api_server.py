@@ -608,48 +608,48 @@ def test_job_page_hides_the_stop_reason_when_there_is_none(client, mock_job_cont
     assert '<p id="job-stop-reason" class="detail-meta" hidden></p>' in html
 
 
-def test_job_api_timeline_carries_tokens_for_task_agents_only(client, mock_job_controller, db):
-    """Task rows carry their attempt's tokens, hook rows null; groups and the
-    timeline carry tokens_total over task agents only. Job.to_dict and
-    Task.to_dict (the list endpoint's shape) carry no tokens."""
+_TOKEN_PLAN = {
+    "name": "usage",
+    "pre_hooks": [{"name": "review-plan", "shell": "true", "estimated_duration_min": 1}],
+    "tasks": [
+        {"id": "t1", "name": "Build", "description": "d", "goal": "g",
+         "estimated_duration_min": 10,
+         "post_hooks": [{"name": "tests", "shell": "true", "estimated_duration_min": 1}]},
+        {"id": "t2", "name": "Docs", "description": "d", "goal": "g",
+         "estimated_duration_min": 5},
+        {"id": "t3", "name": "Ship", "description": "d", "goal": "g",
+         "estimated_duration_min": 5,
+         "pre_hooks": [{"name": "lint", "shell": "false", "estimated_duration_min": 1}]},
+    ],
+}
+
+
+def _token_job(mock_job_controller, db, seed_run, status=JobStatus.FAILED):
+    """Build failed attempt 0 and completed attempt 1, each with one run that
+    reported a different amount; Docs' run reported nothing; Ship's pre-task
+    hook failed, so no agent ran for it. Hooks write no runs."""
     from datetime import timedelta
-    from minimise.interfaces.formatting import tokens_total
     from minimise.models import Execution, TokenUsage
 
-    plan = Plan.model_validate({
-        "name": "usage",
-        "pre_hooks": [{"name": "review-plan", "shell": "true", "estimated_duration_min": 1}],
-        "tasks": [
-            {"id": "t1", "name": "Build", "description": "d", "goal": "g",
-             "estimated_duration_min": 10,
-             "post_hooks": [{"name": "tests", "shell": "true", "estimated_duration_min": 1}]},
-            {"id": "t2", "name": "Docs", "description": "d", "goal": "g",
-             "estimated_duration_min": 5},
-            {"id": "t3", "name": "Ship", "description": "d", "goal": "g",
-             "estimated_duration_min": 5,
-             "pre_hooks": [{"name": "lint", "shell": "false", "estimated_duration_min": 1}]},
-        ],
-    })
-    job = mock_job_controller.store.create(plan, base_commit="abc123", plan_path="/tmp/plan.yaml")
+    job = mock_job_controller.store.create(Plan.model_validate(_TOKEN_PLAN),
+                                           base_commit="abc123", plan_path="/tmp/plan.yaml")
     build, docs, ship = (task.id for task in job.tasks)
     t0 = datetime(2026, 1, 1, 12, 0, 0)
     at = lambda secs: t0 + timedelta(seconds=secs)
-    db.update_job_status(job.id, JobStatus.FAILED, started_at=t0, completed_at=at(100))
+    db.update_job_status(job.id, status, started_at=t0, completed_at=at(100))
     for ex in (
         Execution(job_id=job.id, task_id=None, attempt=0, execution_type="pre_plan",
                   hook_name="review-plan", status=TaskStatus.COMPLETED,
                   started_at=at(0), completed_at=at(5)),
         Execution(job_id=job.id, task_id=build, attempt=0, status=TaskStatus.FAILED,
-                  started_at=at(5), completed_at=at(20),
-                  tokens=TokenUsage(100, 2_000_000, 50_000, 1500, reasoning=7,
-                                    by_model={"claude-opus-5-5": {"input": 100}})),
+                  started_at=at(5), completed_at=at(20)),
         Execution(job_id=job.id, task_id=build, attempt=1, status=TaskStatus.COMPLETED,
-                  started_at=at(20), completed_at=at(40), tokens=TokenUsage(20, None, 0, 30)),
+                  started_at=at(20), completed_at=at(40)),
         Execution(job_id=job.id, task_id=build, attempt=1, execution_type="post_task",
                   hook_name="tests", status=TaskStatus.COMPLETED,
                   started_at=at(40), completed_at=at(50)),
         Execution(job_id=job.id, task_id=docs, attempt=0, status=TaskStatus.COMPLETED,
-                  started_at=at(50), completed_at=at(80)),  # ran, reported nothing
+                  started_at=at(50), completed_at=at(80)),
         Execution(job_id=job.id, task_id=ship, attempt=0, execution_type="pre_task",
                   hook_name="lint", status=TaskStatus.FAILED,
                   started_at=at(80), completed_at=at(90)),
@@ -657,58 +657,129 @@ def test_job_api_timeline_carries_tokens_for_task_agents_only(client, mock_job_c
         Execution(job_id=job.id, task_id=ship, attempt=0, status=TaskStatus.FAILED),
     ):
         db.save_execution(ex)
+    seed_run(db, TokenUsage(100, 2_000_000, 50_000, 1500, reasoning=7,
+                            by_model={"claude-opus-5-5": {"input": 100}}),
+             job_id=job.id, task_id=build, attempt=0)
+    seed_run(db, TokenUsage(20, None, 0, 30), job_id=job.id, task_id=build, attempt=1)
+    seed_run(db, None, job_id=job.id, task_id=docs, attempt=0)
+    return job
+
+
+def test_job_api_carries_tokens_for_task_agents_only(client, mock_job_controller, db, seed_run):
+    """Each task row carries its own attempt's tokens (timeline attempts are
+    1-based, agent_runs' 0-based), hook rows null; task groups carry their
+    task's tokens_total and the job's total is top-level, not in the timeline.
+    Job.to_dict and Task.to_dict (the list endpoint's shape) carry no tokens."""
+    from minimise.interfaces.formatting import tokens_total
+
+    job = _token_job(mock_job_controller, db, seed_run)
+    build = job.tasks[0].id
 
     response = client.get(f"/jobs/{job.id}")
-    timeline = response.get_json()["timeline"]
+    data = response.get_json()
+    timeline = data["timeline"]
 
-    rows = [(s["name"], s["kind"], s["tokens"]) for g in timeline["groups"] for s in g["steps"]]
+    rows = [(s["name"], s["kind"], s["attempt"], s["tokens"])
+            for g in timeline["groups"] for s in g["steps"]]
     assert rows == [
-        ("review-plan", "hook", None),
-        ("Build", "task", {"input": 100, "cache_read": 2_000_000, "cache_write": 50_000,
-                           "output": 1500, "total": 2_051_600}),
-        ("Build", "task", {"input": 20, "cache_read": None, "cache_write": 0,
-                           "output": 30, "total": 50}),
-        ("tests", "hook", None),
-        ("Docs", "task", None),
-        ("lint", "hook", None),
-        ("Ship", "task", None),
+        ("review-plan", "hook", None, None),
+        ("Build", "task", 1, {"input": 100, "cache_read": 2_000_000, "cache_write": 50_000,
+                              "output": 1500, "total": 2_051_600}),  # "try 1" = attempt 0
+        ("Build", "task", 2, {"input": 20, "cache_read": None, "cache_write": 0,
+                              "output": 30, "total": 50}),  # "try 2" = attempt 1
+        ("tests", "hook", None, None),
+        ("Docs", "task", 1, None),  # ran, reported nothing
+        ("lint", "hook", None, None),
+        ("Ship", "task", 1, {"input": 0, "cache_read": 0, "cache_write": 0,
+                             "output": 0, "total": 0}),  # no agent ran
     ]
     nothing = {"input": None, "cache_read": None, "cache_write": None, "output": None,
                "total": None}
     assert [(g["name"], g["tokens_total"]) for g in timeline["groups"]] == [
-        ("Before all tasks", {**nothing, "not_reported": 0}),  # hooks sum nothing
+        ("Before all tasks", None),  # hooks only: their tokens aren't captured
         ("Build", {"input": 120, "cache_read": 2_000_000, "cache_write": 50_000,
                    "output": 1530, "total": 2_051_650, "not_reported": 0}),
         ("Docs", {**nothing, "not_reported": 1}),
-        ("Ship", {**nothing, "not_reported": 0}),  # pre-task hook failed: no agent ran
+        ("Ship", {"input": 0, "cache_read": 0, "cache_write": 0, "output": 0,
+                  "total": 0, "not_reported": 0}),
     ]
-    assert timeline["tokens_total"] == {
+    assert "tokens_total" not in timeline
+    assert data["tokens_total"] == {
         "input": 120, "cache_read": 2_000_000, "cache_write": 50_000, "output": 1530,
         "total": 2_051_650, "not_reported": 1,
     }
     # the same rollup `mini job status --format json` prints
-    assert timeline["tokens_total"] == tokens_total(db.list_executions_for_job(job.id))
+    loaded = mock_job_controller.store.load(job.id)
+    assert data["tokens_total"] == tokens_total(loaded, db.list_agent_runs_for_job(job.id))
 
     body = response.get_data(as_text=True)
     for hidden in ("reasoning", "by_model", "claude-opus", "cost", "usd"):
         assert hidden not in body.lower(), hidden
-    data = response.get_json()
-    assert "tokens" not in data and "tokens_total" not in data
+    assert "tokens" not in data
     assert not any(key.startswith("tokens") for task in data["tasks"] for key in task)
-    loaded = mock_job_controller.store.load(job.id)
     assert "tokens" not in json.dumps(loaded.to_dict(), default=str)
     assert "tokens" not in client.get("/jobs").get_data(as_text=True)
     assert "tokens" not in client.get(f"/jobs/{job.id}/tasks/{build}").get_data(as_text=True)
 
 
-def test_job_api_unstarted_job_reports_no_tokens(client, mock_job_controller):
+def test_job_api_sums_a_resumed_attempt_and_counts_a_killed_run(client, mock_job_controller,
+                                                                db, seed_run):
+    from minimise.models import TokenUsage
+
+    job = _token_job(mock_job_controller, db, seed_run, status=JobStatus.STOPPED)
+    build, docs, _ = (task.id for task in job.tasks)
+    # The resume re-ran Build's attempt 0 and was then killed during Docs.
+    seed_run(db, TokenUsage(1, 0, 0, 0), job_id=job.id, task_id=build, attempt=0)
+    seed_run(db, ended=False, job_id=job.id, task_id=docs, attempt=0)
+
+    data = client.get(f"/jobs/{job.id}").get_json()
+
+    rows = {(s["name"], s["attempt"]): s["tokens"]
+            for g in data["timeline"]["groups"] for s in g["steps"] if s["kind"] == "task"}
+    assert rows[("Build", 1)]["input"] == 101  # both runs of attempt 0
+    assert rows[("Docs", 1)] is None
+    assert data["tokens_total"]["input"] == 121
+    assert data["tokens_total"]["not_reported"] == 2  # Docs' unreported run and the killed one
+
+
+@pytest.mark.parametrize("status, not_reported", [(JobStatus.STOPPED, 1),
+                                                  (JobStatus.RUNNING, 0)])
+def test_job_api_counts_an_unended_run_only_once_the_job_stopped(
+        client, mock_job_controller, db, seed_run, status, not_reported):
+    job = mock_job_controller.store.create(_make_plan_yaml(None), base_commit="abc123",
+                                           plan_path="/tmp/plan.yaml")
+    db.update_job_status(job.id, status, started_at=datetime(2026, 1, 1),
+                         pid=os.getpid())  # a live engine, so a RUNNING job stays running
+    seed_run(db, ended=False, job_id=job.id, task_id=job.tasks[0].id, attempt=0)
+
+    data = client.get(f"/jobs/{job.id}").get_json()
+
+    assert data["tokens_total"]["not_reported"] == not_reported
+    [group] = data["timeline"]["groups"]
+    assert group["tokens_total"] == data["tokens_total"]
+
+
+def test_job_api_untracked_job_has_no_token_figures(client, mock_job_controller, db, seed_run,
+                                                    untrack):
+    job = _token_job(mock_job_controller, db, seed_run)
+    untrack(db, job_id=job.id)
+
+    data = client.get(f"/jobs/{job.id}").get_json()
+
+    assert data["tokens_total"] is None
+    groups = data["timeline"]["groups"]
+    assert [g["tokens_total"] for g in groups] == [None] * len(groups)
+    assert [s["tokens"] for g in groups for s in g["steps"]] == [None] * 7
+
+
+def test_job_api_unstarted_job_reports_zero_tokens(client, mock_job_controller):
     job = mock_job_controller.store.create(_make_plan_yaml(None), base_commit="abc123",
                                            plan_path="/tmp/plan.yaml")
 
-    timeline = client.get(f"/jobs/{job.id}").get_json()["timeline"]
+    data = client.get(f"/jobs/{job.id}").get_json()
 
-    assert timeline["tokens_total"] == {"input": None, "cache_read": None, "cache_write": None,
-                                        "output": None, "total": None, "not_reported": 0}
-    [group] = timeline["groups"]
-    assert group["tokens_total"] == timeline["tokens_total"]
-    assert group["steps"][0]["tokens"] is None  # pending
+    zeros = {"input": 0, "cache_read": 0, "cache_write": 0, "output": 0, "total": 0}
+    assert data["tokens_total"] == {**zeros, "not_reported": 0}
+    [group] = data["timeline"]["groups"]
+    assert group["tokens_total"] == data["tokens_total"]
+    assert group["steps"][0]["tokens"] == zeros  # pending: no agent ran yet

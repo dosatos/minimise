@@ -1,5 +1,6 @@
 """Tests for terminal_ui module."""
 
+import itertools
 import pytest
 from datetime import datetime, timedelta
 from minimise.interfaces.terminal_ui import (
@@ -1624,9 +1625,11 @@ def test_headers_seed_column_now_only_while_running():
 
 
 # --- tokens: shared helpers (formatting.py), the stage-timing row, the Tokens column ---
+# Every figure is a sum over AgentRun rows (agent_runs), one per agent call.
 
 _RUN_KEYS = {"input", "cache_read", "cache_write", "output", "total"}
 _ROLLUP_KEYS = _RUN_KEYS | {"not_reported"}
+_ZEROS = dict.fromkeys(_RUN_KEYS, 0)
 
 
 def _usage(input=1, cache_read=2, cache_write=3, output=4, **extra):
@@ -1634,14 +1637,32 @@ def _usage(input=1, cache_read=2, cache_write=3, output=4, **extra):
     return TokenUsage(input, cache_read, cache_write, output, **extra)
 
 
-def _lstep(step_id, iteration, step_type, status=TaskStatus.COMPLETED, tokens=None,
+_run_ids = itertools.count()
+
+
+def _run(tokens=None, *, ended=True, step_id=None, task_id=None, attempt=None):
+    """One agent call; ended=False = it never returned (killed, or still running)."""
+    from minimise.models import AgentRun
+    t0 = datetime(2026, 1, 1)
+    return AgentRun(run_id=f"run-{next(_run_ids)}", job_id="job-001" if task_id else None,
+                    task_id=task_id, attempt=attempt,
+                    loop_id="loop-1" if step_id else None, step_id=step_id,
+                    started_at=t0, ended_at=t0 + timedelta(seconds=5) if ended else None,
+                    tokens=tokens)
+
+
+def _lstep(step_id, iteration, step_type, status=TaskStatus.COMPLETED,
            started_at=datetime(2026, 1, 1), dimension=None):
     from minimise.models import LoopStep
     return LoopStep(step_id=step_id, loop_id="loop-1", iteration=iteration,
                     step_type=step_type, dimension=dimension, status=status,
                     started_at=started_at,
-                    completed_at=started_at + timedelta(seconds=5) if started_at else None,
-                    tokens=tokens)
+                    completed_at=started_at + timedelta(seconds=5) if started_at else None)
+
+
+def _untracked(owner):
+    from dataclasses import replace
+    return replace(owner, tokens_untracked=True)
 
 
 @pytest.mark.parametrize("n, text", [
@@ -1662,133 +1683,168 @@ def test_tokens_json_has_the_four_buckets_and_total_only():
     assert tokens_json(None) is None
 
 
-def test_tokens_total_counts_only_finished_runs_an_agent_ran_in():
+# rollup rules
+
+def test_tokens_total_sums_the_ended_runs():
     from minimise.interfaces.formatting import tokens_total
-    runs = [
-        _lstep("done", 1, "plan", tokens=_usage(1, 2, 3, 4)),
-        _lstep("failed", 1, "implement", TaskStatus.FAILED, tokens=_usage(10, 20, 30, 40)),
-        _lstep("stopped-null", 1, "evaluate", TaskStatus.STOPPED),  # counted, not reported
-        _lstep("running", 2, "plan", TaskStatus.RUNNING, tokens=_usage(1000, 0, 0, 0)),
-        _lstep("pending", 2, "implement", TaskStatus.PENDING, started_at=None),
-    ]
-    rollup = tokens_total(runs)
+    rollup = tokens_total(_loop(), [_run(_usage(1, 2, 3, 4)), _run(_usage(10, 20, 30, 40))])
     assert rollup == {"input": 11, "cache_read": 22, "cache_write": 33, "output": 44,
-                      "total": 110, "not_reported": 1}
+                      "total": 110, "not_reported": 0}
     assert set(rollup) == _ROLLUP_KEYS
 
 
-def test_tokens_total_leaves_hooks_and_the_pre_task_hook_failure_row_out():
+def test_tokens_total_leaves_out_an_unended_run_while_its_owner_runs(sample_job):
+    # In progress: it hasn't returned yet and its loop or job is still running.
     from minimise.interfaces.formatting import tokens_total
-    t0 = datetime(2026, 1, 1)
-    attempt = Execution(task_id="t1", attempt=0, status=TaskStatus.COMPLETED,
-                        started_at=t0, completed_at=t0, tokens=_usage(5, 0, 0, 5))
-    hook = Execution(task_id="t1", attempt=0, execution_type="post_task", hook_name="tests",
-                     status=TaskStatus.COMPLETED, started_at=t0, completed_at=t0)
-    plan_hook = Execution(task_id=None, attempt=0, execution_type="pre_plan",
-                          hook_name="review-plan", status=TaskStatus.FAILED,
-                          started_at=t0, completed_at=t0)
-    pre_hook_failed = Execution(task_id="t2", attempt=0, status=TaskStatus.FAILED,
-                                completed_at=t0)  # job_executor: no agent ran, no start
-    rollup = tokens_total([attempt, hook, plan_hook, pre_hook_failed])
-    assert rollup == {"input": 5, "cache_read": 0, "cache_write": 0, "output": 5,
-                      "total": 10, "not_reported": 0}
+    runs = [_run(_usage(1, 2, 3, 4)), _run(ended=False)]
+    expected = {"input": 1, "cache_read": 2, "cache_write": 3, "output": 4,
+                "total": 10, "not_reported": 0}
+    assert tokens_total(_loop(JobStatus.RUNNING), runs) == expected
+    assert sample_job.status == JobStatus.RUNNING
+    assert tokens_total(sample_job, runs) == expected
 
 
-def test_tokens_total_bucket_null_in_every_run_stays_null():
+@pytest.mark.parametrize("status", [JobStatus.STOPPED, JobStatus.FAILED,
+                                    JobStatus.COMPLETED, JobStatus.PENDING])
+def test_tokens_total_counts_an_unended_run_of_a_stopped_owner_as_not_reported(status, sample_job):
+    # Killed or crashed: the call never returned and nothing will finish it.
+    from dataclasses import replace
     from minimise.interfaces.formatting import tokens_total
-    runs = [_lstep("a", 1, "plan", tokens=_usage(1, None, 3, 4)),
-            _lstep("b", 1, "implement", tokens=_usage(10, None, 30, 40))]
-    rollup = tokens_total(runs)
+    runs = [_run(_usage(1, 2, 3, 4)), _run(ended=False)]
+    expected = {"input": 1, "cache_read": 2, "cache_write": 3, "output": 4,
+                "total": 10, "not_reported": 1}
+    assert tokens_total(_loop(status), runs) == expected
+    assert tokens_total(replace(sample_job, status=status), runs) == expected
+
+
+def test_tokens_total_with_no_counted_runs_is_all_zero():
+    from minimise.interfaces.formatting import tokens_total
+    zero = {**_ZEROS, "not_reported": 0}
+    assert tokens_total(_loop(), []) == zero
+    assert tokens_total(_loop(), [_run(ended=False)]) == zero  # only an in-progress run
+
+
+def test_tokens_total_bucket_no_counted_run_reported_is_null():
+    from minimise.interfaces.formatting import tokens_total
+    rollup = tokens_total(_loop(), [_run(_usage(1, None, 3, 4)), _run(_usage(10, None, 30, 40)),
+                                    _run(None)])
     assert rollup["cache_read"] is None
-    assert (rollup["input"], rollup["total"]) == (11, 88)
-
-
-def test_tokens_total_is_always_an_object():
-    from minimise.interfaces.formatting import tokens_total
-    assert tokens_total([]) == dict.fromkeys(_RUN_KEYS) | {"not_reported": 0}
-    nothing = tokens_total([_lstep("a", 1, "plan"), _lstep("b", 1, "implement")])
+    assert (rollup["input"], rollup["total"], rollup["not_reported"]) == (11, 88, 1)
+    nothing = tokens_total(_loop(), [_run(None), _run(None)])
     assert nothing == dict.fromkeys(_RUN_KEYS) | {"not_reported": 2}
 
 
-def test_counted_loop_steps_drops_only_carried_over_passes():
-    from minimise.interfaces.formatting import counted_loop_steps
-    steps = [_lstep("plan", 2, "plan"),
-             _lstep("carried", 2, "evaluate", dimension="a"),
-             _lstep("ran", 2, "evaluate", dimension="b"),
-             _lstep("not-int", 2, "evaluate", dimension="c"),
-             _lstep("bool", 2, "evaluate", dimension="d")]
-    records = [
-        {"step_type": "evaluate", "step_id": "carried", "iteration": 2, "dimension": "a",
-         "verdict": "pass", "evaluated_in_iteration": 1},
-        {"step_type": "evaluate", "step_id": "ran", "iteration": 2, "dimension": "b",
-         "verdict": "pass"},
-        {"step_type": "evaluate", "step_id": "not-int", "iteration": 2, "dimension": "c",
-         "evaluated_in_iteration": "1"},
-        {"step_type": "evaluate", "step_id": "bool", "iteration": 2, "dimension": "d",
-         "evaluated_in_iteration": True},
-    ]
-    kept = [s.step_id for s in counted_loop_steps(steps, records)]
-    assert kept == ["plan", "ran", "not-int", "bool"]
+def test_untracked_owner_has_null_rollups_and_rows(sample_job):
+    from minimise.interfaces.formatting import row_tokens, tokens_total
+    runs = [_run(_usage(1, 2, 3, 4))]
+    for owner in (_untracked(_loop()), _untracked(sample_job)):
+        assert tokens_total(owner, runs) is None
+        assert tokens_total(owner, []) is None
+        assert row_tokens(owner, runs) is None
+        assert row_tokens(owner, []) is None
 
 
-def test_loop_step_json_has_exactly_six_keys():
+# row rules
+
+def test_row_tokens_with_no_runs_is_zeros():
+    # A carried-over pass, a pending row, the row a failing pre-task hook writes.
+    from minimise.interfaces.formatting import row_tokens
+    assert row_tokens(_loop(), []) == _ZEROS
+
+
+@pytest.mark.parametrize("status", [JobStatus.RUNNING, JobStatus.STOPPED])
+def test_row_tokens_with_an_unended_or_unreported_run_is_null(status):
+    from minimise.interfaces.formatting import row_tokens
+    done = _run(_usage(1, 2, 3, 4))
+    assert row_tokens(_loop(status), [done, _run(ended=False)]) is None
+    assert row_tokens(_loop(status), [done, _run(None)]) is None
+
+
+def test_row_tokens_sum_every_run_of_a_resumed_attempt():
+    from minimise.interfaces.formatting import row_tokens
+    runs = [_run(_usage(1, 2, 3, 4)), _run(_usage(10, 20, 30, 40))]
+    assert row_tokens(_loop(), runs) == {"input": 11, "cache_read": 22, "cache_write": 33,
+                                         "output": 44, "total": 110}
+
+
+def test_attempt_runs_match_the_0_based_attempt():
+    from minimise.interfaces.formatting import attempt_runs
+    first, second = _run(task_id="t1", attempt=0), _run(task_id="t1", attempt=1)
+    other = _run(task_id="t2", attempt=0)
+    runs = [first, second, other]
+    assert attempt_runs(runs, "t1", 0) == [first]
+    assert attempt_runs(runs, "t1", 1) == [second]
+    assert attempt_runs(runs, "t1", None) == []  # a task row with no attempt yet
+
+
+def test_loop_step_json_has_exactly_six_keys_and_its_runs_tokens():
     from minimise.interfaces.formatting import loop_step_json
-    step = _lstep("s1", 3, "evaluate", dimension="clarity",
-                  tokens=_usage(1, 2, 3, 4, reasoning=7, by_model={"m": {"input": 1}}))
-    assert loop_step_json(step) == {
+    step = _lstep("s1", 3, "evaluate", dimension="clarity")
+    runs = [_run(_usage(1, 2, 3, 4, reasoning=7, by_model={"m": {"input": 1}}), step_id="s1"),
+            _run(_usage(10, 0, 0, 0), step_id="s1"),  # a gate retry
+            _run(_usage(500, 0, 0, 0), step_id="other")]
+    assert loop_step_json(_loop(), step, runs) == {
         "step_id": "s1", "iteration": 3, "step_type": "evaluate", "dimension": "clarity",
         "status": "completed",
-        "tokens": {"input": 1, "cache_read": 2, "cache_write": 3, "output": 4, "total": 10},
+        "tokens": {"input": 11, "cache_read": 2, "cache_write": 3, "output": 4, "total": 20},
     }
-    assert loop_step_json(_lstep("s2", 1, "plan"))["tokens"] is None
+    assert loop_step_json(_loop(), _lstep("carried", 3, "evaluate"), runs)["tokens"] == _ZEROS
+    assert loop_step_json(_untracked(_loop()), step, runs)["tokens"] is None
 
 
 def test_tokens_summary_line():
     from minimise.interfaces.formatting import tokens_summary
     rollup = {"input": 120_400, "cache_read": 218_600_000, "cache_write": 21_600_000,
               "output": 2_800_000, "total": 243_120_400, "not_reported": 0}
-    assert tokens_summary(rollup, "step") == (
+    assert tokens_summary(rollup) == (
         "243.1M (input 120.4K · cache write 21.6M · cache read 218.6M · output 2.8M)")
-    assert tokens_summary({**rollup, "not_reported": 3}, "step").endswith(
-        "output 2.8M) (3 steps not reported)")
-    assert tokens_summary({**rollup, "not_reported": 1}, "run").endswith(
+    assert tokens_summary({**rollup, "not_reported": 2}).endswith(
+        "output 2.8M) (2 runs not reported)")
+    assert tokens_summary({**rollup, "not_reported": 1}).endswith(
         "output 2.8M) (1 run not reported)")
-    assert tokens_summary({**rollup, "cache_read": None}, "step") == (
+    assert tokens_summary({**rollup, "cache_read": None}) == (
         "243.1M (input 120.4K · cache write 21.6M · cache read — · output 2.8M)")
-    nothing = dict.fromkeys(_RUN_KEYS) | {"not_reported": 0}
-    assert tokens_summary(nothing, "step") == "—"
-    assert tokens_summary({**nothing, "not_reported": 2}, "run") == "— (2 runs not reported)"
+    assert tokens_summary({**_ZEROS, "not_reported": 0}) == "0"
+    nothing = dict.fromkeys(_RUN_KEYS) | {"not_reported": 2}
+    assert tokens_summary(nothing) == "— (2 runs not reported)"
+    assert tokens_summary(None) == "—"  # an untracked owner
 
 
 def test_stage_timing_tokens_row_per_iteration():
-    # Iteration 1: plan + implement reported; a carried-over pass (no tokens) is
-    # left out. Iteration 2: nothing reported -> "—". Iteration 3 (loop running):
-    # a RUNNING step's partial tokens aren't counted yet.
+    # Iteration 1: plan + a gate-retried implement add up; the carried-over pass
+    # ran no agent. Iteration 2: a run that reported nothing -> "—". Iteration 3
+    # (loop running): the in-progress run isn't counted yet. Iteration 4: no runs.
     from minimise.interfaces.terminal_ui import render_loop_stage_timing
     steps = [
-        _lstep("p1", 1, "plan", tokens=_usage(1_000, 2_000, 3_000, 4_000)),
-        _lstep("i1", 1, "implement", tokens=_usage(400, 0, 0, 0)),
+        _lstep("p1", 1, "plan"), _lstep("i1", 1, "implement"),
         _lstep("e1", 1, "evaluate", dimension="a"),
         _lstep("p2", 2, "plan"),
-        _lstep("p3", 3, "plan", tokens=_usage(5, 5, 5, 5)),
-        _lstep("i3", 3, "implement", TaskStatus.RUNNING, tokens=_usage(9_000, 0, 0, 0)),
+        _lstep("p3", 3, "plan"), _lstep("i3", 3, "implement", TaskStatus.RUNNING),
+        _lstep("p4", 4, "plan", TaskStatus.PENDING, started_at=None),
     ]
-    records = [{"step_type": "evaluate", "step_id": "e1", "iteration": 1, "dimension": "a",
-                "verdict": "pass", "evaluated_in_iteration": 0}]
-    table = render_loop_stage_timing(_loop(), steps, ["a"], records)
+    runs = [
+        _run(_usage(1_000, 2_000, 3_000, 4_000), step_id="p1"),
+        _run(_usage(300, 0, 0, 0), step_id="i1"), _run(_usage(100, 0, 0, 0), step_id="i1"),
+        _run(None, step_id="p2"),
+        _run(_usage(5, 5, 5, 5), step_id="p3"), _run(ended=False, step_id="i3"),
+    ]
+    table = render_loop_stage_timing(_loop(), steps, ["a"], runs)
     assert table.columns[0]._cells == ["plan", "implement", "eval", "iter total", "tokens"]
-    assert [col._cells[4] for col in table.columns[1:]] == ["10.4K", "—", "20"]
+    assert [col._cells[4] for col in table.columns[1:]] == ["10.4K", "—", "20", "0"]
+
+    untracked = render_loop_stage_timing(_untracked(_loop()), steps, ["a"], runs)
+    assert [col._cells[4] for col in untracked.columns[1:]] == ["—"] * 4
 
 
-def test_stage_timing_tokens_row_without_journal_records(base_time):
+def test_stage_timing_tokens_row_without_runs(base_time):
     from minimise.interfaces.terminal_ui import render_loop_stage_timing
-    table = render_loop_stage_timing(_loop(), [_lstep("p1", 1, "plan", tokens=_usage(1, 1, 1, 1))])
-    assert table.columns[1]._cells[4] == "4"
+    table = render_loop_stage_timing(_loop(), [_lstep("p1", 1, "plan")])
+    assert table.columns[1]._cells[4] == "0"
 
 
-def test_tokens_column_shows_attempt_totals_and_dashes_on_hooks(sample_job, base_time):
+def _tokens_plan():
     from minimise.models import Plan
-    plan = Plan.model_validate({
+    return Plan.model_validate({
         "name": "P",
         "pre_hooks": [{"name": "review-plan", "shell": "true", "estimated_duration_min": 1}],
         "tasks": [
@@ -1799,27 +1855,68 @@ def test_tokens_column_shows_attempt_totals_and_dashes_on_hooks(sample_job, base
              "estimated_duration_min": 3},
         ],
     })
+
+
+def _tokens_job_rows(t):
+    """Build ran attempts 0 and 1 (each with its own run, of different sizes);
+    Ship hasn't started."""
     tasks = [Task(id="task-1", job_id="job-001", name="Build", description="d",
                   estimated_duration_min=3, status=TaskStatus.COMPLETED),
              Task(id="task-2", job_id="job-001", name="Ship", description="d",
                   estimated_duration_min=3)]
-    t = base_time
     executions = [
         Execution(task_id=None, attempt=0, execution_type="pre_plan", hook_name="review-plan",
                   status=TaskStatus.COMPLETED, started_at=t, completed_at=t),
         Execution(task_id="task-1", attempt=0, status=TaskStatus.FAILED,
-                  started_at=t, completed_at=t),  # nothing reported
+                  started_at=t, completed_at=t),
         Execution(task_id="task-1", attempt=1, status=TaskStatus.COMPLETED, started_at=t,
-                  completed_at=t, tokens=_usage(2, 11_334, 18_110, 4)),
+                  completed_at=t),
         Execution(task_id="task-1", attempt=0, execution_type="post_task", hook_name="tests",
                   status=TaskStatus.COMPLETED, started_at=t, completed_at=t),
     ]
-    table = render_execution_table_with_gantt(sample_job, tasks, now=t, executions=executions,
-                                              plan=plan)
+    runs = [_run(_usage(500, 0, 0, 0), task_id="task-1", attempt=0),
+            _run(_usage(2, 11_334, 18_110, 4), task_id="task-1", attempt=1)]
+    return tasks, executions, runs
+
+
+def test_tokens_column_shows_each_attempts_own_tokens_and_dashes_on_hooks(sample_job, base_time):
+    # Timeline steps number attempts from 1, agent_runs from 0: "try 1" is attempt 0.
+    tasks, executions, runs = _tokens_job_rows(base_time)
+    table = render_execution_table_with_gantt(sample_job, tasks, now=base_time,
+                                              executions=executions, plan=_tokens_plan(),
+                                              runs=runs)
     assert table.columns[5].header == "Tokens"
     rows = dict(zip(table.columns[0]._cells, table.columns[5]._cells))
-    assert rows == {"review-plan": "—", "Build  · try 1": "—", "Build  · try 2": "29.4K",
-                    "tests": "—", "Ship": "—"}
+    assert rows == {"review-plan": "—", "Build  · try 1": "500", "Build  · try 2": "29.4K",
+                    "tests": "—", "Ship": "0"}
 
-    fallback = render_execution_table_with_gantt(sample_job, tasks, now=t, executions=executions)
-    assert fallback.columns[5]._cells == ["—", "—", "29.4K", "—", "—"]
+
+def test_tokens_column_fallback_path_shows_each_attempts_own_tokens(sample_job, base_time):
+    # No plan: rows come from executions, whose attempt is 0-based like agent_runs.
+    tasks, executions, runs = _tokens_job_rows(base_time)
+    table = render_execution_table_with_gantt(sample_job, tasks, now=base_time,
+                                              executions=executions, runs=runs)
+    rows = dict(zip(table.columns[0]._cells, table.columns[5]._cells))
+    assert rows == {"Pre-plan hook": "—", "Build  · try 1": "500", "Build  · try 2": "29.4K",
+                    "Post-task hook  · Build": "—", "Ship": "0"}
+
+
+def test_tokens_column_sums_a_resumed_attempt_and_dashes_an_unfinished_one(sample_job, base_time):
+    tasks, executions, runs = _tokens_job_rows(base_time)
+    runs = [_run(_usage(500, 0, 0, 0), task_id="task-1", attempt=0),
+            _run(_usage(700, 0, 0, 0), task_id="task-1", attempt=0),  # the resume re-ran it
+            _run(ended=False, task_id="task-1", attempt=1)]
+    table = render_execution_table_with_gantt(sample_job, tasks, now=base_time,
+                                              executions=executions, plan=_tokens_plan(),
+                                              runs=runs)
+    rows = dict(zip(table.columns[0]._cells, table.columns[5]._cells))
+    assert (rows["Build  · try 1"], rows["Build  · try 2"]) == ("1.2K", "—")
+
+
+def test_tokens_column_is_all_dashes_for_an_untracked_job(sample_job, base_time):
+    tasks, executions, runs = _tokens_job_rows(base_time)
+    job = _untracked(sample_job)
+    for plan in (_tokens_plan(), None):
+        table = render_execution_table_with_gantt(job, tasks, now=base_time,
+                                                  executions=executions, plan=plan, runs=runs)
+        assert set(table.columns[5]._cells) == {"—"}

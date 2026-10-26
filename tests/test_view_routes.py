@@ -1421,7 +1421,7 @@ def test_get_loop_api_includes_timeline_and_list_is_unchanged(client, api_server
                            "started_at", "completed_at", "elapsed"}
 
 
-def test_loop_api_steps_share_the_clis_step_shape(client, api_server, db):
+def test_loop_api_steps_share_the_clis_step_shape(client, api_server, db, seed_run):
     """The web's steps are loop_step_json (the shape `mini loop status --format json`
     prints) plus the web's own keys, so the two can't drift."""
     from minimise.interfaces.formatting import loop_step_json
@@ -1433,17 +1433,21 @@ def test_loop_api_steps_share_the_clis_step_shape(client, api_server, db):
     db.create_loop_step(LoopStep(
         step_id="step-plan", loop_id=loop.loop_id, iteration=1, step_type="plan",
         status=TaskStatus.COMPLETED, started_at=_at(0), completed_at=_at(2),
-        tokens=TokenUsage(1, 2, 3, 4, reasoning=5, by_model={"claude-opus-5-5": {"input": 1}}),
     ))
+    seed_run(db, TokenUsage(1, 2, 3, 4, reasoning=5, by_model={"claude-opus-5-5": {"input": 1}}),
+             loop_id=loop.loop_id, step_id="step-plan")
     db.create_loop_step(LoopStep(
         step_id="step-impl", loop_id=loop.loop_id, iteration=1, step_type="implement",
         status=TaskStatus.COMPLETED, started_at=_at(2), completed_at=_at(4),
     ))
+    seed_run(db, None, loop_id=loop.loop_id, step_id="step-impl")
 
     data = client.get(f"/api/loops/{loop.loop_id}").get_json()
 
+    loaded = api_server.loop_store.load(loop.loop_id)
+    runs = db.list_agent_runs_for_loop(loop.loop_id)
     for step, served in zip(db.list_loop_steps(loop.loop_id), data["steps"]):
-        assert loop_step_json(step).items() <= served.items()
+        assert loop_step_json(loaded, step, runs).items() <= served.items()
     assert data["steps"][0]["tokens"] == {"input": 1, "cache_read": 2, "cache_write": 3,
                                           "output": 4, "total": 10}
     assert data["steps"][1]["tokens"] is None
@@ -1873,10 +1877,11 @@ def _assert_no_hidden_token_fields(body):
         assert hidden not in body.lower(), hidden
 
 
-def test_loop_api_carries_tokens_per_step_iteration_and_loop(client, api_server, db):
+def test_loop_api_carries_tokens_per_step_iteration_and_loop(client, api_server, db, seed_run):
     """Every step has tokens; every iteration and the loop have tokens_total, in
-    the briefing's keys. A carried-over pass and a pending step aren't counted."""
-    from minimise.interfaces.formatting import counted_loop_steps, shown_loop_steps, tokens_total
+    the briefing's keys, summed over agent_runs. A gate retry's two runs add up
+    on their step; a carried-over pass and a pending step ran no agent: 0."""
+    from minimise.interfaces.formatting import tokens_total
     from minimise.models import JobStatus, LoopStep, TaskStatus, TokenUsage
     from minimise.orchestration import loop_journal
 
@@ -1885,20 +1890,23 @@ def test_loop_api_carries_tokens_per_step_iteration_and_loop(client, api_server,
                           started_at=_at(0), completed_at=_at(100))
     jpath = api_server.loop_store.journal_path(loop.loop_id)
 
-    def step(step_id, iteration, step_type, start, end, dimension=None, tokens=None,
+    def step(step_id, iteration, step_type, start, end, dimension=None, runs=(),
              status=TaskStatus.COMPLETED):
         db.create_loop_step(LoopStep(
             step_id=step_id, loop_id=loop.loop_id, iteration=iteration,
             step_type=step_type, dimension=dimension, status=status,
             started_at=_at(start) if start is not None else None,
-            completed_at=_at(end) if end is not None else None, tokens=tokens,
+            completed_at=_at(end) if end is not None else None,
         ))
+        for tokens in runs:
+            seed_run(db, tokens, loop_id=loop.loop_id, step_id=step_id)
 
-    step("plan-1", 1, "plan", 0, 5, tokens=TokenUsage(
-        10, 1000, 200, 50, reasoning=9, by_model={"claude-opus-5-5": {"input": 10}}))
-    step("eval-1c", 1, "evaluate", 10, 20, "clarity", tokens=TokenUsage(1, 2, 3, 4))
-    step("eval-1a", 1, "evaluate", 10, 25, "accuracy")  # ran, reported nothing
-    step("eval-2a", 2, "evaluate", 30, 45, "accuracy", tokens=TokenUsage(5, None, None, 5))
+    step("plan-1", 1, "plan", 0, 5, runs=[TokenUsage(
+        10, 1000, 200, 50, reasoning=9, by_model={"claude-opus-5-5": {"input": 10}})])
+    step("eval-1c", 1, "evaluate", 10, 20, "clarity", runs=[TokenUsage(1, 2, 3, 4)])
+    step("eval-1a", 1, "evaluate", 10, 25, "accuracy", runs=[None])  # reported nothing
+    step("eval-2a", 2, "evaluate", 30, 45, "accuracy",
+         runs=[TokenUsage(3, None, None, 2), TokenUsage(2, None, None, 3)])  # a gate retry
     step("eval-2c", 2, "evaluate", 45, 45, "clarity")  # carried over: no agent ran
     step("impl-2", 2, "implement", None, None, status=TaskStatus.PENDING)
     loop_journal.append(jpath, {"step_type": "evaluate", "step_id": "eval-2c", "iteration": 2,
@@ -1910,37 +1918,41 @@ def test_loop_api_carries_tokens_per_step_iteration_and_loop(client, api_server,
 
     served = data["steps"] + [s for g in data["timeline"]["groups"] for s in g["steps"]]
     assert all(s["tokens"] is None or set(s["tokens"]) == _RUN_KEYS for s in served)
-    steps = {s["step_id"]: s for s in data["steps"]}
-    assert steps["plan-1"]["tokens"] == {"input": 10, "cache_read": 1000, "cache_write": 200,
-                                         "output": 50, "total": 1260}
-    assert steps["eval-2a"]["tokens"] == {"input": 5, "cache_read": None, "cache_write": None,
-                                          "output": 5, "total": 10}
-    assert steps["eval-1a"]["tokens"] is None and steps["eval-2c"]["tokens"] is None
+    zeros = dict.fromkeys(_RUN_KEYS, 0)
+    for steps in (data["steps"], [s for g in data["timeline"]["groups"] for s in g["steps"]]):
+        steps = {s["step_id"]: s for s in steps}
+        assert steps["plan-1"]["tokens"] == {"input": 10, "cache_read": 1000, "cache_write": 200,
+                                             "output": 50, "total": 1260}
+        assert steps["eval-2a"]["tokens"] == {"input": 5, "cache_read": None,
+                                              "cache_write": None, "output": 5, "total": 10}
+        assert steps["eval-1a"]["tokens"] is None
+        assert steps["eval-2c"]["tokens"] == steps["impl-2"]["tokens"] == zeros
+    timeline_carried = next(s for g in data["timeline"]["groups"] for s in g["steps"]
+                            if s["step_id"] == "eval-2c")
+    assert timeline_carried["carried_from"] == 1
 
     first, second = data["timeline"]["groups"]
     assert set(first["tokens_total"]) == set(second["tokens_total"]) == _ROLLUP_KEYS
     assert first["tokens_total"] == {"input": 11, "cache_read": 1002, "cache_write": 203,
                                      "output": 54, "total": 1270, "not_reported": 1}
-    # carried-over clarity and the pending implement step are neither summed nor counted
     assert second["tokens_total"] == {"input": 5, "cache_read": None, "cache_write": None,
                                       "output": 5, "total": 10, "not_reported": 0}
     assert data["tokens_total"] == {"input": 16, "cache_read": 1002, "cache_write": 203,
                                     "output": 59, "total": 1280, "not_reported": 1}
     # the same rollup `mini loop status --format json` prints
-    records = loop_journal.read(jpath)
-    shown = shown_loop_steps(api_server.loop_store.load(loop.loop_id),
-                             db.list_loop_steps(loop.loop_id))
-    assert data["tokens_total"] == tokens_total(counted_loop_steps(shown, records))
+    assert data["tokens_total"] == tokens_total(api_server.loop_store.load(loop.loop_id),
+                                                db.list_agent_runs_for_loop(loop.loop_id))
     _assert_no_hidden_token_fields(response.get_data(as_text=True))
 
 
-def test_loop_api_tokens_total_is_an_object_when_nothing_was_reported(client, api_server, db):
+def test_loop_api_tokens_total_is_0_with_no_runs_and_null_when_none_reported(
+        client, api_server, db, seed_run):
     from minimise.models import JobStatus, LoopStep, TaskStatus
 
     loop = _make_loop(api_server)
-    empty = {"input": None, "cache_read": None, "cache_write": None, "output": None,
-             "total": None, "not_reported": 0}
-    assert client.get(f"/api/loops/{loop.loop_id}").get_json()["tokens_total"] == empty
+    zero = {"input": 0, "cache_read": 0, "cache_write": 0, "output": 0, "total": 0,
+            "not_reported": 0}
+    assert client.get(f"/api/loops/{loop.loop_id}").get_json()["tokens_total"] == zero
 
     db.update_loop_status(loop.loop_id, status=JobStatus.COMPLETED,
                           started_at=_at(0), completed_at=_at(8))
@@ -1948,15 +1960,63 @@ def test_loop_api_tokens_total_is_an_object_when_nothing_was_reported(client, ap
         step_id="step-plan", loop_id=loop.loop_id, iteration=1, step_type="plan",
         status=TaskStatus.COMPLETED, started_at=_at(0), completed_at=_at(2),
     ))
+    seed_run(db, None, loop_id=loop.loop_id, step_id="step-plan")
 
     data = client.get(f"/api/loops/{loop.loop_id}").get_json()
 
+    nothing = {"input": None, "cache_read": None, "cache_write": None, "output": None,
+               "total": None, "not_reported": 1}
     assert data["steps"][0]["tokens"] is None
-    assert data["tokens_total"] == {**empty, "not_reported": 1}
-    assert data["timeline"]["groups"][0]["tokens_total"] == {**empty, "not_reported": 1}
+    assert data["tokens_total"] == nothing
+    assert data["timeline"]["groups"][0]["tokens_total"] == nothing
 
 
-def test_loops_list_api_and_page_carry_no_tokens(client, api_server, db):
+@pytest.mark.parametrize("status, not_reported", [("stopped", 1), ("running", 0)])
+def test_loop_api_counts_an_unended_run_only_once_the_loop_stopped(
+        client, api_server, db, seed_run, status, not_reported):
+    import os
+    from minimise.models import JobStatus, LoopStep, TaskStatus
+
+    loop = _make_loop(api_server)
+    db.update_loop_status(loop.loop_id, status=JobStatus(status), started_at=_at(0),
+                          pid=os.getpid())  # a live engine, so a RUNNING loop stays running
+    db.create_loop_step(LoopStep(
+        step_id="step-plan", loop_id=loop.loop_id, iteration=1, step_type="plan",
+        status=TaskStatus.RUNNING, started_at=_at(0),
+    ))
+    seed_run(db, ended=False, loop_id=loop.loop_id, step_id="step-plan")
+
+    data = client.get(f"/api/loops/{loop.loop_id}").get_json()
+
+    assert data["tokens_total"]["not_reported"] == not_reported
+    assert data["timeline"]["groups"][0]["tokens_total"] == data["tokens_total"]
+    assert data["steps"][0]["tokens"] is None  # its run hasn't ended
+
+
+def test_loop_api_untracked_loop_has_no_token_figures(client, api_server, db, seed_run, untrack):
+    from minimise.models import JobStatus, LoopStep, TaskStatus, TokenUsage
+
+    loop = _make_loop(api_server)
+    db.update_loop_status(loop.loop_id, status=JobStatus.COMPLETED,
+                          started_at=_at(0), completed_at=_at(8))
+    for step_id, step_type in (("step-plan", "plan"), ("step-impl", "implement")):
+        db.create_loop_step(LoopStep(
+            step_id=step_id, loop_id=loop.loop_id, iteration=1, step_type=step_type,
+            status=TaskStatus.COMPLETED, started_at=_at(0), completed_at=_at(2),
+        ))
+    seed_run(db, TokenUsage(1, 2, 3, 4), loop_id=loop.loop_id, step_id="step-plan")
+    untrack(db, loop_id=loop.loop_id)  # step-impl has no run: 0 if it were tracked
+
+    data = client.get(f"/api/loops/{loop.loop_id}").get_json()
+
+    assert data["tokens_total"] is None
+    assert [s["tokens"] for s in data["steps"]] == [None, None]
+    [group] = data["timeline"]["groups"]
+    assert group["tokens_total"] is None
+    assert [s["tokens"] for s in group["steps"]] == [None, None]
+
+
+def test_loops_list_api_and_page_carry_no_tokens(client, api_server, db, seed_run):
     from minimise.models import JobStatus, LoopStep, TaskStatus, TokenUsage
 
     loop = _make_loop(api_server)
@@ -1965,8 +2025,8 @@ def test_loops_list_api_and_page_carry_no_tokens(client, api_server, db):
     db.create_loop_step(LoopStep(
         step_id="step-plan", loop_id=loop.loop_id, iteration=1, step_type="plan",
         status=TaskStatus.COMPLETED, started_at=_at(0), completed_at=_at(2),
-        tokens=TokenUsage(1, 2, 3, 4),
     ))
+    seed_run(db, TokenUsage(1, 2, 3, 4), loop_id=loop.loop_id, step_id="step-plan")
 
     assert "tokens" not in client.get("/api/loops").get_data(as_text=True)
     assert "tokens" not in client.get("/loops").get_data(as_text=True).lower()
@@ -1988,11 +2048,12 @@ def test_loop_detail_page_shows_tokens_next_to_elapsed_and_duration(client, api_
     assert '<col class="col-duration"><col class="col-tokens">' in table
 
     js = client.get("/static/loop.js").get_data(as_text=True)
-    assert 'setHtml("loop-tokens", tokensFigure(loop.tokens_total, "step"))' in js
-    assert 'setText("loop-tokens-note", tokensNotReported(loop.tokens_total, "step"))' in js
-    assert 'data-label="Tokens">${tokensFigure(g.tokens_total, "step")}</td>' in js
-    # nothing on a carried-over pass: no agent ran in it
-    assert 'data-label="Tokens">${carried ? "" : tokensFigure(s.tokens)}</td>' in js
+    assert 'setHtml("loop-tokens", tokensFigure(loop.tokens_total))' in js
+    assert 'setText("loop-tokens-note", tokensNotReported(loop.tokens_total))' in js
+    assert 'data-label="Tokens">${tokensFigure(g.tokens_total)}</td>' in js
+    # a carried-over pass shows its 0 like any other row (no agent ran in it)
+    assert 'data-label="Tokens">${tokensFigure(s.tokens)}</td>' in js
+    assert "carried ? \"\"" not in js
     assert 'colspan="5" class="empty">No loop steps yet' in js
 
 
@@ -2015,9 +2076,11 @@ def test_job_detail_page_shows_task_agent_tokens(client, mock_job_controller):
     assert '<td colspan="7" class="empty">Loading timeline…</td>' in table
 
     js = client.get("/static/poll.js").get_data(as_text=True)
-    assert 'setHtml("job-tokens", tokensFigure(tl.tokens_total, "run"))' in js
-    assert '["task agents only", tokensNotReported(tl.tokens_total, "run")]' in js
-    assert 'data-label="Tokens">${tokensFigure(g.tokens_total, "run")}</td>' in js
+    # the job's total is top-level in GET /jobs/<id>, not in its timeline
+    assert 'setHtml("job-tokens", tokensFigure(job.tokens_total))' in js
+    assert '["task agents only", tokensNotReported(job.tokens_total)]' in js
+    assert "tl.tokens_total" not in js
+    assert 'data-label="Tokens">${tokensFigure(g.tokens_total)}</td>' in js
     assert 'data-label="Tokens">${tokensFigure(s.tokens)}</td>' in js  # null on hooks: "—"
     assert 'colspan="7" class="empty">No tasks' in js
 
@@ -2045,14 +2108,16 @@ def test_web_token_figures_match_the_clis_format(client, tmp_path):
          "total": None, "not_reported": 2},
         {"input": 5, "cache_read": None, "cache_write": None, "output": 5,
          "total": 10, "not_reported": 1},
+        {"input": 0, "cache_read": 0, "cache_write": 0, "output": 0, "total": 0},
+        {"input": 0, "cache_read": 0, "cache_write": 0, "output": 0, "total": 0,
+         "not_reported": 0},
     ]
     runner = (
         "const vm = require('vm'), fs = require('fs'); const ctx = {};"
         "vm.createContext(ctx); vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);"
         "const [values, figures] = JSON.parse(fs.readFileSync(0, 'utf8'));"
         "console.log(JSON.stringify([values.map(ctx.formatTokens),"
-        " [ctx.tokensFigure(figures[0]), ctx.tokensFigure(figures[1]),"
-        "  ctx.tokensFigure(figures[2], 'step'), ctx.tokensFigure(figures[3], 'step')]]));"
+        " figures.map(f => ctx.tokensFigure(f))]));"
     )
     out = subprocess.run(["node", "-e", runner, str(script)], input=json.dumps([values, figures]),
                          capture_output=True, text=True, check=True, timeout=30).stdout
@@ -2063,7 +2128,9 @@ def test_web_token_figures_match_the_clis_format(client, tmp_path):
         "—",
         '<span class="tokens" title="input 1.2K · cache write 3 · cache read 2.1M · output 40">'
         "2.1M</span>",
-        '<span class="tokens" title="(2 steps not reported)">—</span>',
+        '<span class="tokens" title="(2 runs not reported)">—</span>',
         '<span class="tokens" title="input 5 · cache write — · cache read — · output 5 '
-        '(1 step not reported)">10</span>',
+        '(1 run not reported)">10</span>',
+        "0",  # a row no agent ran in, e.g. a carried-over pass
+        "0",  # a rollup with no counted runs
     ]

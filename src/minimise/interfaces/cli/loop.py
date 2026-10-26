@@ -30,7 +30,6 @@ from minimise.interfaces.terminal_ui import (
     format_duration,
 )
 from minimise.interfaces.formatting import (
-    counted_loop_steps,
     loop_step_json,
     shown_loop_steps,
     tokens_summary,
@@ -416,7 +415,8 @@ def loop_status(loop_id: str, format: str):
         records = loop_journal.read(_get_store(db).journal_path(loop_id))
         steps = db.list_loop_steps(loop_id)
         shown = shown_loop_steps(loop_obj, steps)
-        loop_tokens = tokens_total(counted_loop_steps(shown, records))
+        runs = db.list_agent_runs_for_loop(loop_id)
+        loop_tokens = tokens_total(loop_obj, runs)
 
         if format == "json":
             output = {
@@ -433,7 +433,7 @@ def loop_status(loop_id: str, format: str):
                 "started_at": loop_obj.started_at.isoformat() if loop_obj.started_at else None,
                 "completed_at": loop_obj.completed_at.isoformat() if loop_obj.completed_at else None,
                 "tokens_total": loop_tokens,
-                "steps": [loop_step_json(step) for step in shown],
+                "steps": [loop_step_json(loop_obj, step, runs) for step in shown],
             }
             console.out(json.dumps(output, indent=2))
         else:
@@ -460,13 +460,13 @@ def loop_status(loop_id: str, format: str):
                     is_running=(loop_obj.status == JobStatus.RUNNING), now=None,
                 )
                 console.print(f"[bold]Elapsed:[/bold] {elapsed}")
-            console.print(f"[bold]Tokens:[/bold] {tokens_summary(loop_tokens, 'step')}")
+            console.print(f"[bold]Tokens:[/bold] {tokens_summary(loop_tokens)}")
             if loop_obj.started_at:
                 console.print("[bold]Stage:[/bold] ", end="")
                 console.print(loop_stage_breadcrumb(loop_obj, steps))
                 console.print()
                 console.print("[bold]Stage timing[/bold]")
-                console.print(render_loop_stage_timing(loop_obj, steps, dims, records))
+                console.print(render_loop_stage_timing(loop_obj, steps, dims, runs))
                 console.print()
                 console.print("[bold]Verdicts[/bold]")
                 console.print(render_loop_progress_table(loop_obj, records, dims, steps))

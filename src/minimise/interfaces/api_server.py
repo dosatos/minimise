@@ -10,7 +10,7 @@ import markdown
 from flask import Flask, jsonify, request, render_template
 from flask_cors import CORS
 
-from minimise.interfaces.formatting import tokens_json, tokens_total
+from minimise.interfaces.formatting import attempt_runs, row_tokens, tokens_total
 from minimise.interfaces.loop_views import register_loop_routes
 from minimise.interfaces.prompt_preview import persona_preview
 from minimise.interfaces.timeline import build_steps, project_steps, steps_from_executions
@@ -117,7 +117,7 @@ def _rollup_status(parts: list) -> str:
 
 
 def _timeline_group(kind: str, name: str, task_id: Optional[str], status: str,
-                    parts: list, tokens: dict) -> dict:
+                    parts: list, tokens: Optional[dict]) -> dict:
     """Aggregate row over a group's parts: wall time from the first start to the
     last end (parts can overlap or leave gaps, so never a sum), and estimates
     summed with the task's own estimate counted once however many attempts ran.
@@ -142,7 +142,7 @@ def _timeline_group(kind: str, name: str, task_id: Optional[str], status: str,
     }
 
 
-def _job_timeline(job: Job, steps: list, now: datetime) -> dict:
+def _job_timeline(job: Job, steps: list, now: datetime, runs: list = ()) -> dict:
     """Group every step by task (and plan hooks by phase) on one timeline
     measured in seconds from its origin.
 
@@ -153,9 +153,11 @@ def _job_timeline(job: Job, steps: list, now: datetime) -> dict:
     browser clock skew never matters. A job that hasn't started is laid out
     from zero by estimates alone.
 
-    Tokens: a task row carries its attempt's ``tokens``, a hook row null.
-    Groups and the timeline carry ``tokens_total`` over task agents only:
-    hooks run shell commands, so a plan-hook group sums nothing.
+    Tokens come from the job's agent ``runs``: a task row carries its
+    attempt's ``tokens`` (row_tokens), a hook row null, and a task group the
+    task's ``tokens_total``. Hooks write no runs (review-plan's ``claude -p``
+    is never captured), so a plan-hook group's ``tokens_total`` is null like
+    its rows. The job's own total is the route's top-level ``tokens_total``.
     """
     origin = min([t for t in (job.started_at, *(s.started_at for s in steps)) if t],
                  default=now)
@@ -178,7 +180,9 @@ def _job_timeline(job: Job, steps: list, now: datetime) -> dict:
             "status": step.status.value,
             "assignee": step.assignee,
             "exit_reason": step.exit_reason,
-            "tokens": None if step.is_hook else tokens_json(step.tokens),
+            # Step.attempt is 1-based; agent_runs.attempt is 0-based.
+            "tokens": None if step.is_hook else row_tokens(job, attempt_runs(
+                runs, step.task_id, step.attempt - 1 if step.attempt else None)),
             "estimate_secs": step.estimate * 60 if step.estimate else None,
             "timeout_secs": step.timeout * 60 if step.timeout else None,
             "start_offset": offset(step.started_at),
@@ -200,12 +204,12 @@ def _job_timeline(job: Job, steps: list, now: datetime) -> dict:
     groups = []
     for phase, indices in _group_steps(steps):
         parts = [rows[i] for i in indices]
-        tokens = tokens_total(steps[i] for i in indices)
         if phase in PLAN_HOOK_GROUPS:
             groups.append(_timeline_group("plan_hooks", PLAN_HOOK_GROUPS[phase], None,
-                                          _rollup_status(parts), parts, tokens))
+                                          _rollup_status(parts), parts, None))
             continue
         task_id = parts[0]["task_id"]
+        tokens = tokens_total(job, (run for run in runs if run.task_id == task_id))
         task = tasks.get(task_id)
         name = task.name if task else next(
             (p["name"] for p in parts if p["kind"] == "task"), task_id or "")
@@ -219,7 +223,6 @@ def _job_timeline(job: Job, steps: list, now: datetime) -> dict:
         "run_start_offset": offset(job.started_at),
         "total_secs": round(total, 1),
         "planned_secs": sum(g["estimate_secs"] or 0 for g in groups),
-        "tokens_total": tokens_total(steps),  # the whole job, task agents only
         "groups": groups,
     }
 
@@ -412,10 +415,12 @@ class APIServer:
                     }
                     for ex in executions if ex.execution_type != "task"
                 ]
+                runs = self.db.list_agent_runs_for_job(job_id)
                 job_dict = job.to_dict()
                 job_dict["hooks"] = hooks
+                job_dict["tokens_total"] = tokens_total(job, runs)  # task agents only
                 job_dict["timeline"] = _job_timeline(
-                    job, self._timeline_steps(job, executions), datetime.utcnow()
+                    job, self._timeline_steps(job, executions), datetime.utcnow(), runs
                 )
                 return jsonify(job_dict), 200
             except Exception as e:

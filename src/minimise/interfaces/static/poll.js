@@ -154,23 +154,23 @@ function formatTokens(n) {
     return String(n);
 }
 
-// "(3 steps not reported)" when a tokens_total left some counted runs out.
-function tokensNotReported(rollup, noun) {
+// "(3 runs not reported)" when a tokens_total counted runs that reported nothing.
+function tokensNotReported(rollup) {
     const n = rollup ? rollup.not_reported : 0;
-    return n ? `(${n} ${noun}${n === 1 ? "" : "s"} not reported)` : "";
+    return n ? `(${n} run${n === 1 ? "" : "s"} not reported)` : "";
 }
 
-// A run's tokens, or a rollup's tokens_total given its noun: the total, with
-// the four buckets (in tokens_summary's order) and any not-reported count in
-// its title.
-function tokensFigure(tokens, noun) {
+// A row's tokens, or a rollup's tokens_total: the total, with the four buckets
+// (in tokens_summary's order, unless it's 0) and any not-reported count in its
+// title. Null (untracked, unfinished or not reported) is an em dash.
+function tokensFigure(tokens) {
     if (!tokens) return "—";
     const title = [
-        tokens.total == null ? "" : `input ${formatTokens(tokens.input)}`
+        !tokens.total ? "" : `input ${formatTokens(tokens.input)}`
             + ` · cache write ${formatTokens(tokens.cache_write)}`
             + ` · cache read ${formatTokens(tokens.cache_read)}`
             + ` · output ${formatTokens(tokens.output)}`,
-        noun ? tokensNotReported(tokens, noun) : "",
+        tokensNotReported(tokens),
     ].filter(Boolean).join(" ");
     const text = formatTokens(tokens.total);
     return title ? `<span class="tokens" title="${title}">${text}</span>` : text;
@@ -246,9 +246,9 @@ function renderJobSummary(job) {
             : `started ${clockTime(jobStart)}`);
     }
 
-    setHtml("job-tokens", tokensFigure(tl.tokens_total, "run"));
+    setHtml("job-tokens", tokensFigure(job.tokens_total));
     setText("job-tokens-note",
-        ["task agents only", tokensNotReported(tl.tokens_total, "run")].filter(Boolean).join(" "));
+        ["task agents only", tokensNotReported(job.tokens_total)].filter(Boolean).join(" "));
 
     const tasks = job.tasks || [];
     const done = tasks.filter(t => t.status === "completed").length;
@@ -330,7 +330,7 @@ function renderTimelineRows(job) {
             <td data-label="Duration">${timelineDuration(g, nowOff)}</td>
             <td class="timeline-estimate" data-label="Estimate">${g.estimate_secs ? formatSecs(g.estimate_secs) : "—"}</td>
             <td data-label="Timeout"></td>
-            <td class="timeline-tokens" data-label="Tokens">${tokensFigure(g.tokens_total, "run")}</td>
+            <td class="timeline-tokens" data-label="Tokens">${tokensFigure(g.tokens_total)}</td>
             <td data-label="Timeline"></td>
         </tr>`;
     }

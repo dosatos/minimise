@@ -2,9 +2,9 @@
 
 from dataclasses import replace
 from datetime import datetime
-from typing import Optional
+from typing import Iterable, Optional, Union
 
-from minimise.models import JobStatus, Loop, LoopStep, TaskStatus, TokenUsage
+from minimise.models import AgentRun, Job, JobStatus, Loop, LoopStep, TaskStatus, TokenUsage
 
 
 def _now_or_default(now: Optional[datetime]) -> datetime:
@@ -94,10 +94,12 @@ def carried_from(record: dict) -> Optional[int]:
 
 # ---- tokens: one shape for CLI --format json and the web API ----------------
 # Keys are only ever added; a key never changes meaning. Never reasoning,
-# by_model, model names or cost.
+# by_model, model names or cost. Every figure is a sum over agent_runs, one row
+# per agent call; the owner is the job or loop the runs belong to.
+# 0 when we know no tokens were used; None only when tokens were (or are being)
+# used but we don't know how many, or the owner predates agent_runs.
 
 _TOKEN_KEYS = ("input", "cache_read", "cache_write", "output", "total")
-_FINISHED_STATUSES = (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.STOPPED)
 
 
 def tokens_json(usage: Optional[TokenUsage]) -> Optional[dict]:
@@ -113,22 +115,19 @@ def tokens_json(usage: Optional[TokenUsage]) -> Optional[dict]:
     }
 
 
-def _counted(run) -> bool:
-    """A run counts in a rollup when an agent ran in it and it has finished.
-    Hook executions run shell commands, never an agent, so they never count."""
-    return (
-        run.started_at is not None
-        and run.status in _FINISHED_STATUSES
-        and getattr(run, "execution_type", "task") == "task"
-    )
-
-
-def tokens_total(runs) -> dict:
-    """The rollup of LoopStep or Execution runs: each bucket summed over the
-    counted runs that reported it (None if none did), total likewise, and
-    not_reported = counted runs with no tokens (the sums are then a lower bound).
-    Always a dict. Loop callers drop carried-over passes first (counted_loop_steps)."""
-    counted = [run for run in runs if _counted(run)]
+def tokens_total(owner: Union[Job, Loop], runs: Iterable[AgentRun]) -> Optional[dict]:
+    """The rollup of a loop, iteration, task or job over its runs; None for an
+    untracked owner. A run counts once it ended, or if it never ended and its
+    owner isn't running (killed or crashed); one that hasn't ended while its
+    owner runs is in progress. Each bucket and the total sum the counted runs
+    that reported them: 0 with no counted runs, None when some counted but none
+    reported. not_reported = counted runs with no tokens."""
+    if owner.tokens_untracked:
+        return None
+    running = owner.status == JobStatus.RUNNING
+    counted = [run for run in runs if run.ended_at is not None or not running]
+    if not counted:
+        return {**dict.fromkeys(_TOKEN_KEYS, 0), "not_reported": 0}
     summed = sum((run.tokens for run in counted if run.tokens is not None), None)
     return {
         **(tokens_json(summed) or dict.fromkeys(_TOKEN_KEYS)),
@@ -136,23 +135,40 @@ def tokens_total(runs) -> dict:
     }
 
 
-def counted_loop_steps(steps: list[LoopStep], journal_records) -> list[LoopStep]:
-    """The steps minus passes carried over under select: failed (their journal
-    record has an int evaluated_in_iteration): no agent ran in those. Pass
-    shown_loop_steps output, so a dead engine's RUNNING step counts as stopped."""
-    records = evaluate_records(steps, journal_records)
-    return [step for step in steps if carried_from(records.get(step.step_id, {})) is None]
+def row_tokens(owner: Union[Job, Loop], runs: Iterable[AgentRun]) -> Optional[dict]:
+    """One row's tokens (a loop step, or a job task attempt): zeros when no agent
+    ran in it, None when any of its runs hasn't ended or didn't report (or the
+    owner is untracked), else the sum of its runs (a resumed attempt has several)."""
+    if owner.tokens_untracked:
+        return None
+    runs = list(runs)
+    if not runs:
+        return dict.fromkeys(_TOKEN_KEYS, 0)
+    if any(run.ended_at is None or run.tokens is None for run in runs):
+        return None
+    return tokens_json(sum((run.tokens for run in runs), None))
 
 
-def loop_step_json(step: LoopStep) -> dict:
-    """A loop step as CLI and web JSON show it; the web adds its own keys."""
+def attempt_runs(runs: Iterable[AgentRun], task_id: Optional[str],
+                 attempt: Optional[int]) -> list[AgentRun]:
+    """The runs of one job task attempt. `attempt` is 0-based like
+    agent_runs.attempt and Execution.attempt; a timeline Step's is 1-based, so
+    pass step.attempt - 1. None (a task row with no attempt yet) has no runs."""
+    if attempt is None:
+        return []
+    return [run for run in runs if run.task_id == task_id and run.attempt == attempt]
+
+
+def loop_step_json(loop: Loop, step: LoopStep, runs: Iterable[AgentRun]) -> dict:
+    """A loop step as CLI and web JSON show it; the web adds its own keys.
+    `runs` are the loop's; the step's tokens come from those with its step_id."""
     return {
         "step_id": step.step_id,
         "iteration": step.iteration,
         "step_type": step.step_type,
         "dimension": step.dimension,
         "status": step.status.value,
-        "tokens": tokens_json(step.tokens),
+        "tokens": row_tokens(loop, (run for run in runs if run.step_id == step.step_id)),
     }
 
 
@@ -167,12 +183,15 @@ def format_tokens(n: Optional[int]) -> str:
     return str(n)
 
 
-def tokens_summary(rollup: dict, noun: str) -> str:
+def tokens_summary(rollup: Optional[dict]) -> str:
     """A rollup on one line: "243.1M (input 120.4K · cache write 21.6M ·
-    cache read 218.6M · output 2.8M)", or an em dash when nothing was reported,
-    then " (3 steps not reported)" when some counted `noun`s reported nothing."""
-    if rollup["total"] is None:
-        text = format_tokens(None)
+    cache read 218.6M · output 2.8M)", "0" when nothing was used, an em dash for
+    an untracked owner or when nothing was reported, then " (3 runs not
+    reported)" when some counted runs reported nothing."""
+    if rollup is None:
+        return format_tokens(None)
+    if rollup["total"] in (None, 0):
+        text = format_tokens(rollup["total"])
     else:
         text = (
             f"{format_tokens(rollup['total'])} ("
@@ -183,5 +202,5 @@ def tokens_summary(rollup: dict, noun: str) -> str:
         )
     missing = rollup["not_reported"]
     if missing:
-        text += f" ({missing} {noun}{'' if missing == 1 else 's'} not reported)"
+        text += f" ({missing} run{'' if missing == 1 else 's'} not reported)"
     return text

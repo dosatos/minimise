@@ -3518,11 +3518,12 @@ def _no_hidden_token_keys(text):
         assert leaked not in text.lower(), leaked
 
 
-def _token_loop(mock_config_dir):
-    """A RUNNING select: failed loop (its engine is this live process). Iteration 1:
-    plan + implement reported, eval "a" STOPPED and eval "b" COMPLETED with nothing
-    reported. Iteration 2: eval "a" is a pass carried over from iteration 1; plan
-    RUNNING with partial tokens."""
+def _token_loop(mock_config_dir, seed_run):
+    """A RUNNING select: failed loop (its engine is this live process), with one
+    agent_runs row per agent call. Iteration 1: plan reported; implement reported
+    over two runs (a gate retry); evals "a" (STOPPED) and "b" ended without
+    reporting. Iteration 2: eval "a" is a pass carried over from iteration 1 (no
+    run); plan RUNNING, its run still in progress. Returns (db, loop_id)."""
     import os
     import yaml
     from datetime import timedelta
@@ -3549,24 +3550,27 @@ def _token_loop(mock_config_dir):
                           pid=os.getpid())
     by_model = {"claude-opus-5-5": {"input": 120_000, "cache_read": 218_000_000,
                                     "cache_write": 21_000_000, "output": 2_000_000}}
-    rows = [
+    rows = [  # step, then its runs: tokens, or "unended"
         ("plan-1", 1, "plan", None, TaskStatus.COMPLETED,
-         TokenUsage(120_000, 218_000_000, 21_000_000, 2_000_000, reasoning=55, by_model=by_model)),
+         [TokenUsage(120_000, 218_000_000, 21_000_000, 2_000_000, reasoning=55,
+                     by_model=by_model)]),
         ("impl-1", 1, "implement", None, TaskStatus.COMPLETED,
-         TokenUsage(400, 600_000, 600_000, 800_000)),
-        ("eval-1a", 1, "evaluate", "a", TaskStatus.STOPPED, None),
-        ("eval-1b", 1, "evaluate", "b", TaskStatus.COMPLETED, None),
-        ("eval-2a", 2, "evaluate", "a", TaskStatus.COMPLETED, None),  # carried over
-        ("plan-2", 2, "plan", None, TaskStatus.RUNNING, TokenUsage(9_000_000, 0, 0, 0)),
+         [TokenUsage(300, 600_000, 0, 500_000), TokenUsage(100, 0, 600_000, 300_000)]),
+        ("eval-1a", 1, "evaluate", "a", TaskStatus.STOPPED, [None]),
+        ("eval-1b", 1, "evaluate", "b", TaskStatus.COMPLETED, [None]),
+        ("eval-2a", 2, "evaluate", "a", TaskStatus.COMPLETED, []),  # carried over
+        ("plan-2", 2, "plan", None, TaskStatus.RUNNING, ["unended"]),
     ]
-    for i, (step_id, it, step_type, dim, status, tokens) in enumerate(rows):
+    for i, (step_id, it, step_type, dim, status, runs) in enumerate(rows):
         began = start + timedelta(seconds=10 * i)
         db.create_loop_step(LoopStep(
             step_id=step_id, loop_id=loop_obj.loop_id, iteration=it, step_type=step_type,
             dimension=dim, status=status, started_at=began,
             completed_at=None if status == TaskStatus.RUNNING else began + timedelta(seconds=5),
-            tokens=tokens,
         ))
+        for tokens in runs:
+            seed_run(db, None if tokens == "unended" else tokens, ended=tokens != "unended",
+                     loop_id=loop_obj.loop_id, step_id=step_id)
     jpath = store.journal_path(loop_obj.loop_id)
     for record in (
         {"step_id": "eval-1a", "iteration": 1, "dimension": "a", "verdict": "pass"},
@@ -3575,40 +3579,46 @@ def _token_loop(mock_config_dir):
          "evaluated_in_iteration": 1},
     ):
         loop_journal.append(jpath, {"step_type": "evaluate", **record})
-    return loop_obj.loop_id
+    return db, loop_obj.loop_id
 
 
-def test_loop_status_shows_the_tokens_header_row_and_hint(runner, mock_config_dir, monkeypatch):
+def _tokens_row(lines):
+    row = next(line for line in lines if line.startswith("│ tokens "))
+    return [cell.strip() for cell in row.split("│")[1:-1]]
+
+
+def test_loop_status_shows_the_tokens_header_row_and_hint(runner, mock_config_dir, monkeypatch,
+                                                          seed_run):
     monkeypatch.setenv("COLUMNS", "200")
-    loop_id = _token_loop(mock_config_dir)
+    _, loop_id = _token_loop(mock_config_dir, seed_run)
 
     result = runner.invoke(mini, ["loop", "status", loop_id])
 
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
     elapsed_at = next(i for i, line in enumerate(lines) if line.startswith("Elapsed:"))
-    # The running step's tokens and the carried-over pass are left out;
-    # the stopped and completed evaluators that reported nothing are counted.
-    assert lines[elapsed_at + 1] == f"Tokens: {_HEADER_TOKENS} (2 steps not reported)"
-    tokens_row = next(line for line in lines if line.startswith("│ tokens "))
-    assert [cell.strip() for cell in tokens_row.split("│")[1:-1]] == ["tokens", "243.1M", "—"]
+    # The in-progress run is left out and the carried-over pass has none; the two
+    # evaluator runs that reported nothing are counted.
+    assert lines[elapsed_at + 1] == f"Tokens: {_HEADER_TOKENS} (2 runs not reported)"
+    # Per iteration: iteration 2 has no counted run yet, so 0.
+    assert _tokens_row(lines) == ["tokens", "243.1M", "0"]
     journal_at = next(i for i, line in enumerate(lines) if line.startswith("View journal with:"))
     assert lines[journal_at + 1] == f"Tokens per step: mini loop status {loop_id[:8]} --format json"
     assert "$" not in result.output
 
 
-def test_loop_status_tokens_line_with_nothing_reported(runner, mock_config_dir, monkeypatch):
+def test_loop_status_tokens_line_with_no_runs_is_0(runner, mock_config_dir, monkeypatch):
     monkeypatch.setenv("COLUMNS", "200")
-    loop_id = _stopped_loop(mock_config_dir, None)  # no steps at all
+    loop_id = _stopped_loop(mock_config_dir, None)  # no steps, no runs
 
     result = runner.invoke(mini, ["loop", "status", loop_id])
 
     assert result.exit_code == 0, result.output
-    assert "Tokens: —" in result.output.splitlines()
+    assert "Tokens: 0" in result.output.splitlines()
 
 
-def test_loop_status_json_carries_tokens_total_and_steps(runner, mock_config_dir):
-    loop_id = _token_loop(mock_config_dir)
+def test_loop_status_json_carries_tokens_total_and_steps(runner, mock_config_dir, seed_run):
+    _, loop_id = _token_loop(mock_config_dir, seed_run)
 
     result = runner.invoke(mini, ["loop", "status", loop_id, "--format", "json"])
 
@@ -3626,10 +3636,14 @@ def test_loop_status_json_carries_tokens_total_and_steps(runner, mock_config_dir
     assert steps["plan-1"]["tokens"] == {"input": 120_000, "cache_read": 218_000_000,
                                          "cache_write": 21_000_000, "output": 2_000_000,
                                          "total": 241_120_000}
+    assert steps["impl-1"]["tokens"] == {"input": 400, "cache_read": 600_000,
+                                         "cache_write": 600_000, "output": 800_000,
+                                         "total": 2_000_400}  # both gate attempts
     assert steps["eval-1a"] == {"step_id": "eval-1a", "iteration": 1, "step_type": "evaluate",
                                 "dimension": "a", "status": "stopped", "tokens": None}
+    assert steps["eval-2a"]["tokens"] == dict.fromkeys(_TOKEN_RUN_KEYS, 0)  # carried over
     assert steps["plan-2"]["status"] == "running"
-    assert steps["plan-2"]["tokens"]["total"] == 9_000_000  # shown per step, not in the rollup
+    assert steps["plan-2"]["tokens"] is None  # its run hasn't ended
     _no_hidden_token_keys(result.output)
 
 
@@ -3638,15 +3652,33 @@ def test_loop_status_json_tokens_total_with_no_steps(runner, mock_config_dir):
 
     data = json.loads(runner.invoke(mini, ["loop", "status", loop_id, "--format", "json"]).output)
 
-    assert data["tokens_total"] == {"input": None, "cache_read": None, "cache_write": None,
-                                    "output": None, "total": None, "not_reported": 0}
+    assert data["tokens_total"] == {"input": 0, "cache_read": 0, "cache_write": 0,
+                                    "output": 0, "total": 0, "not_reported": 0}
     assert data["steps"] == []
 
 
-def _token_job(mock_config_dir):
-    """A FAILED job: T1 attempt 0 failed with nothing reported, attempt 1 completed with
-    tokens, then its post-task hook; T2's pre-task hook failed, leaving the never-started
-    FAILED task row job_executor writes. A plan hook ran too."""
+def test_untracked_loop_status_shows_no_token_figures(runner, mock_config_dir, monkeypatch,
+                                                      seed_run, untrack):
+    monkeypatch.setenv("COLUMNS", "200")
+    db, loop_id = _token_loop(mock_config_dir, seed_run)
+    untrack(db, loop_id=loop_id)
+
+    data = json.loads(runner.invoke(mini, ["loop", "status", loop_id, "--format", "json"]).output)
+    assert data["tokens_total"] is None
+    assert data["steps"] and all(step["tokens"] is None for step in data["steps"])
+
+    result = runner.invoke(mini, ["loop", "status", loop_id])
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert "Tokens: —" in lines
+    assert _tokens_row(lines) == ["tokens", "—", "—"]
+
+
+def _token_job(mock_config_dir, seed_run):
+    """A FAILED job: T1 attempt 0 failed and its run reported nothing, attempt 1
+    completed and its run reported tokens, then its post-task hook ran; T2's
+    pre-task hook failed, leaving the never-started FAILED task row job_executor
+    writes (no run). A plan hook ran too. Hooks write no runs. Returns (db, job_id)."""
     import yaml as _yaml
     from datetime import timedelta
     from minimise.models import TokenUsage
@@ -3681,9 +3713,7 @@ def _token_job(mock_config_dir):
         Execution(task_id="t1", attempt=0, job_id=job.id, status=TaskStatus.FAILED,
                   started_at=at(1), completed_at=at(2)),
         Execution(task_id="t1", attempt=1, job_id=job.id, status=TaskStatus.COMPLETED,
-                  started_at=at(2), completed_at=at(3),
-                  tokens=TokenUsage(2, 11_334, 18_110, 4, reasoning=9,
-                                    by_model={"claude-opus-5-5": {"input": 2}})),
+                  started_at=at(2), completed_at=at(3)),
         Execution(task_id="t1", attempt=0, job_id=job.id, execution_type="post_task",
                   hook_name="tests", status=TaskStatus.COMPLETED, started_at=at(3), completed_at=at(4)),
         Execution(task_id="t2", attempt=0, job_id=job.id, execution_type="pre_task",
@@ -3692,12 +3722,17 @@ def _token_job(mock_config_dir):
                   completed_at=at(5)),  # pre-task hook failed: no agent ran
     ):
         db.save_execution(ex)
-    return job.id
+    seed_run(db, None, job_id=job.id, task_id="t1", attempt=0)
+    seed_run(db, TokenUsage(2, 11_334, 18_110, 4, reasoning=9,
+                            by_model={"claude-opus-5-5": {"input": 2}}),
+             job_id=job.id, task_id="t1", attempt=1)
+    return db, job.id
 
 
-def test_job_status_shows_task_agent_tokens_and_a_tokens_column(runner, mock_config_dir, monkeypatch):
+def test_job_status_shows_task_agent_tokens_and_a_tokens_column(runner, mock_config_dir,
+                                                                monkeypatch, seed_run):
     monkeypatch.setenv("COLUMNS", "250")
-    job_id = _token_job(mock_config_dir)
+    _, job_id = _token_job(mock_config_dir, seed_run)
 
     result = runner.invoke(mini, ["job", "status", job_id])
 
@@ -3713,25 +3748,27 @@ def test_job_status_shows_task_agent_tokens_and_a_tokens_column(runner, mock_con
         row = next(line for line in lines if line.startswith(f"│ {label} "))
         return row.split("│")[1:-1][tokens_col].strip()
 
-    assert tokens_cell("T1  · try 2") == "29.4K"
-    assert tokens_cell("T1  · try 1") == "—"  # nothing reported
+    assert tokens_cell("T1  · try 2") == "29.4K"  # attempt 1's run
+    assert tokens_cell("T1  · try 1") == "—"  # attempt 0's run reported nothing
+    assert tokens_cell("T2  · try 1") == "0"  # no agent ran
     for hook in ("review-plan", "tests", "setup"):
         assert tokens_cell(hook) == "—"
     assert "$" not in result.output
 
 
-def test_job_status_tokens_line_with_nothing_reported(runner, mock_config_dir, monkeypatch):
+def test_job_status_tokens_line_with_no_runs_is_0(runner, mock_config_dir, monkeypatch):
     monkeypatch.setenv("COLUMNS", "250")
     _, job = _make_start_job(mock_config_dir, JobStatus.PENDING)
 
     result = runner.invoke(mini, ["job", "status", job.id])
 
     assert result.exit_code == 0, result.output
-    assert "Tokens (task agents only): —" in result.output.splitlines()
+    assert "Tokens (task agents only): 0" in result.output.splitlines()
 
 
-def test_job_status_json_carries_tokens_totals_for_task_agents_only(runner, mock_config_dir):
-    job_id = _token_job(mock_config_dir)
+def test_job_status_json_carries_tokens_totals_for_task_agents_only(runner, mock_config_dir,
+                                                                    seed_run):
+    _, job_id = _token_job(mock_config_dir, seed_run)
 
     result = runner.invoke(mini, ["job", "status", job_id, "--format", "json"])
 
@@ -3739,13 +3776,54 @@ def test_job_status_json_carries_tokens_totals_for_task_agents_only(runner, mock
     data = json.loads(result.output)
     t1_total = {"input": 2, "cache_read": 11_334, "cache_write": 18_110, "output": 4,
                 "total": 29_450, "not_reported": 1}
-    assert data["tokens_total"] == t1_total  # hooks and T2's never-started row left out
+    assert data["tokens_total"] == t1_total  # hooks and T2 ran no agent
     tasks = {t["id"]: t for t in data["tasks"]}
     assert tasks["t1"]["tokens_total"] == t1_total
-    assert tasks["t2"]["tokens_total"] == {"input": None, "cache_read": None, "cache_write": None,
-                                           "output": None, "total": None, "not_reported": 0}
+    assert tasks["t2"]["tokens_total"] == {"input": 0, "cache_read": 0, "cache_write": 0,
+                                           "output": 0, "total": 0, "not_reported": 0}
     assert set(data["tokens_total"]) == _TOKEN_ROLLUP_KEYS
     for task in data["tasks"]:
         assert set(task["tokens_total"]) == _TOKEN_ROLLUP_KEYS
         assert "tokens" not in task  # no per-execution array
     _no_hidden_token_keys(result.output)
+
+
+@pytest.mark.parametrize("status, expected", [
+    # Killed: the call never returned and nothing will finish it.
+    (JobStatus.STOPPED, {"input": None, "cache_read": None, "cache_write": None,
+                         "output": None, "total": None, "not_reported": 1}),
+    # Still running: the call is in progress, not counted yet.
+    (JobStatus.RUNNING, {"input": 0, "cache_read": 0, "cache_write": 0,
+                         "output": 0, "total": 0, "not_reported": 0}),
+])
+def test_job_status_json_counts_an_unended_run_only_once_the_job_stopped(
+        runner, mock_config_dir, seed_run, status, expected):
+    import os
+    db, job = _make_start_job(mock_config_dir, status, pid=os.getpid())  # a live engine
+    seed_run(db, ended=False, job_id=job.id, task_id="task-start", attempt=0)
+
+    data = json.loads(runner.invoke(mini, ["job", "status", job.id, "--format", "json"]).output)
+
+    assert data["tokens_total"] == expected
+    assert data["tasks"][0]["tokens_total"] == expected
+
+
+def test_untracked_job_status_shows_no_token_figures(runner, mock_config_dir, monkeypatch,
+                                                     seed_run, untrack):
+    monkeypatch.setenv("COLUMNS", "250")
+    db, job_id = _token_job(mock_config_dir, seed_run)
+    untrack(db, job_id=job_id)
+
+    data = json.loads(runner.invoke(mini, ["job", "status", job_id, "--format", "json"]).output)
+    assert data["tokens_total"] is None
+    assert [task["tokens_total"] for task in data["tasks"]] == [None, None]
+
+    result = runner.invoke(mini, ["job", "status", job_id])
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert "Tokens (task agents only): —" in lines
+    header = next(line for line in lines if "Task Name" in line)
+    tokens_col = [c.strip() for c in header.split("┃")[1:-1]].index("Tokens")
+    rows = [line.split("│")[1:-1] for line in lines if line.startswith("│ ")]
+    assert len(rows) == 6  # review-plan, T1 try 1 and 2, tests, setup, T2 try 1
+    assert {row[tokens_col].strip() for row in rows} == {"—"}

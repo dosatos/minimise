@@ -5,7 +5,6 @@ from typing import Optional
 from rich.table import Table
 from rich.text import Text
 from minimise.interfaces.formatting import (
-    counted_loop_steps,
     format_tokens,
     shown_loop_steps,
     tokens_total,
@@ -274,7 +273,7 @@ def render_loop_progress_table(
 
 
 def render_loop_stage_timing(loop: Loop, steps: list, dimensions: list = None,
-                             journal_records=()) -> Table:
+                             runs=()) -> Table:
     """Companion to render_loop_progress_table: stage durations per iteration.
     Rows are plan/implement/eval/iter total; columns are the SAME last-N
     iterations the heatmap shows (derived from steps' `.iteration`). Each cell is
@@ -283,9 +282,9 @@ def render_loop_stage_timing(loop: Loop, steps: list, dimensions: list = None,
     Headers follow the heatmap's rule: iteration numbers, "N now" on the
     running loop's current iteration. No footer row.
 
-    A last "tokens" row holds each iteration's token total over its counted
-    steps (tokens_total; `journal_records` mark carried-over passes), "—" when
-    none reported."""
+    A last "tokens" row holds each iteration's token total over its steps'
+    agent `runs` (tokens_total): 0 when no agent ran, "—" when none reported
+    or the loop is untracked."""
     steps = shown_loop_steps(loop, steps or [])
     if not steps:
         table = Table()
@@ -322,11 +321,13 @@ def render_loop_stage_timing(loop: Loop, steps: list, dimensions: list = None,
     for label, step_type in rows:
         table.add_row(label, *[cell(it, step_type) for it in shown])
 
-    counted = counted_loop_steps(steps, journal_records)
-    table.add_row("tokens", *[
-        format_tokens(tokens_total(s for s in counted if s.iteration == it)["total"])
-        for it in shown
-    ])
+    iteration_of = {s.step_id: s.iteration for s in steps}
+
+    def tokens(iteration):
+        rollup = tokens_total(loop, (r for r in runs if iteration_of.get(r.step_id) == iteration))
+        return format_tokens(rollup["total"] if rollup is not None else None)
+
+    table.add_row("tokens", *[tokens(it) for it in shown])
     return table
 
 

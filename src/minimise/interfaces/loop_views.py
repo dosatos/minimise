@@ -10,7 +10,6 @@ from flask import Flask, jsonify, render_template, request
 
 from minimise.interfaces.formatting import (
     carried_from,
-    counted_loop_steps,
     evaluate_records,
     format_duration,
     loop_step_json,
@@ -18,7 +17,7 @@ from minimise.interfaces.formatting import (
     tokens_total,
 )
 from minimise.interfaces.prompt_preview import worker_prompt_preview
-from minimise.models import JobStatus, Loop, LoopSpec, LoopStep, TaskStatus
+from minimise.models import AgentRun, JobStatus, Loop, LoopSpec, LoopStep, TaskStatus
 from minimise.orchestration import loop_journal
 from minimise.personas import load_personas
 from minimise.storage.database import Database
@@ -47,9 +46,9 @@ def _current_stage(steps: list[LoopStep]) -> str:
     return _stage_label(step.step_type, step.dimension)
 
 
-def _serialize_step(step: LoopStep) -> dict:
+def _serialize_step(loop: Loop, step: LoopStep, runs: list[AgentRun]) -> dict:
     return {
-        **loop_step_json(step),  # the CLI's step shape; the web only adds keys
+        **loop_step_json(loop, step, runs),  # the CLI's step shape; the web only adds keys
         "stage": _stage_label(step.step_type),
         "retries": step.retries,
         "started_at": step.started_at.isoformat() if step.started_at else None,
@@ -116,6 +115,7 @@ def _loop_timeline(
     *,
     journal_records=(),
     dimension_count: int = 0,
+    runs: list[AgentRun] = (),
 ) -> dict:
     """Group a loop's steps by iteration on one timeline measured in seconds
     from its origin.
@@ -130,7 +130,8 @@ def _loop_timeline(
     iteration with any verdict gets ``passing`` out of ``dimension_count``.
     Under select: failed, a pass carried over from an earlier iteration has
     ``carried_from`` (and no bar: nothing ran), and a re-check has ``recheck``.
-    Each iteration's ``tokens_total`` leaves carried-over passes out.
+    Each iteration's ``tokens_total`` sums its steps' agent ``runs``; a
+    carried-over pass ran no agent, so it has none and its ``tokens`` are 0.
 
     A RUNNING step of a loop that isn't running shows as stopped (shown_loop_steps).
     """
@@ -140,7 +141,6 @@ def _loop_timeline(
         default=None,
     )
     records = evaluate_records(steps, journal_records)
-    counted = {step.step_id for step in counted_loop_steps(steps, journal_records)}
     if loop.status == JobStatus.RUNNING:
         end = now
     else:
@@ -162,7 +162,7 @@ def _loop_timeline(
         )
         carried = carried_from(record)
         return {
-            **_serialize_step(step),
+            **_serialize_step(loop, step, runs),
             "start_offset": start,
             "duration": (
                 round((step.completed_at - step.started_at).total_seconds(), 1)
@@ -191,6 +191,7 @@ def _loop_timeline(
             default=None,
         )
         parts = [timed(step) for step in members]
+        step_ids = {step.step_id for step in members}
         groups.append({
             "iteration": iteration,
             "status": status,
@@ -200,7 +201,7 @@ def _loop_timeline(
                 if first and last and status != "running" else None
             ),
             "passing": _iteration_passing(parts, dimension_count),
-            "tokens_total": tokens_total(step for step in members if step.step_id in counted),
+            "tokens_total": tokens_total(loop, (run for run in runs if run.step_id in step_ids)),
             "steps": parts,
         })
 
@@ -225,6 +226,7 @@ def _serialize_loop(
     spec: Optional[LoopSpec] = None,
     include_steps: bool = True,
     journal_records=(),
+    runs: list[AgentRun] = (),
 ) -> dict:
     steps = shown_loop_steps(loop, steps)  # orphaned RUNNING steps show as stopped
     current_iteration = max((step.iteration for step in steps), default=0)
@@ -249,14 +251,15 @@ def _serialize_loop(
     }
     if include_steps:
         result["stop_reason"] = loop.stop_reason
-        result["steps"] = [_serialize_step(step) for step in steps]
-        result["tokens_total"] = tokens_total(counted_loop_steps(steps, journal_records))
+        result["steps"] = [_serialize_step(loop, step, runs) for step in steps]
+        result["tokens_total"] = tokens_total(loop, runs)
         result["timeline"] = _loop_timeline(
             loop,
             steps,
             datetime.utcnow(),
             journal_records=journal_records,
             dimension_count=len(spec.loop.evaluate.dimensions) if spec else 0,
+            runs=runs,
         )
     return result
 
@@ -501,7 +504,8 @@ def register_loop_routes(app: Flask, db: Database, store: LoopStore) -> None:
         journal = _read_journal(store, loop_id)
         return render_template(
             "loop_detail.html",
-            loop_view=_serialize_loop(loop, steps, spec, journal_records=journal),
+            loop_view=_serialize_loop(loop, steps, spec, journal_records=journal,
+                                      runs=db.list_agent_runs_for_loop(loop_id)),
             spec=spec,
             spec_raw=spec_raw,
             spec_error=spec_error,
@@ -530,6 +534,7 @@ def register_loop_routes(app: Flask, db: Database, store: LoopStore) -> None:
             db.list_loop_steps(loop_id),
             spec,
             journal_records=_read_journal(store, loop_id),
+            runs=db.list_agent_runs_for_loop(loop_id),
         )), 200
 
     @app.route("/api/loops/<loop_id>/journal", methods=["GET"])

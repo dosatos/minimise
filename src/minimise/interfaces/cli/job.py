@@ -486,7 +486,8 @@ def job_status(job_id: str, format: str):
             plan = None
         est_total = job_estimate_total(job_obj.tasks, plan)
         executions = db.list_executions_for_job(job_obj.id)
-        job_tokens = tokens_total(executions)  # counts task attempts only, never hooks
+        runs = db.list_agent_runs_for_job(job_obj.id)  # task agents only: hooks write none
+        job_tokens = tokens_total(job_obj, runs)
 
         if format == "json":
             # Build JSON output with task metadata
@@ -503,7 +504,8 @@ def job_status(job_id: str, format: str):
                 }
                 task_execs = [e for e in db.list_executions_for_task(task.id) if e.execution_type == "task"]
                 task_data["exit_reason"] = task_execs[-1].exit_reason if task_execs else None
-                task_data["tokens_total"] = tokens_total(task_execs)
+                task_data["tokens_total"] = tokens_total(
+                    job_obj, (r for r in runs if r.task_id == task.id))
                 # Add duration_seconds if both start and end times exist
                 if task.started_at and task.completed_at:
                     duration = (task.completed_at - task.started_at).total_seconds()
@@ -549,7 +551,7 @@ def job_status(job_id: str, format: str):
                 elapsed = (job_obj.completed_at - job_obj.started_at).total_seconds()
                 console.print(f"[bold]Total Time:[/bold] {humanize_duration(elapsed)}")
             console.print(
-                f"[bold]Tokens (task agents only):[/bold] {tokens_summary(job_tokens, 'run')}"
+                f"[bold]Tokens (task agents only):[/bold] {tokens_summary(job_tokens)}"
             )
             console.print(f"[bold]Plan Path:[/bold] {job_obj.plan_path}")
             console.print(f"[bold]Base Commit:[/bold] {job_obj.base_commit or 'N/A'}")
@@ -577,6 +579,7 @@ def job_status(job_id: str, format: str):
                     now=datetime.utcnow(),
                     executions=executions,
                     plan=plan,
+                    runs=runs,
                 )
                 console.print(table)
                 console.print(f"\n[dim]View full output with: mini job logs {job_id[:8]}[/dim]")

@@ -24,6 +24,39 @@ def db(temp_db_dir):
     return db
 
 @pytest.fixture
+def seed_run():
+    """seed_run(db, tokens, *, ended=True, **owner) -> run_id: one agent_runs row,
+    started now and finished with `tokens` (None = not reported) unless ended=False
+    (a call that never returned). owner: job_id, task_id, attempt (0-based) or
+    loop_id, step_id."""
+    from datetime import datetime
+
+    def seed(db, tokens=None, *, ended=True, **owner):
+        run_id = db.start_agent_run(**owner)
+        if ended:
+            db.finish_agent_run(run_id, datetime.utcnow(), tokens)
+        return run_id
+    return seed
+
+
+@pytest.fixture
+def untrack():
+    """untrack(db, job_id=..., loop_id=...): mark a job or loop as made before
+    agent_runs existed, as the v11 migration does."""
+    import sqlite3
+
+    def mark(db, *, job_id=None, loop_id=None):
+        conn = sqlite3.connect(db.db_path)
+        with conn:
+            if job_id:
+                conn.execute("UPDATE jobs SET tokens_untracked = 1 WHERE id = ?", (job_id,))
+            if loop_id:
+                conn.execute("UPDATE loops SET tokens_untracked = 1 WHERE loop_id = ?", (loop_id,))
+        conn.close()
+    return mark
+
+
+@pytest.fixture
 def mock_config_dir(temp_db_dir, monkeypatch):
     """Mock the minimise config directory for CLI tests."""
     config_dir = temp_db_dir / ".minimise"

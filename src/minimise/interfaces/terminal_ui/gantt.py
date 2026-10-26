@@ -11,7 +11,7 @@ from minimise.interfaces.timeline import (  # noqa: F401 — re-exported
     build_steps,
     project_steps,
 )
-from minimise.interfaces.formatting import format_tokens
+from minimise.interfaces.formatting import attempt_runs, format_tokens, row_tokens
 from minimise.models import Job, Task, TaskStatus, Plan
 
 from ._shared import (
@@ -125,6 +125,7 @@ def render_execution_table_with_gantt(
     now: Optional[datetime] = None,
     executions: Optional[list] = None,
     plan: Optional[Plan] = None,
+    runs: Optional[list] = None,
 ) -> Table:
     """
     Render task progress table with Duration, Expected, Tokens, and Timeline (Gantt) columns.
@@ -138,14 +139,18 @@ def render_execution_table_with_gantt(
             execution, in the given order (NOT re-sorted). Covers task attempts
             AND plan/per-task hooks. Tasks with no execution yet get a PENDING
             placeholder row.
+        runs: The job's AgentRun rows (list_agent_runs_for_job): the Tokens
+            column's source.
 
     Returns:
         Rich Table with Task Name, Status, Duration, Expected, Tokens, and
-        Timeline columns. Tokens is the attempt's total; "—" on hooks and on
-        attempts that reported nothing.
+        Timeline columns. Tokens is the attempt's total over its runs (0 when
+        no agent ran); "—" on hooks, on attempts with a run that is unfinished
+        or reported nothing, and everywhere for an untracked job.
     """
     now = _now_or_default(now)
     executions = executions or []
+    runs = runs or []
     bar_width = fit_width(75)
 
     table = Table()
@@ -160,15 +165,17 @@ def render_execution_table_with_gantt(
     table.add_column("Reason", style="dim")
 
     def add_row(name, status, started_at, completed_at, estimated_duration_min, is_hook,
-                timeline=None, exit_reason="", assignee="", tokens=None):
+                timeline=None, exit_reason="", assignee="", task_id=None, attempt=None):
+        """`attempt` is 0-based, as agent_runs stores it."""
         is_running = status == TaskStatus.RUNNING
+        tokens = None if is_hook else row_tokens(job, attempt_runs(runs, task_id, attempt))
         table.add_row(
             name,
             assignee or "",
             Text(status.value, style=get_status_color(status)),
             format_duration(started_at, completed_at, is_running=is_running, now=now),
             humanize_duration(estimated_duration_min * 60) if estimated_duration_min else "—",
-            format_tokens(tokens.total if tokens is not None and not is_hook else None),
+            format_tokens(tokens["total"] if tokens is not None else None),
             timeline if timeline is not None else render_gantt_bar(
                 started_at,
                 completed_at,
@@ -193,7 +200,8 @@ def render_execution_table_with_gantt(
             add_row(step.label, step.status, step.started_at, step.ended_at,
                     step.estimate, step.is_hook, timeline=timeline,
                     exit_reason=getattr(step, "exit_reason", "") or "",
-                    assignee=step.assignee, tokens=step.tokens)
+                    assignee=step.assignee, task_id=step.task_id,
+                    attempt=step.attempt - 1 if step.attempt else None)  # Step's is 1-based
         return table
 
     names = {t.id: t.name for t in tasks}
@@ -216,7 +224,7 @@ def render_execution_table_with_gantt(
         add_row(label, ex.status, ex.started_at, ex.completed_at, expected,
                 ex.execution_type != "task", exit_reason=ex.exit_reason or "",
                 assignee=task_assignee.get(ex.task_id, "") if ex.execution_type == "task" else "",
-                tokens=ex.tokens)
+                task_id=ex.task_id, attempt=ex.attempt)  # 0-based, like agent_runs
     # PENDING tasks (no task-type execution yet) shown as placeholder rows in plan order.
     for task in tasks:
         if task.id not in started_task_ids:

@@ -50,8 +50,8 @@ function renderLoopSummary(loop) {
     } else {
         setText("loop-elapsed", loop.elapsed);
     }
-    setHtml("loop-tokens", tokensFigure(loop.tokens_total, "step"));
-    setText("loop-tokens-note", tokensNotReported(loop.tokens_total, "step"));
+    setHtml("loop-tokens", tokensFigure(loop.tokens_total));
+    setText("loop-tokens-note", tokensNotReported(loop.tokens_total));
 
     const finished = tl.groups.filter(g => g.status !== "running" && g.duration != null).length;
     setText("loop-avg-iteration", formatSecs(tl.avg_iteration_secs));
@@ -86,14 +86,14 @@ function renderLoopTimelineRows(loop) {
             <td class="timeline-step" data-label="Step"><span class="timeline-name">Iteration ${escapeHtml(g.iteration)}</span></td>
             <td data-label="Status"><span class="${statusClass(g.status)}">${escapeHtml(g.status)}</span>${passing}</td>
             <td data-label="Duration">${timelineDuration(g, nowOff)}</td>
-            <td class="timeline-tokens" data-label="Tokens">${tokensFigure(g.tokens_total, "step")}</td>
+            <td class="timeline-tokens" data-label="Tokens">${tokensFigure(g.tokens_total)}</td>
             <td data-label="Timeline"></td>
         </tr>`;
     }
 
     // A finished evaluator shows its journaled verdict in place of "completed".
     // A pass carried over from an earlier iteration (select: failed) never ran
-    // here, so it names that iteration and gets no bar and no tokens.
+    // here, so it names that iteration and gets no bar; no agent ran, so its tokens are 0.
     function stepRow(s) {
         const label = s.dimension ? `${s.stage} · ${s.dimension}` : s.stage;
         const recheck = s.recheck ? '<span class="timeline-tag timeline-recheck">re-check</span>' : "";
@@ -119,7 +119,7 @@ function renderLoopTimelineRows(loop) {
             <td class="timeline-step" data-label="Step"><span class="timeline-name">${escapeHtml(label)}</span>${recheck}</td>
             <td data-label="Status">${status}${retries}</td>
             <td data-label="Duration">${timelineDuration(s, nowOff)}</td>
-            <td class="timeline-tokens" data-label="Tokens">${carried ? "" : tokensFigure(s.tokens)}</td>
+            <td class="timeline-tokens" data-label="Tokens">${tokensFigure(s.tokens)}</td>
             <td data-label="Timeline">${track}</td>
         </tr>`;
     }
