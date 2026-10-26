@@ -29,6 +29,27 @@ def _pivot_evaluate(journal_records) -> tuple:
     return rows, sorted(iters)
 
 
+def _carried_cells(journal_records) -> dict:
+    """{(dimension, iteration): evaluated_in_iteration} for heatmap cells whose
+    latest evaluate record is a pass carried over under rerun: failed (the
+    engine records it without running an evaluator). Same last-record-wins
+    keying as _pivot_evaluate."""
+    carried: dict = {}
+    for r in journal_records:
+        if r.get("step_type") != "evaluate" or r.get("iteration") is None:
+            continue
+        key = (r.get("dimension") or "?", r.get("iteration"))
+        n = r.get("evaluated_in_iteration")
+        if isinstance(n, int) and not isinstance(n, bool):
+            carried[key] = n
+        else:
+            carried.pop(key, None)
+    return carried
+
+
+_CARRIED_CAPTION = "faded ✓ from N = pass carried over from iteration N, not re-run (rerun: failed)"
+
+
 def _verdict_cell(verdict, step=None) -> Text:
     """pass -> green ✓, fail -> red ✗. With no verdict, fall back to the eval
     step status: RUNNING -> yellow ▸, FAILED -> red ✗, anything else
@@ -119,8 +140,13 @@ def render_loop_progress_table(
     in `dimensions` are still appended.
 
     `steps` supplies eval step state: no-verdict cells show ▸ (running) or a dim
-    · (not dispatched / pending) based on the matching evaluate step's status."""
+    · (not dispatched / pending) based on the matching evaluate step's status.
+
+    A pass carried over from iteration N (rerun: failed) shows a faded "✓ from N"
+    with no duration or timeline bar, still counts toward the passing footer, and
+    adds a caption explaining it."""
     rows, iters = _pivot_evaluate(journal_records)
+    carried = _carried_cells(journal_records)
     eval_steps = {(s.iteration, s.dimension): s
                   for s in (steps or []) if s.step_type == "evaluate"}
     # Iterations with eval steps but no journaled verdict yet still get a column,
@@ -157,8 +183,10 @@ def render_loop_progress_table(
     # started eval steps (covers the None seed iteration -> no bars).
     now = datetime.utcnow()
     cur_it = shown[-1]
+    # A carried-over pass ran nothing, so it neither shapes the span nor gets a bar.
     cur_eval = [eval_steps[(cur_it, d)] for d in ordered
-                if (cur_it, d) in eval_steps and eval_steps[(cur_it, d)].started_at]
+                if (cur_it, d) in eval_steps and eval_steps[(cur_it, d)].started_at
+                and (d, cur_it) not in carried]
     if cur_eval:
         t0 = min(s.started_at for s in cur_eval)           # first eval start (leftmost)
         t_end = max((s.completed_at or now) for s in cur_eval)  # last eval end
@@ -166,12 +194,18 @@ def render_loop_progress_table(
     else:
         t0, span_secs = None, 0
 
-    for dim in ordered:
-        by_iter = rows.get(dim, {})
-        bar = _eval_gantt_bar(eval_steps.get((cur_it, dim)), t0, span_secs, now=now)
-        table.add_row(dim, *[_verdict_cell(by_iter.get(it), eval_steps.get((it, dim)))
-                             for it in shown], bar)
+    def cell(dim, it) -> Text:
+        if (dim, it) in carried:
+            return Text(f"✓ from {carried[(dim, it)]}", style="dim green")
+        return _verdict_cell(rows.get(dim, {}).get(it), eval_steps.get((it, dim)))
 
+    for dim in ordered:
+        bar = ("" if (dim, cur_it) in carried
+               else _eval_gantt_bar(eval_steps.get((cur_it, dim)), t0, span_secs, now=now))
+        table.add_row(dim, *[cell(dim, it) for it in shown], bar)
+
+    if any((dim, it) in carried for dim in ordered for it in shown):
+        table.caption = _CARRIED_CAPTION
     return table
 
 

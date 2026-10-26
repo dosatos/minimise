@@ -86,8 +86,8 @@ def _normalize_verdict(value) -> Optional[str]:
     return verdict if verdict in _VERDICTS else None
 
 
-def _evaluate_verdicts(steps: list[LoopStep], journal_records) -> dict[str, Optional[str]]:
-    """Map evaluate step_id -> verdict from the journal; the last matching record wins.
+def _evaluate_records(steps: list[LoopStep], journal_records) -> dict[str, dict]:
+    """Map evaluate step_id -> its journal record; the last matching record wins.
 
     The engine stamps step_id on every record; older records without one
     fall back to (iteration, dimension), resolved to that slot's latest step.
@@ -95,7 +95,7 @@ def _evaluate_verdicts(steps: list[LoopStep], journal_records) -> dict[str, Opti
     evaluate = [step for step in steps if step.step_type == "evaluate"]
     step_ids = {step.step_id for step in evaluate}
     by_slot = {(step.iteration, step.dimension): step.step_id for step in evaluate}
-    verdicts: dict[str, Optional[str]] = {}
+    matched: dict[str, dict] = {}
     for record in journal_records:
         if record.get("step_type") != "evaluate":
             continue
@@ -103,23 +103,31 @@ def _evaluate_verdicts(steps: list[LoopStep], journal_records) -> dict[str, Opti
         if not step_id:
             step_id = by_slot.get((record.get("iteration"), record.get("dimension")))
         if step_id in step_ids:
-            verdicts[step_id] = _normalize_verdict(record.get("verdict"))
-    return verdicts
+            matched[step_id] = record
+    return matched
+
+
+def _carried_from(record: dict) -> Optional[int]:
+    """rerun: failed — the iteration a carried-over pass was really evaluated in."""
+    value = record.get("evaluated_in_iteration")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _iteration_passing(members: list[dict], dimension_count: int) -> Optional[dict]:
     """An iteration's passed/total evaluators, or None when none has a verdict.
 
     A dimension counts once, by its latest verdict, so a re-run evaluator
-    can't push N past M.
+    can't push N past M. ``carried`` counts dimensions whose latest step is a
+    pass carried over from an earlier iteration; those already count as passed.
     """
     latest = {s["dimension"]: s["verdict"] for s in members if s["verdict"]}
     if not latest:
         return None
-    dimensions = {s["dimension"] for s in members if s["step_type"] == "evaluate"}
+    last_step = {s["dimension"]: s for s in members if s["step_type"] == "evaluate"}
     return {
         "passed": sum(verdict == "pass" for verdict in latest.values()),
-        "total": max(dimension_count, len(dimensions)),
+        "total": max(dimension_count, len(last_step)),
+        "carried": sum(s["carried_from"] is not None for s in last_step.values()),
     }
 
 
@@ -142,12 +150,14 @@ def _loop_timeline(
 
     A finished evaluate step carries its journaled ``verdict``, and an
     iteration with any verdict gets ``passing`` out of ``dimension_count``.
+    Under rerun: failed, a pass carried over from an earlier iteration has
+    ``carried_from`` (and no bar: nothing ran), and a re-check has ``recheck``.
     """
     origin = min(
         [t for t in (loop.started_at, *(step.started_at for step in steps)) if t],
         default=None,
     )
-    verdicts = _evaluate_verdicts(steps, journal_records)
+    records = _evaluate_records(steps, journal_records)
     if loop.status == JobStatus.RUNNING:
         end = now
     else:
@@ -162,6 +172,12 @@ def _loop_timeline(
 
     def timed(step: LoopStep) -> dict:
         start = offset(step.started_at)
+        record = (
+            records.get(step.step_id, {})
+            if step.step_type == "evaluate" and step.status != TaskStatus.RUNNING
+            else {}
+        )
+        carried_from = _carried_from(record)
         return {
             **_serialize_step(step),
             "start_offset": start,
@@ -169,15 +185,13 @@ def _loop_timeline(
                 round((step.completed_at - step.started_at).total_seconds(), 1)
                 if step.started_at and step.completed_at else None
             ),
-            "bar": None if start is None else {
+            "bar": None if start is None or carried_from is not None else {
                 "start": start,
                 "end": max(start, offset(step.completed_at or end)),
             },
-            "verdict": (
-                verdicts.get(step.step_id)
-                if step.step_type == "evaluate" and step.status != TaskStatus.RUNNING
-                else None
-            ),
+            "verdict": _normalize_verdict(record.get("verdict")),
+            "carried_from": carried_from,
+            "recheck": record.get("recheck") is True,
         }
 
     by_iteration: dict[int, list[LoopStep]] = {}

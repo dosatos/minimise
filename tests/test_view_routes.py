@@ -1507,15 +1507,15 @@ def test_loop_timeline_iteration_passing_counts_verdicts_out_of_all_dimensions()
     ]
 
     first, second, third = _verdict_timeline(steps, records, dimension_count=3)["groups"]
-    assert first["passing"] == {"passed": 1, "total": 3}
-    assert second["passing"] == {"passed": 1, "total": 3}
+    assert first["passing"] == {"passed": 1, "total": 3, "carried": 0}
+    assert second["passing"] == {"passed": 1, "total": 3, "carried": 0}
     assert third["passing"] is None  # no verdicts, no sub-line
 
     _, second = _verdict_timeline(steps[:7], records, dimension_count=7)["groups"]
-    assert second["passing"] == {"passed": 1, "total": 7}  # 2 evaluate steps, 7 dimensions
+    assert second["passing"] == {"passed": 1, "total": 7, "carried": 0}  # 2 evaluate steps, 7 dimensions
 
     first, _ = _verdict_timeline(steps[:7], records)["groups"]
-    assert first["passing"] == {"passed": 1, "total": 3}  # no spec: count the steps' dimensions
+    assert first["passing"] == {"passed": 1, "total": 3, "carried": 0}  # no spec: count the steps' dimensions
 
 
 def test_loop_timeline_rerun_evaluator_counts_once_by_its_latest_verdict():
@@ -1529,7 +1529,7 @@ def test_loop_timeline_rerun_evaluator_counts_once_by_its_latest_verdict():
 
     [group] = _verdict_timeline(steps, records, dimension_count=1)["groups"]
 
-    assert group["passing"] == {"passed": 0, "total": 1}
+    assert group["passing"] == {"passed": 0, "total": 1, "carried": 0}
 
 
 def test_get_loop_api_serves_evaluate_verdicts_from_the_journal(client, api_server, db):
@@ -1559,7 +1559,7 @@ def test_get_loop_api_serves_evaluate_verdicts_from_the_journal(client, api_serv
     [group] = data["timeline"]["groups"]
     verdicts = {s["step_id"]: s["verdict"] for s in group["steps"]}
     assert verdicts == {"step-plan": None, "step-eval": "fail"}
-    assert group["passing"] == {"passed": 0, "total": 1}
+    assert group["passing"] == {"passed": 0, "total": 1, "carried": 0}
 
 
 def test_loop_journal_is_read_once_by_detail_views_and_never_by_the_list(
@@ -1597,3 +1597,136 @@ def test_loop_journal_api_renders_findings_list_as_readable_text(client, api_ser
 
     assert entry["message"] == "[low] сцена (s1): «Никто, никогда»\n\n[high] второй пункт"
     assert "\\u" not in entry["raw"] and "«Никто, никогда»" in entry["raw"]
+
+
+def _make_rerun_loop(api_server):
+    from minimise.models import LoopSpec
+
+    spec = LoopSpec.model_validate({
+        "version": "1",
+        "name": "Rerun failed",
+        "goal": "Pass every dimension.",
+        "max_iterations": 5,
+        "loop": {
+            "plan": {}, "implement": {},
+            "evaluate": {
+                "rerun": "failed",
+                "dimensions": [
+                    {"name": "clarity", "rubric": "Clear?"},
+                    {"name": "accuracy", "rubric": "Accurate?"},
+                ],
+            },
+        },
+    })
+    return api_server.loop_store.create(spec, plan_path="/tmp/loop.yaml")
+
+
+def test_get_loop_api_serves_carried_over_passes_and_rechecks(client, api_server, db):
+    """rerun: failed — iteration 2 carries clarity's pass from 1; iteration 3 re-checks it."""
+    from minimise.models import JobStatus, LoopStep, TaskStatus
+    from minimise.orchestration import loop_journal
+
+    loop = _make_rerun_loop(api_server)
+    db.update_loop_status(loop.loop_id, status=JobStatus.COMPLETED,
+                          started_at=_at(0), completed_at=_at(100))
+    jpath = api_server.loop_store.journal_path(loop.loop_id)
+
+    def step(step_id, iteration, step_type, start, end, dimension=None):
+        db.create_loop_step(LoopStep(
+            step_id=step_id, loop_id=loop.loop_id, iteration=iteration,
+            step_type=step_type, dimension=dimension, status=TaskStatus.COMPLETED,
+            started_at=_at(start), completed_at=_at(end),
+        ))
+
+    def record(step_id, iteration, dimension, verdict, **extra):
+        loop_journal.append(jpath, {
+            "step_type": "evaluate", "step_id": step_id, "iteration": iteration,
+            "dimension": dimension, "verdict": verdict, "control": "done", **extra,
+        })
+
+    step("plan-1", 1, "plan", 0, 5)
+    step("eval-1c", 1, "evaluate", 10, 20, "clarity")
+    step("eval-1a", 1, "evaluate", 10, 25, "accuracy")
+    record("eval-1c", 1, "clarity", "pass")
+    record("eval-1a", 1, "accuracy", "fail")
+    step("eval-2a", 2, "evaluate", 30, 45, "accuracy")
+    step("eval-2c", 2, "evaluate", 45, 45, "clarity")  # carried: started_at == completed_at
+    record("eval-2a", 2, "accuracy", "fail")
+    record("eval-2c", 2, "clarity", "pass", evaluated_in_iteration=1, findings=(
+        "Not re-evaluated in iteration 2 (rerun: failed). "
+        "It passed when last evaluated, in iteration 1."))
+    step("eval-3a", 3, "evaluate", 50, 60, "accuracy")
+    step("eval-3c", 3, "evaluate", 60, 70, "clarity")
+    record("eval-3a", 3, "accuracy", "pass")
+    record("eval-3c", 3, "clarity", "pass", recheck=True)
+
+    data = client.get(f"/api/loops/{loop.loop_id}").get_json()
+
+    first, second, third = data["timeline"]["groups"]
+    steps = {s["step_id"]: s for g in (first, second, third) for s in g["steps"]}
+    carried = steps["eval-2c"]
+    assert carried["verdict"] == "pass"
+    assert carried["carried_from"] == 1
+    assert carried["bar"] is None
+    assert carried["recheck"] is False
+    assert second["passing"] == {"passed": 1, "total": 2, "carried": 1}
+
+    assert steps["eval-3c"]["recheck"] is True
+    assert steps["eval-3c"]["carried_from"] is None
+    assert steps["eval-3c"]["bar"] == {"start": 60.0, "end": 70.0}
+    for ordinary in ("plan-1", "eval-1c", "eval-1a", "eval-2a", "eval-3a"):
+        assert steps[ordinary]["recheck"] is False
+        assert steps[ordinary]["carried_from"] is None
+        assert steps[ordinary]["bar"] is not None
+    assert first["passing"] == {"passed": 1, "total": 2, "carried": 0}
+    assert third["passing"] == {"passed": 2, "total": 2, "carried": 0}
+
+
+def test_loop_timeline_carried_from_ignores_non_integer_values():
+    steps = [
+        _loop_step("eval-a", 2, "evaluate", 10, 10, dimension="clarity"),
+        _loop_step("eval-b", 2, "evaluate", 10, 10, dimension="accuracy"),
+    ]
+    records = [
+        {**_verdict("eval-a", "pass"), "evaluated_in_iteration": "1", "recheck": "yes"},
+        {**_verdict("eval-b", "pass"), "evaluated_in_iteration": True},
+    ]
+
+    [group] = _verdict_timeline(steps, records)["groups"]
+
+    assert [(s["carried_from"], s["recheck"]) for s in group["steps"]] == [
+        (None, False), (None, False),
+    ]
+    assert group["passing"]["carried"] == 0
+
+
+def test_loop_detail_page_shows_the_rerun_figure(client, api_server):
+    import re
+
+    def figures(loop):
+        html = client.get(f"/loops/{loop.loop_id}/view").get_data(as_text=True)
+        return re.findall(r"<div><strong>([^<]+)</strong><span>([^<]+)</span></div>", html)
+
+    assert ("failed", "rerun") in figures(_make_rerun_loop(api_server))
+    assert ("all", "rerun") in figures(_make_loop(api_server))  # the default
+
+
+def test_loop_journal_api_renders_carried_over_findings_as_readable_text(client, api_server):
+    from minimise.orchestration import loop_journal
+
+    loop = _make_rerun_loop(api_server)
+    sentence = ("Not re-evaluated in iteration 5 (rerun: failed). "
+                "It passed when last evaluated, in iteration 3.")
+    loop_journal.append(api_server.loop_store.journal_path(loop.loop_id), {
+        "control": "done", "verdict": "pass", "evaluated_in_iteration": 3,
+        "findings": sentence, "timestamp": "2026-10-25T10:00:00",
+        "loop_id": loop.loop_id, "step_id": "step-carried", "iteration": 5,
+        "step_type": "evaluate", "dimension": "clarity", "plan_version": 1,
+    })
+
+    [entry] = client.get(f"/api/loops/{loop.loop_id}/journal").get_json()["records"]
+
+    assert entry["message"] == sentence
+    assert entry["outcome"] == "pass" and entry["stage"] == "Evaluate / clarity"
+    assert entry["iteration"] == 5
+    assert '"evaluated_in_iteration": 3' in entry["raw"]

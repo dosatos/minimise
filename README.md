@@ -268,6 +268,7 @@ loop:
   implement:
     prompt: You are the IMPLEMENTER. Carry out the current plan by editing the tree.
   evaluate:
+    rerun: failed        # all (default) | failed: skip dimensions that already passed
     max_concurrent: 8
     dimensions:
       - name: clarity
@@ -275,6 +276,25 @@ loop:
       - name: completeness
         rubric: Does it cover setup, usage, and testing without gaps?
 ```
+
+**`evaluate.rerun`** decides which dimensions run each iteration:
+
+- `all` (the default) runs every dimension every iteration.
+- `failed` doesn't re-run a dimension that passed. If a dimension's latest verdict
+  from an earlier iteration is `pass`, its pass is carried over and no evaluator
+  runs for it. `fail` and `blocked` both count as failed, so those dimensions
+  always re-run, as does a dimension with no verdict yet.
+- A spec patch (`mini loop patch`, which bumps the plan version) carries no
+  earlier pass over, so the next iteration re-runs everything.
+- Before finishing, the loop re-checks carried-over passes. When every dimension
+  that ran in an iteration passes, the carried-over dimensions run too, in the
+  same iteration, so a loop never finishes on a pass that wasn't re-checked.
+
+In the journal, a carried-over pass is recorded with `"evaluated_in_iteration": N`,
+the iteration where an evaluator last really ran that dimension. A re-check
+evaluation is recorded with `"recheck": true`. `mini loop status` shows a carried
+pass as a faded `✓ from N`; the web page shows "✓ pass (carried over from
+iteration N)".
 
 See [`examples/example-loop.yaml`](examples/example-loop.yaml). Register and run:
 

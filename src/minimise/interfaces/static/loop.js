@@ -77,8 +77,9 @@ function renderLoopTimelineRows(loop) {
     setText("loop-timeline-scale", nowOff != null ? `0 → ${formatSecs(tl.total_secs)}` : "");
 
     function groupRow(g) {
+        const carried = g.passing && g.passing.carried > 0 ? ` · ${g.passing.carried} carried over` : "";
         const passing = g.passing
-            ? `<span class="timeline-sub">${escapeHtml(`${g.passing.passed}/${g.passing.total} passing`)}</span>` : "";
+            ? `<span class="timeline-sub">${escapeHtml(`${g.passing.passed}/${g.passing.total} passing${carried}`)}</span>` : "";
         return `<tr class="timeline-row timeline-group timeline-${g.status}">
             <td class="timeline-step" data-label="Step"><span class="timeline-name">Iteration ${escapeHtml(g.iteration)}</span></td>
             <td data-label="Status"><span class="${statusClass(g.status)}">${escapeHtml(g.status)}</span>${passing}</td>
@@ -88,17 +89,23 @@ function renderLoopTimelineRows(loop) {
     }
 
     // A finished evaluator shows its journaled verdict in place of "completed".
+    // A pass carried over from an earlier iteration (rerun: failed) never ran
+    // here, so it names that iteration and gets no bar.
     function stepRow(s) {
         const label = s.dimension ? `${s.stage} · ${s.dimension}` : s.stage;
+        const recheck = s.recheck ? '<span class="timeline-tag timeline-recheck">re-check</span>' : "";
         const retries = s.retries > 0
             ? `<span class="timeline-sub">${s.retries} ${s.retries === 1 ? "retry" : "retries"}</span>` : "";
-        const status = s.verdict
+        const carried = s.carried_from != null;
+        const status = carried
+            ? `<span class="verdict verdict-pass">${escapeHtml(`✓ pass (carried over from iteration ${s.carried_from})`)}</span>`
+            : s.verdict
             ? `<span class="verdict verdict-${s.verdict}">${VERDICT_LABELS[s.verdict]}</span>`
             : `<span class="${statusClass(s.status)}">${escapeHtml(s.status)}</span>`;
         const barClass = s.verdict ? `verdict-${s.verdict}` : `status-${s.status}`;
 
         let track = '<div class="timeline-track">';
-        if (s.bar && s.bar.end > s.bar.start) {
+        if (!carried && s.bar && s.bar.end > s.bar.start) {
             track += `<span class="timeline-actual ${barClass}" `
                 + `style="left:${pct(s.bar.start)};width:${pct(s.bar.end - s.bar.start)}"></span>`;
         }
@@ -106,7 +113,7 @@ function renderLoopTimelineRows(loop) {
         track += "</div>";
 
         return `<tr class="timeline-row timeline-part timeline-${s.status}">
-            <td class="timeline-step" data-label="Step"><span class="timeline-name">${escapeHtml(label)}</span></td>
+            <td class="timeline-step" data-label="Step"><span class="timeline-name">${escapeHtml(label)}</span>${recheck}</td>
             <td data-label="Status">${status}${retries}</td>
             <td data-label="Duration">${timelineDuration(s, nowOff)}</td>
             <td data-label="Timeline">${track}</td>

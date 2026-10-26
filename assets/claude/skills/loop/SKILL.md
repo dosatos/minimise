@@ -60,6 +60,7 @@ loop:
       You are the IMPLEMENTER. Carry out the current plan by editing the working tree,
       then report what you changed.
   evaluate:
+    rerun: all                 # all (default) | failed — see below
     max_concurrent: 8          # dimensions fan out in parallel, capped by this (code default 4)
     dimensions:
       - name: clarity          # names must be unique
@@ -67,6 +68,13 @@ loop:
       - name: completeness
         rubric: Does it cover setup, usage, and testing without gaps?
 ```
+
+`evaluate.rerun: all | failed`. The default, `all`, runs every dimension every iteration.
+`failed` doesn't re-run a dimension whose latest earlier verdict is `pass`; that pass is carried
+over. `fail` and `blocked` both count as failed and always re-run. A spec patch re-runs
+everything. Before finishing, the loop re-checks carried-over passes: when everything that ran
+passes, the carried ones run too, in the same iteration. In the journal, a carried pass has
+`evaluated_in_iteration` and a re-check has `"recheck": true`.
 
 Each of `plan`, `implement`, and every dimension is a *worker*: it may set **at most one** of
 `prompt:`, `prompt_file:`, or `persona:`. Setting none uses the built-in step default; setting

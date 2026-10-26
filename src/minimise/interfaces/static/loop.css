@@ -62,6 +62,10 @@
     padding: 0.75rem 0.9rem;
     background: var(--surface-raised);
 }
+/* An odd figure out spans the row instead of leaving a grey gap beside it. */
+.loop-spec-stats > div:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+}
 .loop-spec-stats strong,
 .loop-spec-stats span {
     display: block;
@@ -266,6 +270,13 @@
 .timeline-actual.verdict-pass { background: var(--status-completed); }
 .timeline-actual.verdict-fail { background: var(--status-failed); }
 .timeline-actual.verdict-blocked { background: var(--status-stopped); }
+/* rerun: failed — an evaluator that re-checks a carried-over pass. */
+.timeline-tag.timeline-recheck {
+    padding: 0.05rem 0.35rem;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.62rem;
+}
 
 .loop-log-message {
     min-width: 22rem;

@@ -1386,3 +1386,56 @@ def test_render_loop_progress_shows_only_last_n_iterations(monkeypatch):
     assert table.columns[1].header == "5"  # iters 5..12 shown, last -> "now"
     from minimise.interfaces.terminal_ui import loop_progress_summary
     assert loop_progress_summary(records) == "showing last 8 of 12 iterations"
+
+
+# --- rerun: failed — passes carried over from an earlier iteration ---
+
+def _carried_rec(iteration, dimension, evaluated_in_iteration):
+    """A carried-over pass as the engine journals it (no evaluator ran)."""
+    return {**_rec(iteration, dimension, "pass"),
+            "control": "done", "evaluated_in_iteration": evaluated_in_iteration}
+
+
+def test_render_loop_progress_carried_pass_shows_from_n_without_duration(base_time):
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    records = [
+        _rec(1, "tests", "pass"), _rec(1, "lint", "fail"),
+        _rec(2, "lint", "pass"), _carried_rec(2, "tests", 1),
+    ]
+    carried_at = base_time + timedelta(seconds=90)
+    steps = [
+        _estep_timed(1, "tests", TaskStatus.COMPLETED, base_time, base_time + timedelta(seconds=30)),
+        _estep_timed(1, "lint", TaskStatus.COMPLETED, base_time, base_time + timedelta(seconds=30)),
+        _estep_timed(2, "lint", TaskStatus.COMPLETED,
+                     base_time + timedelta(seconds=60), carried_at),
+        # The engine's carried step: started_at == completed_at.
+        _estep_timed(2, "tests", TaskStatus.COMPLETED, carried_at, carried_at),
+    ]
+    table = render_loop_progress_table(_loop(), records, ["tests", "lint"], steps)
+
+    assert _cell(table, 2, 0) == ("✓ from 1", "dim green")  # tests row, iter2: no duration
+    assert _cell(table, 1, 0)[0].startswith("✓ ")           # iter1 really ran: ✓ + duration
+    assert _cell(table, 1, 0)[0] != "✓ from 1"
+    assert table.columns[2].footer == "2/2"                 # the carried pass counts
+    assert table.caption == (
+        "faded ✓ from N = pass carried over from iteration N, not re-run (rerun: failed)"
+    )
+    tests_bar, lint_bar = table.columns[-1]._cells          # nothing ran: no bar
+    assert tests_bar == "" and "█" in lint_bar
+    assert "✓ from 1" in _render_text(table)
+
+
+def test_render_loop_progress_carried_copy_of_a_carried_pass_names_where_it_ran():
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    records = [_rec(1, "tests", "pass"), _carried_rec(2, "tests", 1), _carried_rec(3, "tests", 1)]
+    table = render_loop_progress_table(_loop(), records, ["tests"])
+    assert [_cell(table, col, 0)[0] for col in (1, 2, 3)] == ["✓", "✓ from 1", "✓ from 1"]
+
+
+def test_render_loop_progress_no_caption_without_carried_records():
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    records = [_rec(1, "tests", "pass"), _rec(1, "lint", "fail"),
+               {**_rec(2, "tests", "pass"), "recheck": True}]
+    table = render_loop_progress_table(_loop(), records, ["tests", "lint"])
+    assert table.caption is None
+    assert _cell(table, 2, 0) == ("✓", "green")  # a re-check is an ordinary pass cell
