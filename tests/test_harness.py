@@ -1,6 +1,8 @@
+import dataclasses
 import json
 import os
 import subprocess
+import threading
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -24,6 +26,8 @@ from minimise.agents.harness import (
     _extract_text_codex,
     _extract_error_codex,
 )
+import minimise.agents.harness as harness_module
+from minimise.models import TokenUsage
 
 
 # --- Fake Popen helper for stream-json ---
@@ -1215,3 +1219,172 @@ def test_resolve_prompt_for_worker_unknown_persona_raises():
     factory = HarnessFactory(personas={})
     with pytest.raises(ValueError, match="unknown persona"):
         factory.resolve_prompt_for_worker(Worker(persona="ghost", prompt=None, prompt_file=None))
+
+
+# --- tokens: Claude Code's result event, modelUsage summed over its models ---
+
+# Shaped like a live `claude -p --output-format stream-json --verbose` result
+# event (2026-10-26): modelUsage per model, with cost fields we must never read.
+TWO_MODEL_USAGE = {
+    "claude-opus-5-5": {
+        "inputTokens": 2, "outputTokens": 4, "cacheReadInputTokens": 11334,
+        "cacheCreationInputTokens": 18110, "webSearchRequests": 0,
+        "costUSD": 0.0037, "contextWindow": 1000000, "maxOutputTokens": 64000,
+    },
+    "claude-haiku-5-5": {  # a subagent's model
+        "inputTokens": 300, "outputTokens": 50, "cacheReadInputTokens": 1000,
+        "cacheCreationInputTokens": 0, "costUSD": 0.0009, "contextWindow": 200000,
+    },
+}
+TWO_MODEL_TOKENS = TokenUsage(
+    input=302, cache_read=12334, cache_write=18110, output=54, reasoning=None,
+    by_model={
+        "claude-opus-5-5": {"input": 2, "cache_read": 11334, "cache_write": 18110, "output": 4},
+        "claude-haiku-5-5": {"input": 300, "cache_read": 1000, "cache_write": 0, "output": 50},
+    },
+)
+
+
+def _result_event(model_usage, result="done"):
+    event = {
+        "type": "result", "subtype": "success", "is_error": False, "result": result,
+        "total_cost_usd": 0.0046,
+        # The top-level usage leaves subagents out: it must never be read.
+        "usage": {"input_tokens": 9999, "output_tokens": 9999,
+                  "cache_read_input_tokens": 9999, "cache_creation_input_tokens": 9999},
+    }
+    if model_usage is not None:
+        event["modelUsage"] = model_usage
+    return event
+
+
+def _claude_capture(events):
+    capture = harness_module._ClaudeCapture(MagicMock(), None, None, None)
+    for event in events:
+        capture.consume(event)
+    return capture
+
+
+def test_claude_capture_tokens_sum_model_usage_over_models():
+    capture = _claude_capture([_assistant_event("done"), _result_event(TWO_MODEL_USAGE)])
+
+    assert capture.tokens == TWO_MODEL_TOKENS
+    assert capture.output == "done"  # the output text is untouched
+    stored = json.dumps(capture.tokens.to_json_dict())
+    assert "cost" not in stored.lower() and "9999" not in stored
+
+
+@pytest.mark.parametrize("events", [
+    [_assistant_event("done")],                                    # no result event
+    [_assistant_event("done"), _result_event(None)],               # no modelUsage
+    [_result_event({"claude-opus-5-5": {
+        "inputTokens": 0, "outputTokens": 0, "cacheReadInputTokens": 0,
+        "cacheCreationInputTokens": 0, "costUSD": 0}})],           # all-zero usage
+    [_result_event({})],                                           # no models
+])
+def test_claude_capture_tokens_are_none_when_nothing_is_reported(events):
+    assert _claude_capture(events).tokens is None
+
+
+def test_harness_result_has_no_cost_field():
+    assert not [f.name for f in dataclasses.fields(HarnessResult) if "cost" in f.name.lower()]
+
+
+@pytest.mark.parametrize("returncode, last_text, usage_limit", [
+    (0, "done", None),                                      # success
+    (1, "done", None),                                      # failure
+    (1, LIMIT_LINE, "resets 4:40am (America/Los_Angeles)"),  # usage limit
+])
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_claude_run_puts_tokens_on_the_result(mock_popen, returncode, last_text, usage_limit):
+    mock_popen.side_effect = make_fake_popen([
+        json.dumps(_assistant_event(last_text)),
+        json.dumps(_result_event(TWO_MODEL_USAGE, result=last_text)),
+    ], returncode=returncode)
+
+    result = ClaudeCodeHarness().run("hi")
+
+    assert result.success is (returncode == 0)
+    assert result.usage_limit == usage_limit
+    assert result.tokens == TWO_MODEL_TOKENS
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_claude_run_keeps_tokens_seen_before_a_timeout(mock_popen):
+    released = threading.Event()
+
+    class _ResultThenHang:
+        def __init__(self):
+            self._lines = iter([json.dumps(_result_event(TWO_MODEL_USAGE))])
+        def __iter__(self):
+            return self
+        def __next__(self):
+            line = next(self._lines, None)
+            if line is not None:
+                return line
+            released.wait()  # hang until proc.kill()
+            raise StopIteration
+
+    def factory(*args, **kwargs):
+        proc = MagicMock()
+        proc.stdin = MagicMock()
+        proc.stdout = _ResultThenHang()
+        proc.stderr = MagicMock()
+        proc.stderr.read.return_value = ""
+        proc.kill.side_effect = lambda: released.set()
+        return proc
+    mock_popen.side_effect = factory
+
+    result = ClaudeCodeHarness().run("hi", timeout=0.2)
+
+    assert result.exit_reason == "timeout"
+    assert result.tokens == TWO_MODEL_TOKENS
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_claude_run_without_a_result_event_has_no_tokens(mock_popen):
+    mock_popen.side_effect = make_fake_popen([json.dumps(_assistant_event("done"))])
+    assert ClaudeCodeHarness().run("hi").tokens is None
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_pi_and_codex_report_no_tokens(mock_popen):
+    pi_end = _pi_final_event("done")
+    pi_end["message"]["usage"] = {"input": 5, "output": 6, "cacheRead": 7, "cacheWrite": 8}
+    mock_popen.side_effect = make_fake_popen([json.dumps(pi_end)])
+    pi = PiHarness().run("hi")
+    assert pi.success and pi.output == "done" and pi.tokens is None
+
+    mock_popen.side_effect = make_fake_popen([
+        json.dumps(_codex_message_event("done")),
+        json.dumps({"type": "turn.completed",
+                    "usage": {"input_tokens": 5, "cached_input_tokens": 1, "output_tokens": 6}}),
+    ])
+    codex = CodexHarness().run("hi")
+    assert codex.success and codex.output == "done" and codex.tokens is None
+
+
+def test_pi_and_codex_captures_inherit_the_none_tokens_hook():
+    for capture_cls in (harness_module._PiCapture, harness_module._CodexCapture):
+        assert capture_cls.tokens is harness_module._JsonlCapture.tokens
+        assert capture_cls(MagicMock(), None, None, None).tokens is None
+
+
+@patch("minimise.agents.harness.subprocess.Popen")
+def test_another_harness_reports_tokens_by_overriding_only_its_capture_hook(mock_popen, monkeypatch):
+    """The extension point: a capture subclass that overrides only `tokens` puts
+    them on the HarnessResult, with nothing outside that class changed."""
+    reported = TokenUsage(input=5, cache_read=1, cache_write=None, output=6)
+
+    class _CodexCaptureWithTokens(harness_module._CodexCapture):
+        @property
+        def tokens(self):
+            return reported
+
+    monkeypatch.setattr(harness_module, "_CodexCapture", _CodexCaptureWithTokens)
+    mock_popen.side_effect = make_fake_popen([json.dumps(_codex_message_event("done"))])
+
+    result = CodexHarness().run("hi")
+
+    assert result.success and result.output == "done"
+    assert result.tokens == reported

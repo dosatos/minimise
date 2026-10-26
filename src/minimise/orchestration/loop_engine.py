@@ -320,6 +320,8 @@ class LoopEngine:
         evaluator queued behind one that hit the usage limit never starts), and
         when the agent hits its usage limit: that is no malformed reply, so it
         is not retried, and with no record journaled resume re-runs the step.
+
+        The step's tokens add up every attempt's, written as each one returns.
         """
         if self._stopped(loop_id):
             raise LoopStopped(f"{step_type} step not started: loop {loop_id} is stopped")
@@ -338,6 +340,7 @@ class LoopEngine:
         feedback = ""
         session_id = None  # the latest full run's session; resumable harnesses only
         resume = False  # True: ask that session for just the control line
+        tokens = None  # every attempt's so far; None while none reported any
         for attempt in range(self.MAX_RETRIES + 1):
             if attempt and self._stopped(loop_id):  # spend no retry on a stopped loop
                 self._stop_step(loop_id, step_id)
@@ -360,6 +363,10 @@ class LoopEngine:
                 log_filter=journal.strip_control_line,  # journal owns the control line; keep logs reasoning-only
                 session_id=session_id, resume=resume,
             )
+            if result.tokens is not None:  # stored at once, so a later stop or crash keeps them
+                tokens = tokens + result.tokens
+                with self._db_lock:
+                    self.db.update_loop_step(step_id, tokens=tokens)
             if result.usage_limit is not None:
                 reason = usage_limit_reason(result.usage_limit)
                 self._stop_step(loop_id, step_id, stop_reason=reason)

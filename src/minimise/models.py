@@ -20,6 +20,95 @@ class JobStatus(Enum):
     FAILED = "failed"
     STOPPED = "stopped"
 
+
+def _add_counts(a: Optional[int], b: Optional[int]) -> Optional[int]:
+    """a + b, where None means not reported: None only if neither side reported."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return a + b
+
+
+@dataclass
+class TokenUsage:
+    """The tokens one agent run used. None = the harness didn't report it.
+
+    The four buckets split the tokens with no overlap: input is the tokens
+    neither read from nor written to the cache. reasoning (never added to
+    total) and by_model (model id -> the four buckets) are stored, never shown.
+    """
+    input: Optional[int]
+    cache_read: Optional[int]
+    cache_write: Optional[int]
+    output: Optional[int]
+    reasoning: Optional[int] = None
+    by_model: Optional[dict] = None
+
+    BUCKETS = ("input", "cache_read", "cache_write", "output")
+
+    @classmethod
+    def reported(cls, input: Optional[int], cache_read: Optional[int],
+                 cache_write: Optional[int], output: Optional[int],
+                 reasoning: Optional[int] = None,
+                 by_model: Optional[dict] = None) -> Optional["TokenUsage"]:
+        """A TokenUsage, or None when no bucket holds a count: all None or all zero
+        (some harnesses emit all-zero usage when they report nothing)."""
+        if not any((input, cache_read, cache_write, output)):
+            return None
+        return cls(input, cache_read, cache_write, output, reasoning, by_model)
+
+    @property
+    def total(self) -> int:
+        """The sum of the reported buckets; reasoning is never added."""
+        return sum(getattr(self, b) for b in self.BUCKETS if getattr(self, b) is not None)
+
+    def __add__(self, other: Optional["TokenUsage"]) -> "TokenUsage":
+        """Two runs' tokens together. Adding None (nothing reported) changes nothing."""
+        if other is None:
+            return self
+        if not isinstance(other, TokenUsage):
+            return NotImplemented
+        by_model = None
+        if self.by_model is not None or other.by_model is not None:
+            by_model = {}
+            for side in (self.by_model or {}, other.by_model or {}):
+                for model, counts in side.items():
+                    merged = by_model.get(model, {})
+                    by_model[model] = {b: _add_counts(merged.get(b), counts.get(b))
+                                       for b in self.BUCKETS}
+        return TokenUsage(
+            *(_add_counts(getattr(self, b), getattr(other, b)) for b in self.BUCKETS),
+            reasoning=_add_counts(self.reasoning, other.reasoning),
+            by_model=by_model,
+        )
+
+    __radd__ = __add__  # None + usage is usage too
+
+    def to_json_dict(self) -> dict:
+        """The stored form (the tokens column). Not the API shape: that never
+        carries reasoning or by_model."""
+        return {
+            "input": self.input,
+            "cache_read": self.cache_read,
+            "cache_write": self.cache_write,
+            "output": self.output,
+            "reasoning": self.reasoning,
+            "by_model": self.by_model,
+        }
+
+    @classmethod
+    def from_json_dict(cls, data: dict) -> "TokenUsage":
+        return cls(
+            input=data.get("input"),
+            cache_read=data.get("cache_read"),
+            cache_write=data.get("cache_write"),
+            output=data.get("output"),
+            reasoning=data.get("reasoning"),
+            by_model=data.get("by_model"),
+        )
+
+
 @dataclass
 class Task:
     id: str
@@ -76,6 +165,7 @@ class Execution:
     commit_sha: Optional[str] = None
     hook_name: Optional[str] = None  # set on hooks; NULL for task attempts
     exit_reason: Optional[str] = None  # machine classification of how the run ended
+    tokens: Optional[TokenUsage] = None  # task attempts only; None = not reported
 
     @property
     def execution_id(self) -> str:
@@ -331,3 +421,4 @@ class LoopStep:
     retries: int = 0
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    tokens: Optional[TokenUsage] = None  # every attempt's, gate retries included; None = not reported

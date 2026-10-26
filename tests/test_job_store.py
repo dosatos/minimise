@@ -1,6 +1,6 @@
 import os
 
-from minimise.models import JobStatus, Plan, PlanTask
+from minimise.models import JobStatus, Plan, PlanTask, TaskStatus, TokenUsage
 from minimise.storage.job_store import JobStore
 
 
@@ -119,3 +119,46 @@ def test_load_many_downgrades_crashed_job_in_list(db, temp_db_dir):
 
     listed = {j.id: j for j in store.load_many()}
     assert listed[job.id].status == JobStatus.FAILED
+
+
+def _attempt(db, task):
+    [row] = [e for e in db.list_executions_for_task(task.id) if e.execution_type == "task"]
+    return row
+
+
+def test_closers_store_the_tokens_they_are_given(db, temp_db_dir):
+    store = JobStore(db, temp_db_dir / "jobs")
+    tokens = TokenUsage(input=2, cache_read=300, cache_write=40, output=5)
+    task = _new_job(store).tasks[0]
+
+    store.mark_running(task, 0)
+    assert _attempt(db, task).tokens is None  # a running attempt has none yet
+    store.mark_task_usage_limited(task, "usage limit", tokens=tokens)
+
+    assert (_attempt(db, task).status, _attempt(db, task).tokens) == (TaskStatus.STOPPED, tokens)
+
+
+def test_a_pre_task_hook_failure_stores_no_tokens(db, temp_db_dir):
+    store = JobStore(db, temp_db_dir / "jobs")
+    task = _new_job(store).tasks[0]
+
+    store.mark_task_failed(task, "Pre-task hook failed")  # as JobExecutor does: no agent ran
+
+    row = _attempt(db, task)
+    assert (row.status, row.started_at, row.tokens) == (TaskStatus.FAILED, None, None)
+
+
+def test_re_closing_a_resumed_tasks_attempt_keeps_its_runs_tokens(db, temp_db_dir):
+    """A resumed task whose pre_task hook fails re-closes its last attempt's row:
+    that row keeps the run's tokens, as it keeps the run's started_at."""
+    store = JobStore(db, temp_db_dir / "jobs")
+    tokens = TokenUsage(input=2, cache_read=300, cache_write=40, output=5)
+    task = _new_job(store).tasks[0]
+    store.mark_running(task, 0)
+    store.mark_task_usage_limited(task, "usage limit", tokens=tokens)
+    started_at = _attempt(db, task).started_at
+
+    store.mark_task_failed(task, "Pre-task hook failed")
+
+    row = _attempt(db, task)
+    assert (row.status, row.started_at, row.tokens) == (TaskStatus.FAILED, started_at, tokens)

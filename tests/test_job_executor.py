@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from minimise.agents.harness import AgentHarness, HarnessResult
-from minimise.models import Job, JobStatus, Plan, Task, TaskStatus
+from minimise.models import Job, JobStatus, Plan, Task, TaskStatus, TokenUsage
 from minimise.orchestration.hook_executor import HookExecutor
 from minimise.orchestration.job_executor import JobExecutor
 from minimise.orchestration.task_executor import JobStopped, TaskExecutor
@@ -284,6 +284,48 @@ def test_pre_task_hook_failure_skips_task(temp_db_dir, db, git_repo):
     assert harness.prompts == []  # task never ran
     failed = db.get_task(t1.id)
     assert failed.status == TaskStatus.FAILED
+
+
+class _TokenReportingHarness(AgentHarness):
+    """An agent run that reports tokens, as Claude Code does."""
+
+    TOKENS = TokenUsage(input=2, cache_read=300, cache_write=40, output=5)
+
+    def run(self, prompt, **kw):
+        return HarnessResult(success=True, output="ok", exit_reason="success", tokens=self.TOKENS)
+
+
+def test_hook_rows_and_the_pre_task_hook_failure_row_store_no_tokens(temp_db_dir, db, git_repo):
+    git_tracker = GitTracker(git_repo)
+    store = JobStore(db, temp_db_dir)
+    job, plan, t1 = _single_task_job(
+        db, git_tracker, pre=[{"name": "check", "shell": "exit 1", "estimated_duration_min": 1}])
+    executor = JobExecutor(
+        TaskExecutor(store, git_tracker, factory=_FixedHarnessFactory(_TokenReportingHarness())),
+        HookExecutor(store=store, job_id=job.id))
+
+    assert executor.execute(job, plan) is False
+
+    rows = {(e.execution_type, e.hook_name): e for e in db.list_executions_for_task(t1.id)}
+    assert set(rows) == {("pre_task", "check"), ("task", None)}
+    task_row = rows[("task", None)]
+    assert task_row.status == TaskStatus.FAILED and task_row.started_at is None  # no agent ran
+    assert [e.tokens for e in rows.values()] == [None, None]
+
+
+def test_post_task_hook_rows_store_no_tokens_but_the_attempt_does(temp_db_dir, db, git_repo):
+    git_tracker = GitTracker(git_repo)
+    store = JobStore(db, temp_db_dir)
+    job, plan, t1 = _single_task_job(
+        db, git_tracker, post=[{"name": "tests", "shell": "true", "estimated_duration_min": 1}])
+    executor = JobExecutor(
+        TaskExecutor(store, git_tracker, factory=_FixedHarnessFactory(_TokenReportingHarness())),
+        HookExecutor(store=store, job_id=job.id))
+
+    assert executor.execute(job, plan)
+
+    rows = {(e.execution_type, e.hook_name): e.tokens for e in db.list_executions_for_task(t1.id)}
+    assert rows == {("post_task", "tests"): None, ("task", None): _TokenReportingHarness.TOKENS}
 
 
 def test_pre_plan_hook_receives_plan_yaml_on_stdin(temp_db_dir, db, git_repo, tmp_path):

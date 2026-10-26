@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable, Optional, Union
 
 from minimise.logging.backend import JobLogBackend, JsonlLogBackend
+from minimise.models import TokenUsage
 
 # Canonical harness identifiers — use these everywhere instead of bare strings
 # so grep/reference-finding stays precise as the registry grows.
@@ -51,6 +52,8 @@ class HarnessResult:
     # the run, and this is the reset text from its message
     # ("resets 4:40am (America/Los_Angeles)"), or "" when it gave none.
     usage_limit: Optional[str] = None
+    # The tokens the run used, or None when the harness reported none.
+    tokens: Optional[TokenUsage] = None
 
 
 # Claude Code's whole reply when the subscription limit is hit, e.g.
@@ -96,6 +99,39 @@ def _extract_text(event: dict) -> str:
         for block in content
         if isinstance(block, dict) and block.get("type") == "text"
     )
+
+
+# The modelUsage key of each TokenUsage bucket in Claude Code's result event.
+_CLAUDE_TOKEN_KEYS = {
+    "input": "inputTokens",
+    "cache_read": "cacheReadInputTokens",
+    "cache_write": "cacheCreationInputTokens",
+    "output": "outputTokens",
+}
+
+
+def _token_count(value) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _claude_tokens(model_usage) -> Optional[TokenUsage]:
+    """The result event's modelUsage summed over its models, or None without one.
+
+    modelUsage counts subagents too; the event's top-level "usage" leaves them
+    out, so it is never read. Nor is costUSD: tokens only.
+    """
+    if not isinstance(model_usage, dict):
+        return None
+    by_model = {
+        model: {bucket: _token_count(usage.get(key)) for bucket, key in _CLAUDE_TOKEN_KEYS.items()}
+        for model, usage in model_usage.items()
+        if isinstance(usage, dict)
+    }
+    total = sum((TokenUsage(**counts) for counts in by_model.values()), None)
+    if total is None:
+        return None
+    return TokenUsage.reported(total.input, total.cache_read, total.cache_write, total.output,
+                               by_model=by_model)
 
 
 def _extract_text_pi_live(event: dict) -> str:
@@ -293,6 +329,11 @@ class _JsonlCapture(ABC):
         """HarnessResult.usage_limit; only harnesses that detect it override this."""
         return None
 
+    @property
+    def tokens(self) -> Optional[TokenUsage]:
+        """HarnessResult.tokens; only harnesses that report token usage override this."""
+        return None
+
     def _append(self, text: str, *, record: bool = True) -> None:
         self.state.chunks.append(text)
         if record:
@@ -318,13 +359,20 @@ class _ClaudeCapture(_JsonlCapture):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._result_text: Optional[str] = None
+        self._model_usage = None  # the result event's modelUsage
 
     def consume(self, event: dict) -> None:
         text = _extract_text(event)
         if text:
             self._append(text)
-        elif event.get("type") == "result" and isinstance(event.get("result"), str):
-            self._result_text = event["result"]
+        elif event.get("type") == "result":
+            if isinstance(event.get("result"), str):
+                self._result_text = event["result"]
+            self._model_usage = event.get("modelUsage")
+
+    @property
+    def tokens(self) -> Optional[TokenUsage]:
+        return _claude_tokens(self._model_usage)
 
     @property
     def usage_limit(self) -> Optional[str]:
@@ -425,8 +473,10 @@ def _kill_and_reap(proc: "subprocess.Popen") -> None:
 
 
 def _capture_result(capture: _JsonlCapture, **fields) -> HarnessResult:
-    """A HarnessResult carrying what the capture saw: its output and usage_limit."""
-    return HarnessResult(output=capture.output, usage_limit=capture.usage_limit, **fields)
+    """A HarnessResult carrying what the capture saw: its output, usage_limit and tokens."""
+    return HarnessResult(
+        output=capture.output, usage_limit=capture.usage_limit, tokens=capture.tokens, **fields
+    )
 
 
 def _run_jsonl_subprocess(

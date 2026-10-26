@@ -1,4 +1,4 @@
-from minimise.models import Job, Task, Execution, Loop, LoopStep, JobStatus, TaskStatus
+from minimise.models import Job, Task, Execution, Loop, LoopStep, JobStatus, TaskStatus, TokenUsage
 from minimise.storage.database import Database
 from minimise.utils import new_id
 from datetime import datetime
@@ -793,7 +793,7 @@ def test_v8_db_migrates_to_v9_with_rows_intact_and_stop_reason_null(tmp_path):
     db.init_db()
 
     conn = sqlite3.connect(db_path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 9 == Database.SCHEMA_VERSION
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == Database.SCHEMA_VERSION
     conn.close()
     job, loop = db.get_job("j1"), db.get_loop("l1")
     assert (job.name, job.status, job.plan_path, job.pid) == ("job", JobStatus.STOPPED, "/p.yaml", 7)
@@ -815,3 +815,115 @@ def test_stop_reason_is_kept_until_cleared(db):
         assert get(key).stop_reason == "usage limit: resets 4am"
         update(key, status=JobStatus.RUNNING, stop_reason=None)
         assert get(key).stop_reason is None
+
+
+def test_v9_db_migrates_to_v10_with_rows_intact_and_tokens_null(tmp_path):
+    """v10 adds loop_steps.tokens and executions.tokens; existing rows keep their data."""
+    db_path = tmp_path / "v9.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+        CREATE TABLE jobs (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL,
+            plan_path TEXT, base_commit TEXT, created_at TEXT NOT NULL,
+            started_at TEXT, completed_at TEXT, pid INTEGER, stop_reason TEXT
+        );
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY, job_id TEXT NOT NULL, name TEXT NOT NULL,
+            description TEXT, status TEXT NOT NULL, retries INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT,
+            diff_path TEXT, base_commit TEXT, goal TEXT, assignee TEXT, harness TEXT,
+            model TEXT, estimated_duration_min INTEGER NOT NULL DEFAULT 5,
+            FOREIGN KEY(job_id) REFERENCES jobs(id)
+        );
+        CREATE TABLE executions (
+            execution_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, task_id TEXT,
+            execution_type TEXT NOT NULL DEFAULT 'task', attempt INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL, started_at TEXT, completed_at TEXT, diff_path TEXT,
+            commit_sha TEXT, hook_name TEXT, exit_reason TEXT,
+            FOREIGN KEY(job_id) REFERENCES jobs(id), FOREIGN KEY(task_id) REFERENCES tasks(id)
+        );
+        CREATE TABLE loops (
+            loop_id TEXT PRIMARY KEY, name TEXT, status TEXT, plan_path TEXT,
+            max_iterations INTEGER, created_at TEXT, started_at TEXT,
+            completed_at TEXT, pid INTEGER, stop_reason TEXT
+        );
+        CREATE TABLE loop_steps (
+            step_id TEXT PRIMARY KEY, loop_id TEXT, iteration INTEGER, step_type TEXT,
+            dimension TEXT, status TEXT, retries INTEGER, started_at TEXT,
+            completed_at TEXT, FOREIGN KEY(loop_id) REFERENCES loops(loop_id)
+        );
+        INSERT INTO jobs (id, name, status, plan_path, created_at, pid, stop_reason)
+            VALUES ('j1', 'job', 'stopped', '/p.yaml', '2026-10-01T00:00:00', 7, 'usage limit');
+        INSERT INTO tasks (id, job_id, name, description, status, retries, created_at, goal)
+            VALUES ('t1', 'j1', 'task', 'd', 'stopped', 1, '2026-10-01T00:00:00', 'g');
+        INSERT INTO executions (execution_id, job_id, task_id, execution_type, attempt, status,
+                                started_at, completed_at, commit_sha, exit_reason)
+            VALUES ('job#j1#task#t1#attempt#1', 'j1', 't1', 'task', 1, 'completed',
+                    '2026-10-01T00:00:00', '2026-10-01T00:05:00', 'abc123', 'success');
+        INSERT INTO loops (loop_id, name, status, plan_path, max_iterations, created_at, pid)
+            VALUES ('l1', 'loop', 'stopped', '/l.yaml', 5, '2026-10-01T00:00:00', 9);
+        INSERT INTO loop_steps (step_id, loop_id, iteration, step_type, dimension, status, retries,
+                                started_at, completed_at)
+            VALUES ('s1', 'l1', 2, 'evaluate', 'clarity', 'completed', 1,
+                    '2026-10-01T00:00:00', '2026-10-01T00:03:00');
+        PRAGMA user_version = 9;
+    """)
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path)
+    db.init_db()
+
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 10 == Database.SCHEMA_VERSION
+    assert conn.execute("SELECT tokens FROM executions").fetchall() == [(None,)]
+    assert conn.execute("SELECT tokens FROM loop_steps").fetchall() == [(None,)]
+    conn.close()
+    [ex] = db.list_executions_for_task("t1")
+    assert (ex.attempt, ex.status, ex.commit_sha, ex.exit_reason) == (
+        1, TaskStatus.COMPLETED, "abc123", "success")
+    assert ex.completed_at == datetime(2026, 10, 1, 0, 5) and ex.tokens is None
+    [step] = db.list_loop_steps("l1")
+    assert (step.iteration, step.dimension, step.status, step.retries) == (
+        2, "clarity", TaskStatus.COMPLETED, 1)
+    assert step.completed_at == datetime(2026, 10, 1, 0, 3) and step.tokens is None
+    assert db.get_job("j1").stop_reason == "usage limit"
+
+
+_TOKENS = TokenUsage(
+    input=302, cache_read=12334, cache_write=18110, output=54, reasoning=12,
+    by_model={
+        "claude-opus-5-5": {"input": 2, "cache_read": 11334, "cache_write": 18110, "output": 4},
+        "claude-haiku-5-5": {"input": 300, "cache_read": 1000, "cache_write": 0, "output": 50},
+    },
+)
+
+
+def test_save_execution_twice_keeps_tokens(db):
+    ex = Execution(task_id="t1", attempt=0, job_id="j1", status=TaskStatus.RUNNING,
+                   started_at=datetime(2026, 1, 1), tokens=_TOKENS)
+    db.save_execution(ex)
+    ex.status = TaskStatus.COMPLETED
+    db.save_execution(ex)  # INSERT OR REPLACE rewrites the whole row
+
+    [got] = db.list_executions_for_task("t1")
+    assert got.status == TaskStatus.COMPLETED
+    assert got.tokens == _TOKENS  # by_model and reasoning round-trip too
+
+
+def test_execution_without_tokens_reads_back_none(db):
+    db.save_execution(Execution(task_id="t1", attempt=0, job_id="j1"))
+    assert db.list_executions_for_task("t1")[0].tokens is None
+
+
+def test_loop_step_tokens_round_trip_and_survive_other_updates(db):
+    db.create_loop(Loop(loop_id="l1", name="n"))
+    db.create_loop_step(LoopStep(step_id="s1", loop_id="l1", iteration=1, step_type="plan"))
+    assert db.list_loop_steps("l1")[0].tokens is None
+
+    db.update_loop_step("s1", tokens=_TOKENS)
+    db.update_loop_step("s1", status=TaskStatus.COMPLETED, completed_at=datetime.utcnow())
+
+    [step] = db.list_loop_steps("l1")
+    assert step.status == TaskStatus.COMPLETED
+    assert step.tokens == _TOKENS

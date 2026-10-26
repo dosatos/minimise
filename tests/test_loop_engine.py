@@ -6,6 +6,7 @@ every branch of the plan→implement→evaluate orchestrator is exercised
 deterministically.
 """
 
+import dataclasses
 import importlib
 import json
 import re
@@ -20,7 +21,7 @@ import yaml
 from click.testing import CliRunner
 
 from minimise.agents.harness import AgentHarness, ClaudeCodeHarness, HarnessFactory, HarnessResult
-from minimise.models import JobStatus, LoopSpec, TaskStatus, Worker
+from minimise.models import JobStatus, LoopSpec, TaskStatus, TokenUsage, Worker
 from minimise.orchestration import loop_journal as journal
 from minimise.orchestration.loop_engine import LoopEngine, _latest_valid_plan
 from minimise.personas import Persona
@@ -337,8 +338,9 @@ def test_usage_limit_on_a_resumed_retry_stops_the_loop(tmp_path):
     assert step.status == TaskStatus.STOPPED and step.retries == 1
 
 
-def _stream_proc(text):
-    """A fake `claude -p` process: it reads its stdin prompt (kept in .prompt), then emits `text`."""
+def _stream_proc(text, model_usage=None):
+    """A fake `claude -p` process: it reads its stdin prompt (kept in .prompt), then
+    emits `text`, and a result event carrying model_usage when given."""
     read = threading.Event()
     proc = MagicMock()
 
@@ -349,6 +351,9 @@ def _stream_proc(text):
     def stdout():
         read.wait(5)
         yield json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
+        if model_usage is not None:
+            yield json.dumps({"type": "result", "result": text, "modelUsage": model_usage,
+                              "usage": {"input_tokens": 9999, "output_tokens": 9999}})
 
     proc.stdin.write.side_effect = write
     proc.stdout = stdout()
@@ -373,6 +378,32 @@ def test_claude_code_gate_retry_resumes_the_session(tmp_path):
     assert "Goal: make it better" in procs[0].prompt
     assert "Goal:" not in procs[1].prompt
     assert "ONLY the single JSON control line" in procs[1].prompt
+
+
+def test_claude_code_step_stores_model_usage_summed_over_models_and_attempts(tmp_path):
+    db, store, lid = _build(tmp_path)
+    opus = {"inputTokens": 2, "outputTokens": 4, "cacheReadInputTokens": 11334,
+            "cacheCreationInputTokens": 18110, "costUSD": 0.0037, "contextWindow": 1000000}
+    haiku = {"inputTokens": 300, "outputTokens": 50, "cacheReadInputTokens": 1000,
+             "cacheCreationInputTokens": 0, "costUSD": 0.0009}
+    procs = [
+        _stream_proc("Planned it.", {"claude-opus-5-5": opus, "claude-haiku-5-5": haiku}),
+        _stream_proc('{"control":"done"}', {"claude-opus-5-5": opus}),  # the gate retry
+    ]
+    with patch("minimise.agents.harness.subprocess.Popen", side_effect=procs):
+        LoopEngine(factory=_fixed(ClaudeCodeHarness()), store=store, db=db)._run_step(
+            lid, store.load_spec(lid), store.journal_path(lid), "plan", Worker(prompt="plan it"), 1
+        )
+
+    [step] = db.list_loop_steps(lid)
+    assert step.retries == 1
+    assert step.tokens == TokenUsage(
+        input=304, cache_read=23668, cache_write=36220, output=58, reasoning=None,
+        by_model={
+            "claude-opus-5-5": {"input": 4, "cache_read": 22668, "cache_write": 36220, "output": 8},
+            "claude-haiku-5-5": {"input": 300, "cache_read": 1000, "cache_write": 0, "output": 50},
+        },
+    )
 
 
 # --- 5) resume re-runs ONLY the missing dimension -------------------------------
@@ -503,6 +534,57 @@ def test_usage_limit_without_reset_text_is_just_usage_limit(tmp_path):
     status, db, store, lid = _run(tmp_path, h)
     assert status == JobStatus.STOPPED
     assert db.get_loop(lid).stop_reason == "usage limit"
+
+
+# --- 6c) tokens: a step stores every attempt's, gate retries included ---------
+
+def _tokens(n, model="claude-opus-5-5"):
+    """TokenUsage of n input, 10n cache_read, 2n cache_write, n output, all on one model."""
+    counts = {"input": n, "cache_read": 10 * n, "cache_write": 2 * n, "output": n}
+    return TokenUsage(**counts, by_model={model: dict(counts)})
+
+
+def test_gate_retry_tokens_add_up_on_the_step(tmp_path):
+    h = StubHarness({("plan", 1, None): [
+        HarnessResult(success=True, output="no json at all", tokens=_tokens(1)),
+        HarnessResult(success=True, output='{"control":"done"}', tokens=_tokens(5, "claude-haiku-5-5")),
+    ]})
+    status, db, store, lid = _run(tmp_path, h)
+
+    assert status == JobStatus.COMPLETED
+    [step] = _steps(db, lid, step_type="plan")
+    assert step.retries == 1
+    assert step.tokens == TokenUsage(input=6, cache_read=60, cache_write=12, output=6, by_model={
+        "claude-opus-5-5": {"input": 1, "cache_read": 10, "cache_write": 2, "output": 1},
+        "claude-haiku-5-5": {"input": 5, "cache_read": 50, "cache_write": 10, "output": 5},
+    })
+
+
+def test_a_harness_reporting_no_tokens_leaves_every_step_null(tmp_path):
+    h = StubHarness({
+        ("plan", 1, None): ['{"control":"continue"}'],
+        ("plan", 2, None): ['{"control":"done"}'],
+    })
+    status, db, store, lid = _run(tmp_path, h)
+
+    assert status == JobStatus.COMPLETED
+    steps = db.list_loop_steps(lid)
+    assert {s.step_type for s in steps} == {"plan", "implement", "evaluate"}
+    assert [s.tokens for s in steps] == [None] * len(steps)
+
+
+def test_a_usage_limit_stop_keeps_the_tokens_already_used(tmp_path):
+    """The limited attempt's tokens add to the rejected attempt's before it."""
+    h = StubHarness({("plan", 1, None): [
+        HarnessResult(success=True, output="no json at all", tokens=_tokens(1)),
+        dataclasses.replace(_limit(), tokens=_tokens(2)),
+    ]})
+    status, db, store, lid = _run(tmp_path, h)
+
+    assert status == JobStatus.STOPPED
+    [step] = _steps(db, lid, step_type="plan")
+    assert step.status == TaskStatus.STOPPED
+    assert step.tokens == _tokens(3)
 
 
 def _limited_eval_wave(tmp_path):

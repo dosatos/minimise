@@ -362,3 +362,49 @@ def test_harness_and_assignee_mutually_exclusive():
     with pytest.raises(ValueError, match="mutually exclusive"):
         PlanTask(id="t1", name="N", description="d", goal="g",
                  estimated_duration_min=5, harness="pi", assignee="auditor")
+
+
+# --- TokenUsage ---
+
+def test_token_usage_reported_is_none_when_no_bucket_holds_a_count():
+    from minimise.models import TokenUsage
+    assert TokenUsage.reported(None, None, None, None) is None
+    assert TokenUsage.reported(0, 0, 0, 0, by_model={"m": {"input": 0}}) is None
+    assert TokenUsage.reported(0, None, 5, None) == TokenUsage(0, None, 5, None)
+
+
+def test_token_usage_total_sums_the_reported_buckets_without_reasoning():
+    from minimise.models import TokenUsage
+    assert TokenUsage(2, 11334, 18110, 4, reasoning=900).total == 29450
+    assert TokenUsage(None, 10, None, 5).total == 15
+
+
+def test_token_usage_addition():
+    from minimise.models import TokenUsage
+    a = TokenUsage(1, 10, None, 5, reasoning=None,
+                   by_model={"opus": {"input": 1, "cache_read": 10, "cache_write": None, "output": 5}})
+    b = TokenUsage(2, None, None, 7, reasoning=3,
+                   by_model={"opus": {"input": 1, "cache_read": None, "cache_write": None, "output": 2},
+                             "haiku": {"input": 1, "cache_read": None, "cache_write": None, "output": 5}})
+
+    total = a + b
+
+    # A bucket is None only when neither side reported it.
+    assert (total.input, total.cache_read, total.cache_write, total.output) == (3, 10, None, 12)
+    assert total.reasoning == 3
+    assert total.by_model == {
+        "opus": {"input": 2, "cache_read": 10, "cache_write": None, "output": 7},
+        "haiku": {"input": 1, "cache_read": None, "cache_write": None, "output": 5},
+    }
+    # Adding None (nothing reported) changes nothing, from either side.
+    assert a + None == a and None + a == a
+    assert TokenUsage(1, 1, 1, 1) + TokenUsage(1, 1, 1, 1) == TokenUsage(2, 2, 2, 2)
+
+
+def test_token_usage_json_dict_round_trips():
+    from minimise.models import TokenUsage
+    usage = TokenUsage(2, 11334, 18110, 4, reasoning=7,
+                       by_model={"opus": {"input": 2, "cache_read": 11334, "cache_write": 18110, "output": 4}})
+    stored = usage.to_json_dict()
+    assert set(stored) == {"input", "cache_read", "cache_write", "output", "reasoning", "by_model"}
+    assert TokenUsage.from_json_dict(stored) == usage
