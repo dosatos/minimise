@@ -365,6 +365,18 @@ class _PromptStub(StubHarness):
         return super().run(prompt, **kw)
 
 
+def test_prompt_carries_non_ascii_journal_text_raw(tmp_path):
+    h = _PromptStub({
+        ("plan", 1, None): ['{"control":"continue","plan":"Глава первая"}'],
+        ("plan", 2, None): ['{"control":"done"}'],
+    })
+    status, db, store, lid = _run(tmp_path, h)
+    assert status == JobStatus.COMPLETED
+    for key in [("implement", 1, None), ("evaluate", 1, "a"), ("plan", 2, None)]:
+        assert "Глава первая" in h.prompts[key]
+        assert "\\u" not in h.prompts[key]
+
+
 def test_select_omitted_dispatches_every_dimension_each_iteration(tmp_path):
     spec = _select_spec(dims=("a", "b"), select=None)
     h = StubHarness(_script({(1, "a"): "pass", (1, "b"): "fail",

@@ -367,7 +367,8 @@ class LoopEngine:
         return "\n".join(parts)
 
     def _journal_text(self, jpath) -> str:
-        return "\n".join(json.dumps(r) for r in journal.read(jpath))
+        # Raw characters: a \uXXXX escape costs ~4.5 tokens, the character itself ~0.5.
+        return "\n".join(json.dumps(r, ensure_ascii=False) for r in journal.read(jpath))
 
     def _stopped(self, loop_id) -> bool:
         loop = self.db.get_loop(loop_id)

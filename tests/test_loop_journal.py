@@ -10,6 +10,15 @@ def test_append_read_roundtrip(tmp_path):
     assert lj.read(p) == [{"control": "continue", "note": "a"}, {"control": "done"}]
 
 
+def test_append_writes_non_ascii_raw_and_read_loads_old_escaped_lines(tmp_path):
+    p = tmp_path / "journal.jsonl"
+    lj.append(p, {"note": "Глава"})
+    assert "Глава" in p.read_text(encoding="utf-8")
+    with open(p, "a", encoding="utf-8") as f:
+        f.write('{"note": "\\u0413\\u043b\\u0430\\u0432\\u0430"}\n')  # written before the change
+    assert lj.read(p) == [{"note": "Глава"}, {"note": "Глава"}]
+
+
 def test_read_missing_file_is_empty(tmp_path):
     assert lj.read(tmp_path / "nope.jsonl") == []
 

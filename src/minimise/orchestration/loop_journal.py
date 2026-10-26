@@ -18,7 +18,7 @@ CONTROLS = {"continue", "stop", "done", "failed"}
 def append(journal_path, record: dict) -> None:
     """Append one JSON line."""
     with open(journal_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record) + "\n")
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def read(journal_path) -> list:
