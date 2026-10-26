@@ -729,6 +729,20 @@ class Database:
         with self._write(conn) as cursor:
             cursor.execute(query, params)
 
+    def stop_running_loop_steps(self, loop_id: str, conn: Optional[sqlite3.Connection] = None) -> int:
+        """Mark a loop's RUNNING steps STOPPED, ended now; returns how many changed.
+
+        For a loop that left RUNNING without its engine finishing them (stop,
+        a dead engine): no step stays RUNNING once nothing runs it.
+        """
+        with self._write(conn) as cursor:
+            cursor.execute(
+                "UPDATE loop_steps SET status = ?, completed_at = ? WHERE loop_id = ? AND status = ?",
+                (TaskStatus.STOPPED.value, datetime.utcnow().isoformat(), loop_id,
+                 TaskStatus.RUNNING.value),
+            )
+            return cursor.rowcount
+
     def list_loop_steps(self, loop_id: str) -> List[LoopStep]:
         """Fetch all steps for a loop in execution order."""
         rows = self._query(

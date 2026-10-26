@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Optional
 from rich.table import Table
 from rich.text import Text
+from minimise.interfaces.formatting import shown_loop_steps
 from minimise.models import JobStatus, TaskStatus, Loop
 
 from ._shared import fit_width, format_duration
@@ -79,8 +80,10 @@ def _verdict_cell(verdict, step=None) -> Text:
 def _eval_gantt_bar(step, t0, span_secs, width=12, now=None) -> str:
     """Gantt bar for one eval step within the iteration's (t0, span). "" when
     the step never started or the span is degenerate. lead ░ + bar █, clamped
-    to `width`."""
+    to `width`. A stopped step with no recorded end gets no bar either."""
     if step is None or step.started_at is None or span_secs <= 0:
+        return ""
+    if step.completed_at is None and step.status != TaskStatus.RUNNING:
         return ""
     end = step.completed_at or (now or datetime.utcnow())
     start_off = (step.started_at - t0).total_seconds() / span_secs
@@ -144,11 +147,14 @@ def render_loop_progress_table(
 
     A pass carried over from iteration N (select: failed) shows a faded "✓ from N"
     with no duration or timeline bar, still counts toward the passing footer, and
-    adds a caption explaining it."""
+    adds a caption explaining it.
+
+    A RUNNING step of a loop that isn't running shows as stopped (shown_loop_steps)."""
+    steps = shown_loop_steps(loop, steps or [])
     rows, iters = _pivot_evaluate(journal_records)
     carried = _carried_cells(journal_records)
     eval_steps = {(s.iteration, s.dimension): s
-                  for s in (steps or []) if s.step_type == "evaluate"}
+                  for s in steps if s.step_type == "evaluate"}
     # Iterations with eval steps but no journaled verdict yet still get a column,
     # so "now" advances the moment a fresh iteration's eval fan-out starts.
     iters = sorted(set(iters) | {it for (it, _dim) in eval_steps})
@@ -183,9 +189,12 @@ def render_loop_progress_table(
     # started eval steps (covers the None seed iteration -> no bars).
     now = datetime.utcnow()
     cur_it = shown[-1]
-    # A carried-over pass ran nothing, so it neither shapes the span nor gets a bar.
+    # A carried-over pass ran nothing, so it neither shapes the span nor gets a bar;
+    # nor does a stopped step with no recorded end.
     cur_eval = [eval_steps[(cur_it, d)] for d in ordered
                 if (cur_it, d) in eval_steps and eval_steps[(cur_it, d)].started_at
+                and (eval_steps[(cur_it, d)].completed_at
+                     or eval_steps[(cur_it, d)].status == TaskStatus.RUNNING)
                 and (d, cur_it) not in carried]
     if cur_eval:
         t0 = min(s.started_at for s in cur_eval)           # first eval start (leftmost)
@@ -214,7 +223,9 @@ def render_loop_stage_timing(loop: Loop, steps: list, dimensions: list = None) -
     Rows are plan/implement/eval/iter total; columns are the SAME last-N
     iterations the heatmap shows (derived from steps' `.iteration`). Each cell is
     format_duration over the matching steps' min(started_at)..max(completed_at);
-    a still-running step (completed_at None) shows elapsed. No footer row."""
+    a still-running step shows elapsed, a stopped one with no recorded end "—".
+    No footer row."""
+    steps = shown_loop_steps(loop, steps or [])
     if not steps:
         table = Table()
         table.add_column("stage", style="cyan", no_wrap=True)
@@ -233,9 +244,10 @@ def render_loop_stage_timing(loop: Loop, steps: list, dimensions: list = None) -
         if not matched:
             return format_duration(None, None)
         starts = [s.started_at for s in matched if s.started_at]
-        running = any(s.completed_at is None for s in matched)
+        ends = [s.completed_at for s in matched]
+        running = any(s.status == TaskStatus.RUNNING for s in matched)
         started = min(starts) if starts else None
-        completed = None if running else max(s.completed_at for s in matched)
+        completed = None if running or None in ends else max(ends)
         return format_duration(started, completed, is_running=running)
 
     table = Table()

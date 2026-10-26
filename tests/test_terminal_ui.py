@@ -850,9 +850,10 @@ def test_project_steps_running_bar_no_later_step_extends_to_now():
 
 # --- render_loop_progress_table (journal heatmap) ---
 
-def _loop():
-    from minimise.models import Loop
-    return Loop(loop_id="loop-1", name="test")
+def _loop(status=None):
+    """A loop for the heatmap tests; RUNNING by default, so its RUNNING steps are live."""
+    from minimise.models import JobStatus, Loop
+    return Loop(loop_id="loop-1", name="test", status=status or JobStatus.RUNNING)
 
 
 def _rec(iteration, dimension, verdict):
@@ -1136,6 +1137,22 @@ def test_render_loop_progress_running_eval_shows_glyph_and_elapsed(base_time):
     assert re.search(r"\d+(\.\d+)?(ms|s|m|h|d)", plain)
 
 
+def test_render_loop_progress_stopped_loops_running_eval_is_not_running(base_time):
+    # A dead engine left lint's eval RUNNING; the loop is FAILED/STOPPED, so the
+    # cell shows no ▸, no ticking elapsed, and no bar growing to now.
+    from minimise.interfaces.terminal_ui import render_loop_progress_table
+    from minimise.models import JobStatus, TaskStatus
+    records = [_rec(1, "tests", "pass")]
+    steps = [_estep_timed(1, "tests", TaskStatus.COMPLETED,
+                          base_time, base_time + timedelta(seconds=5)),
+             _estep_timed(1, "lint", TaskStatus.RUNNING, base_time)]
+    for status in (JobStatus.FAILED, JobStatus.STOPPED):
+        table = render_loop_progress_table(_loop(status), records, ["tests", "lint"], steps)
+        assert _cell(table, 1, 1) == ("· —", "dim")  # lint row, iter1 col
+        assert _cell(table, 2, 1) == ("", None)      # lint has no timeline bar
+        assert _cell(table, 2, 0)[0].startswith("█")  # tests' bar spans its own 5s
+
+
 def test_render_loop_progress_no_eval_step_has_no_duration():
     # A dimension with no eval step this iteration: dim · glyph, NO trailing duration.
     from minimise.interfaces.terminal_ui import render_loop_progress_table
@@ -1335,7 +1352,7 @@ def test_stage_timing_eval_cell_is_span_not_single_dimension(base_time):
         _tstep("evaluate", 1, base_time + timedelta(seconds=5),
                base_time + timedelta(seconds=30), "lint"),
     ]
-    table = render_loop_stage_timing(None, steps)
+    table = render_loop_stage_timing(_loop(), steps)
     # single iteration -> 1 iteration column at index 1; eval is row index 2
     assert table.columns[1]._cells[2] == "30.0s"
 
@@ -1346,7 +1363,7 @@ def test_stage_timing_plan_implement_single_step_durations(base_time):
         _tstep("plan", 1, base_time, base_time + timedelta(seconds=5)),
         _tstep("implement", 1, base_time, base_time + timedelta(seconds=10)),
     ]
-    table = render_loop_stage_timing(None, steps)
+    table = render_loop_stage_timing(_loop(), steps)
     assert table.columns[1]._cells[0] == "5.0s"    # plan row
     assert table.columns[1]._cells[1] == "10.0s"   # implement row
 
@@ -1355,13 +1372,26 @@ def test_stage_timing_missing_stage_shows_dash(base_time):
     from minimise.interfaces.terminal_ui import render_loop_stage_timing
     # iteration has a plan step but no evaluate step -> eval cell "—"
     steps = [_tstep("plan", 1, base_time, base_time + timedelta(seconds=5))]
-    table = render_loop_stage_timing(None, steps)
+    table = render_loop_stage_timing(_loop(), steps)
     assert table.columns[1]._cells[2] == "—"       # eval row, no evaluate step
+
+
+def test_stage_timing_stopped_loops_running_step_does_not_tick(base_time):
+    # A RUNNING step of a FAILED loop has no known end: "—", not elapsed time.
+    from minimise.interfaces.terminal_ui import render_loop_stage_timing
+    from minimise.models import JobStatus, TaskStatus
+    steps = [_tstep("plan", 1, base_time, base_time + timedelta(seconds=5)),
+             _pstep_timed(1, "implement", TaskStatus.RUNNING, base_time + timedelta(seconds=5))]
+    table = render_loop_stage_timing(_loop(JobStatus.FAILED), steps)
+    assert table.columns[1]._cells[:2] == ["5.0s", "—"]  # plan, implement
+    assert table.columns[1]._cells[3] == "—"              # iter total: end unknown
+    running = render_loop_stage_timing(_loop(), steps)  # the same step, loop alive
+    assert running.columns[1]._cells[1] != "—"
 
 
 def test_stage_timing_empty_steps_placeholder_no_raise():
     from minimise.interfaces.terminal_ui import render_loop_stage_timing
-    table = render_loop_stage_timing(None, [])
+    table = render_loop_stage_timing(_loop(), [])
     assert table.columns[0].header == "stage"
     assert table.columns[1].header == "status"
     assert table.columns[0]._cells == ["(no timing yet)"]

@@ -1,7 +1,10 @@
 """Formatting helpers shared across terminal and web interfaces."""
 
+from dataclasses import replace
 from datetime import datetime
 from typing import Optional
+
+from minimise.models import JobStatus, Loop, LoopStep, TaskStatus
 
 
 def _now_or_default(now: Optional[datetime]) -> datetime:
@@ -49,3 +52,14 @@ def format_duration(
 
     duration = (completed_at - started_at).total_seconds()
     return humanize_duration(duration)
+
+
+def shown_loop_steps(loop: Loop, steps: list[LoopStep]) -> list[LoopStep]:
+    """Steps as the views show them: a RUNNING step counts as running only
+    while its loop is RUNNING. An engine that died mid-step left it behind, so
+    it shows as STOPPED (its end stays unknown). Read-only: the rows themselves
+    are repaired by `mini loop stop`, LoopStore._reconcile and LoopEngine.run."""
+    if loop.status == JobStatus.RUNNING:
+        return steps
+    return [replace(step, status=TaskStatus.STOPPED) if step.status == TaskStatus.RUNNING else step
+            for step in steps]

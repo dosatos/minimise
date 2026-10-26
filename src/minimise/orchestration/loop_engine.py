@@ -135,6 +135,9 @@ class LoopEngine:
         """Run or resume a loop to a terminal status; returns that status."""
         spec = self.store.load_spec(loop_id)
         jpath = self.store.journal_path(loop_id)
+        # Only one engine runs a loop, so a RUNNING step now belongs to a dead
+        # earlier one. Resume reads the journal, not these rows.
+        self.db.stop_running_loop_steps(loop_id)
         self.db.update_loop_status(
             loop_id, status=JobStatus.RUNNING, started_at=datetime.utcnow(), pid=os.getpid(),
             stop_reason=None,  # starting again clears why the last run stopped

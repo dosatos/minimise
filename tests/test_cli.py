@@ -3018,6 +3018,42 @@ def test_loop_stop_sends_sigterm_to_live_pid(runner, mock_config_dir, monkeypatc
     assert killed == [(12345, signal.SIGTERM)]
 
 
+def test_loop_stop_stops_its_running_steps(runner, mock_config_dir, monkeypatch):
+    """`mini loop stop` leaves no RUNNING step: the SIGTERMed engine won't finish it."""
+    from minimise.models import LoopSpec, LoopStep, JobStatus, TaskStatus
+    from minimise.storage.loop_store import LoopStore
+
+    spec = {
+        "version": "1", "name": "Demo", "goal": "make it better", "max_iterations": 3,
+        "loop": {
+            "plan": {"prompt": "plan it"}, "implement": {"prompt": "do it"},
+            "evaluate": {"max_concurrent": 1, "dimensions": [{"name": "a", "rubric": "ra"}]},
+        },
+    }
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+    loop_obj = LoopStore(db, mock_config_dir / "jobs").create(LoopSpec.model_validate(spec), "example.yaml")
+    db.update_loop_status(loop_obj.loop_id, status=JobStatus.RUNNING, pid=12345)
+    for step_id, status in (("step-done", TaskStatus.COMPLETED), ("step-live", TaskStatus.RUNNING)):
+        db.create_loop_step(LoopStep(
+            step_id=step_id, loop_id=loop_obj.loop_id, iteration=1, step_type="plan",
+            status=status, started_at=datetime.utcnow(),
+        ))
+
+    loop_module = sys.modules["minimise.interfaces.cli.loop"]
+    monkeypatch.setattr(sys.modules["minimise.storage.loop_store"], "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(loop_module, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(loop_module.os, "kill", lambda pid, sig: None)
+
+    result = runner.invoke(mini, ["loop", "stop", loop_obj.loop_id])
+
+    assert result.exit_code == 0
+    steps = {s.step_id: s for s in db.list_loop_steps(loop_obj.loop_id)}
+    assert steps["step-live"].status == TaskStatus.STOPPED
+    assert steps["step-live"].completed_at is not None
+    assert steps["step-done"].status == TaskStatus.COMPLETED  # a finished step is left alone
+
+
 def _stopped_loop(mock_config_dir, stop_reason):
     from minimise.models import LoopSpec
     from minimise.storage.loop_store import LoopStore
@@ -3048,6 +3084,47 @@ def test_loop_status_shows_usage_limit_stop_reason(runner, mock_config_dir):
 
     data = json.loads(runner.invoke(mini, ["loop", "status", loop_id, "--format", "json"]).output)
     assert data["status"] == "stopped" and data["stop_reason"] == reason
+
+
+def test_loop_status_shows_a_failed_loops_running_step_as_not_running(runner, mock_config_dir):
+    """A dead engine left evaluator "a" RUNNING: `mini loop status` shows no ▸ for it."""
+    import yaml
+    from datetime import timedelta
+    from minimise.models import LoopSpec, LoopStep
+    from minimise.storage.loop_store import LoopStore
+
+    spec = {
+        "version": "1", "name": "Demo", "goal": "make it better", "max_iterations": 3,
+        "loop": {
+            "plan": {"prompt": "plan it"}, "implement": {"prompt": "do it"},
+            "evaluate": {"max_concurrent": 1, "dimensions": [{"name": "a", "rubric": "ra"}]},
+        },
+    }
+    plan_path = mock_config_dir / "loop.yaml"
+    plan_path.write_text(yaml.safe_dump(spec))
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+    loop_obj = LoopStore(db, mock_config_dir / "jobs").create(LoopSpec.model_validate(spec), str(plan_path))
+    start = datetime.utcnow() - timedelta(minutes=5)
+    db.update_loop_status(loop_obj.loop_id, status=JobStatus.FAILED,
+                          started_at=start, completed_at=start + timedelta(seconds=30))
+    for step_id, step_type, dim, status, end in (
+        ("step-plan", "plan", None, TaskStatus.COMPLETED, start + timedelta(seconds=5)),
+        ("step-impl", "implement", None, TaskStatus.COMPLETED, start + timedelta(seconds=10)),
+        ("step-eval", "evaluate", "a", TaskStatus.RUNNING, None),
+    ):
+        db.create_loop_step(LoopStep(
+            step_id=step_id, loop_id=loop_obj.loop_id, iteration=1, step_type=step_type,
+            dimension=dim, status=status, started_at=start, completed_at=end,
+        ))
+
+    result = runner.invoke(mini, ["loop", "status", loop_obj.loop_id])
+
+    assert result.exit_code == 0, result.output
+    assert "Stage timing" in result.output and "Verdicts" in result.output
+    assert "▸" not in result.output
+    eval_row = next(line for line in result.output.splitlines() if line.startswith("│ eval "))
+    assert "5m" not in eval_row  # no elapsed time ticking since the step started
 
 
 def test_loop_status_without_stop_reason_has_no_stopped_line(runner, mock_config_dir):

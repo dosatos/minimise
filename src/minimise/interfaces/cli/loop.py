@@ -474,6 +474,7 @@ def loop_stop(loop_id: str):
             raise SystemExit(1)
 
         db.update_loop_status(loop_id, status=JobStatus.STOPPED)
+        db.stop_running_loop_steps(loop_id)  # the SIGTERMed engine won't finish them
 
         if _pid_alive(loop_obj.pid):
             try:

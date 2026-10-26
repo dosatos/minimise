@@ -49,7 +49,7 @@ class LoopStore:
         return self._reconcile(self.db.list_loops(limit=limit, offset=offset))
 
     def _reconcile(self, result):
-        """Downgrade dead RUNNING loop(s) to FAILED in-place."""
+        """Downgrade dead RUNNING loop(s) to FAILED in-place, stopping their RUNNING steps."""
         loops = result if isinstance(result, list) else [] if result is None else [result]
         for loop in loops:
             if loop.status == JobStatus.RUNNING and not _pid_alive(loop.pid):
@@ -59,6 +59,7 @@ class LoopStore:
                     status=JobStatus.FAILED,
                     completed_at=completed_at,
                 )
+                self.db.stop_running_loop_steps(loop.loop_id)  # its engine died mid-step
                 loop.status = JobStatus.FAILED
                 loop.completed_at = completed_at
         return result

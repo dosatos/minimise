@@ -8,7 +8,7 @@ from typing import Callable, Optional
 
 from flask import Flask, jsonify, render_template, request
 
-from minimise.interfaces.formatting import format_duration
+from minimise.interfaces.formatting import format_duration, shown_loop_steps
 from minimise.interfaces.prompt_preview import worker_prompt_preview
 from minimise.models import JobStatus, Loop, LoopSpec, LoopStep, TaskStatus
 from minimise.orchestration import loop_journal
@@ -153,7 +153,10 @@ def _loop_timeline(
     iteration with any verdict gets ``passing`` out of ``dimension_count``.
     Under select: failed, a pass carried over from an earlier iteration has
     ``carried_from`` (and no bar: nothing ran), and a re-check has ``recheck``.
+
+    A RUNNING step of a loop that isn't running shows as stopped (shown_loop_steps).
     """
+    steps = shown_loop_steps(loop, steps)
     origin = min(
         [t for t in (loop.started_at, *(step.started_at for step in steps)) if t],
         default=None,
@@ -243,6 +246,7 @@ def _serialize_loop(
     include_steps: bool = True,
     journal_records=(),
 ) -> dict:
+    steps = shown_loop_steps(loop, steps)  # orphaned RUNNING steps show as stopped
     current_iteration = max((step.iteration for step in steps), default=0)
     max_iterations = spec.max_iterations if spec else loop.max_iterations
     result = {

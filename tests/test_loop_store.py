@@ -99,3 +99,44 @@ def test_load_many_reconciles_dead_running_loops(
     assert loaded[0].status == JobStatus.FAILED
     assert loaded[0].completed_at is not None
     assert db.get_loop(loop.loop_id).status == JobStatus.FAILED
+
+
+def test_load_reconciles_dead_running_loop_and_stops_its_running_steps(
+    db, temp_db_dir, monkeypatch
+):
+    """The dead engine never finishes its step, so reconcile marks it STOPPED."""
+    from datetime import datetime
+    from minimise.models import LoopStep, TaskStatus
+
+    store = LoopStore(db, temp_db_dir / "jobs")
+    loop = store.create(LoopSpec.model_validate(SPEC), plan_path="loop.yaml")
+    db.update_loop_status(loop.loop_id, status=JobStatus.RUNNING, pid=12345)
+    db.create_loop_step(LoopStep(
+        step_id="step-live", loop_id=loop.loop_id, iteration=1, step_type="plan",
+        status=TaskStatus.RUNNING, started_at=datetime.utcnow(),
+    ))
+    monkeypatch.setattr("minimise.storage.loop_store._pid_alive", lambda _pid: False)
+
+    assert store.load(loop.loop_id).status == JobStatus.FAILED
+
+    [step] = db.list_loop_steps(loop.loop_id)
+    assert step.status == TaskStatus.STOPPED
+    assert step.completed_at is not None
+
+
+def test_load_leaves_a_live_loops_running_steps_alone(db, temp_db_dir, monkeypatch):
+    from datetime import datetime
+    from minimise.models import LoopStep, TaskStatus
+
+    store = LoopStore(db, temp_db_dir / "jobs")
+    loop = store.create(LoopSpec.model_validate(SPEC), plan_path="loop.yaml")
+    db.update_loop_status(loop.loop_id, status=JobStatus.RUNNING, pid=12345)
+    db.create_loop_step(LoopStep(
+        step_id="step-live", loop_id=loop.loop_id, iteration=1, step_type="plan",
+        status=TaskStatus.RUNNING, started_at=datetime.utcnow(),
+    ))
+    monkeypatch.setattr("minimise.storage.loop_store._pid_alive", lambda _pid: True)
+
+    assert store.load(loop.loop_id).status == JobStatus.RUNNING
+    [step] = db.list_loop_steps(loop.loop_id)
+    assert step.status == TaskStatus.RUNNING and step.completed_at is None

@@ -1421,6 +1421,66 @@ def test_get_loop_api_includes_timeline_and_list_is_unchanged(client, api_server
                            "started_at", "completed_at", "elapsed"}
 
 
+def test_loop_api_shows_a_failed_loops_running_step_as_stopped(client, api_server, db):
+    """A dead engine left its implement step RUNNING; a later run re-did it and
+    failed at evaluate. Nothing runs that orphan, so it reads as stopped."""
+    from minimise.models import JobStatus, LoopStep, TaskStatus
+
+    loop = _make_loop(api_server)
+    db.update_loop_status(loop.loop_id, status=JobStatus.FAILED,
+                          started_at=_at(100), completed_at=_at(120))
+    for step_id, step_type, dim, status, start, end in (
+        ("step-plan", "plan", None, TaskStatus.COMPLETED, 0, 5),
+        ("step-orphan", "implement", None, TaskStatus.RUNNING, 5, None),
+        ("step-impl", "implement", None, TaskStatus.COMPLETED, 100, 110),
+        ("step-eval", "evaluate", "clarity", TaskStatus.FAILED, 110, 120),
+    ):
+        db.create_loop_step(LoopStep(
+            step_id=step_id, loop_id=loop.loop_id, iteration=1, step_type=step_type,
+            dimension=dim, status=status, started_at=_at(start),
+            completed_at=_at(end) if end is not None else None,
+        ))
+
+    data = client.get(f"/api/loops/{loop.loop_id}").get_json()
+
+    assert data["stage"] == "Evaluate / clarity"  # not the orphaned "Implement"
+    orphan = next(s for s in data["steps"] if s["step_id"] == "step-orphan")
+    assert orphan["status"] == "stopped" and orphan["duration"] == "\u2014"
+    [group] = data["timeline"]["groups"]
+    assert group["status"] == "failed" and group["duration"] == 120.0
+    timed = next(s for s in group["steps"] if s["step_id"] == "step-orphan")
+    assert timed["status"] == "stopped"
+    assert "running" not in {s["status"] for s in group["steps"]}
+    # A loop `mini loop stop` left STOPPED before steps were stopped with it: same.
+    db.update_loop_status(loop.loop_id, status=JobStatus.STOPPED)
+    [group] = client.get(f"/api/loops/{loop.loop_id}").get_json()["timeline"]["groups"]
+    assert group["status"] == "failed"
+    assert "running" not in {s["status"] for s in group["steps"]}
+
+    html = client.get(f"/loops/{loop.loop_id}/view").get_data(as_text=True)
+    assert '<strong id="loop-stage">Evaluate / clarity</strong>' in html
+    # The DB row is untouched: only reconcile, stop and the engine repair rows.
+    assert next(s for s in db.list_loop_steps(loop.loop_id)
+                if s.step_id == "step-orphan").status == TaskStatus.RUNNING
+
+
+def test_loop_api_keeps_a_running_loops_running_step_running(client, api_server, db, monkeypatch):
+    from minimise.models import JobStatus, LoopStep, TaskStatus
+
+    monkeypatch.setattr("minimise.storage.loop_store._pid_alive", lambda _pid: True)
+    loop = _make_loop(api_server)
+    db.update_loop_status(loop.loop_id, status=JobStatus.RUNNING, started_at=_at(0), pid=1)
+    db.create_loop_step(LoopStep(
+        step_id="step-plan", loop_id=loop.loop_id, iteration=1, step_type="plan",
+        status=TaskStatus.RUNNING, started_at=_at(0),
+    ))
+
+    data = client.get(f"/api/loops/{loop.loop_id}").get_json()
+
+    assert data["steps"][0]["status"] == "running"
+    assert data["timeline"]["groups"][0]["status"] == "running"
+
+
 def test_loop_page_and_api_show_the_usage_limit_stop_reason(client, api_server, db):
     from minimise.models import JobStatus
 

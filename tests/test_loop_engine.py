@@ -209,6 +209,46 @@ def test_resume_reruns_only_missing_dimension(tmp_path):
     assert journal.last_committed_iteration(jpath) == 2
 
 
+def test_run_stops_steps_a_dead_engine_left_running_then_resumes(tmp_path):
+    """An engine died mid-iteration 1 (loop left FAILED): plan and implement had
+    finished, evaluator "a" was RUNNING. The next run marks that row STOPPED,
+    re-runs only what the journal lacks, and leaves no RUNNING step."""
+    from datetime import datetime
+    from minimise.models import LoopStep
+
+    db, store, lid = _build(tmp_path)
+    jpath = store.journal_path(lid)
+    for rec in (
+        {"control": "continue", "iteration": 1, "step_type": "plan", "dimension": None},
+        {"control": "done", "iteration": 1, "step_type": "implement", "dimension": None},
+    ):
+        journal.append(jpath, rec)
+    for step_id, step_type, dim, status in (
+        ("step-plan", "plan", None, TaskStatus.COMPLETED),
+        ("step-impl", "implement", None, TaskStatus.COMPLETED),
+        ("step-orphan", "evaluate", "a", TaskStatus.RUNNING),
+    ):
+        db.create_loop_step(LoopStep(
+            step_id=step_id, loop_id=lid, iteration=1, step_type=step_type,
+            dimension=dim, status=status, started_at=datetime.utcnow(),
+            completed_at=datetime.utcnow() if status == TaskStatus.COMPLETED else None,
+        ))
+    db.update_loop_status(lid, status=JobStatus.FAILED)
+
+    h = StubHarness({("plan", 2, None): ['{"control":"done"}']})
+    status = LoopEngine(factory=_fixed(h), store=store, db=db).run(lid)
+
+    assert status == JobStatus.COMPLETED
+    assert journal.last_committed_iteration(jpath) == 1
+    # Finished steps aren't re-run; the orphaned evaluator (no journal record) is.
+    assert ("plan", 1, None) not in h.calls and ("implement", 1, None) not in h.calls
+    assert h.calls.count(("evaluate", 1, "a")) == 1 and ("evaluate", 1, "b") in h.calls
+    steps = db.list_loop_steps(lid)
+    orphan = next(s for s in steps if s.step_id == "step-orphan")
+    assert orphan.status == TaskStatus.STOPPED and orphan.completed_at is not None
+    assert not [s for s in steps if s.status == TaskStatus.RUNNING]
+
+
 # --- 6) external stop mid-run -> halts after in-flight step, leaves STOPPED ------
 
 def test_external_stop_halts_and_stays_stopped(tmp_path):
