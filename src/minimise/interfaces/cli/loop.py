@@ -295,7 +295,7 @@ def loop_list(format, limit):
 
         if not loops:
             if format == "json":
-                console.print(json.dumps([], indent=2))
+                console.out(json.dumps([], indent=2))
             else:
                 console.print("[yellow]No loops found[/yellow]")
             return
@@ -311,7 +311,7 @@ def loop_list(format, limit):
                 "started_at": lp.started_at.isoformat() if lp.started_at else None,
                 "completed_at": lp.completed_at.isoformat() if lp.completed_at else None,
             } for lp in loops]
-            console.print(json.dumps(loops_data, indent=2))
+            console.out(json.dumps(loops_data, indent=2))
         else:
             table = Table(title="Minimise Loops")
             table.add_column("Loop ID", style="cyan")
@@ -390,7 +390,7 @@ def loop_status(loop_id: str, format: str):
                 "started_at": loop_obj.started_at.isoformat() if loop_obj.started_at else None,
                 "completed_at": loop_obj.completed_at.isoformat() if loop_obj.completed_at else None,
             }
-            console.print(json.dumps(output, indent=2))
+            console.out(json.dumps(output, indent=2))
         else:
             console.print(f"\n[bold]Loop Details[/bold]")
             console.print(f"[bold]ID:[/bold] {loop_obj.loop_id}")

@@ -2705,6 +2705,23 @@ def test_job_list_json_includes_duration_total(runner, mock_config_dir):
     assert job_obj["tasks"]["estimated_duration_min"] == 75
 
 
+def test_job_json_survives_long_names_and_brackets(runner, mock_config_dir):
+    """--format json must not wrap at terminal width or eat [bracketed] text as markup."""
+    name = "Loop evaluate: rerun only failed dimensions " * 3 + "[bold]kept[/bold]"
+    db = Database(mock_config_dir / "minimise.db"); db.init_db()
+    job = Job(id=str(uuid.uuid4()), name=name, status=JobStatus.PENDING,
+              plan_path="/p.yaml", created_at=datetime.utcnow())
+    db.create_job(job)
+
+    status = runner.invoke(mini, ["job", "status", job.id, "--format", "json"])
+    assert status.exit_code == 0
+    assert json.loads(status.output)["name"] == name
+
+    listed = runner.invoke(mini, ["job", "list", "--format", "json"])
+    assert listed.exit_code == 0
+    assert [j["name"] for j in json.loads(listed.output) if j["id"] == job.id] == [name]
+
+
 def test_job_list_json_duration_zero_when_no_tasks(runner, mock_config_dir):
     """A job with no tasks reports estimated_duration_min == 0 (not None)."""
     db = Database(mock_config_dir / "minimise.db"); db.init_db()

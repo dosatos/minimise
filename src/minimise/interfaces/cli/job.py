@@ -365,7 +365,7 @@ def job_list(format, limit):
 
         if not jobs:
             if format == "json":
-                console.print(json.dumps([], indent=2))
+                console.out(json.dumps([], indent=2))
             else:
                 console.print("[yellow]No jobs found[/yellow]")
             return
@@ -390,7 +390,7 @@ def job_list(format, limit):
                         "estimated_duration_min": sum(t.estimated_duration_min for t in tasks),
                     },
                 })
-            console.print(json.dumps(jobs_data, indent=2))
+            console.out(json.dumps(jobs_data, indent=2))
         else:
             table = Table(title="Minimise Jobs")
             table.add_column("Job ID", style="cyan")
@@ -499,7 +499,7 @@ def job_status(job_id: str, format: str):
                     "estimated_duration_min": est_total,
                 },
             }
-            console.print(json.dumps(output, indent=2))
+            console.out(json.dumps(output, indent=2))
         else:
             # Display job details (table format)
             console.print(f"\n[bold]Job Details[/bold]")

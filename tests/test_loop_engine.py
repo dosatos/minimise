@@ -8,10 +8,12 @@ deterministically.
 
 import importlib
 import json
+import re
 import tempfile
 from pathlib import Path
 
 import pytest
+import yaml
 from click.testing import CliRunner
 
 from minimise.agents.harness import AgentHarness, HarnessFactory, HarnessResult
@@ -720,6 +722,37 @@ def test_mini_loop_new_and_list_smoke(monkeypatch):
             listed = runner.invoke(cli.mini, ["loop", "list"])
             assert listed.exit_code == 0, listed.output
             assert "Example Refinement Loop" in listed.output
+        finally:
+            monkeypatch.delenv("MINIMISE_HOME", raising=False)
+            importlib.reload(cli)
+
+
+def test_mini_loop_json_survives_long_names_and_brackets(monkeypatch, tmp_path):
+    """--format json must not wrap at terminal width or eat [bracketed] text as markup."""
+    import minimise.interfaces.cli as cli
+
+    name = "Loop evaluate: rerun only failed dimensions " * 3 + "[bold]kept[/bold]"
+    example = Path(__file__).resolve().parents[1] / "examples" / "example-loop.yaml"
+    raw = yaml.safe_load(example.read_text())
+    spec = tmp_path / "loop.yaml"
+    spec.write_text(yaml.safe_dump({**raw, "name": name}))
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as home:
+        monkeypatch.setenv("MINIMISE_HOME", home)
+        importlib.reload(cli)
+        try:
+            runner = CliRunner()
+            new = runner.invoke(cli.mini, ["loop", "new", "--plan", str(spec)])
+            assert new.exit_code == 0, new.output
+            loop_id = re.search(r"loop-[0-9a-f]+", new.output).group(0)
+
+            listed = runner.invoke(cli.mini, ["loop", "list", "--format", "json"])
+            assert listed.exit_code == 0, listed.output
+            assert [lp["name"] for lp in json.loads(listed.output)] == [name]
+
+            status = runner.invoke(cli.mini, ["loop", "status", loop_id, "--format", "json"])
+            assert status.exit_code == 0, status.output
+            assert json.loads(status.output)["name"] == name
         finally:
             monkeypatch.delenv("MINIMISE_HOME", raising=False)
             importlib.reload(cli)
