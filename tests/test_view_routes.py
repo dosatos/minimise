@@ -2016,6 +2016,150 @@ def test_loop_api_untracked_loop_has_no_token_figures(client, api_server, db, se
     assert [s["tokens"] for s in group["steps"]] == [None, None]
 
 
+_PRICES_YAML = """version: 0.0.1
+prices:
+  as_of: 2026-10-26
+  models:
+    claude-sonnet-5-5: {input: 3, cache_read: 0.3, cache_write: 6, output: 15}
+    default: {input: 1, cache_read: 0.1, cache_write: 2, output: 5}
+"""
+
+
+def _priced_client(db, mock_job_controller, config_dir, settings=_PRICES_YAML):
+    """A test client whose server reads settings.yaml from config_dir."""
+    config_dir.mkdir(exist_ok=True)
+    (config_dir / "settings.yaml").write_text(settings)
+    server = APIServer(db, mock_job_controller, port=5002, config_dir=config_dir)
+    server.app.testing = True
+    return server.app.test_client()
+
+
+def _cost_loop(api_server, db, seed_run, untracked=None):
+    """Iteration 1: plan on sonnet and haiku (by_model, haiku at default), a
+    clarity evaluator with no by_model (default), an accuracy evaluator that
+    reported nothing. Iteration 2: a carried-over pass and a pending step."""
+    from minimise.models import JobStatus, LoopStep, TaskStatus, TokenUsage
+
+    loop = _make_select_failed_loop(api_server)
+    db.update_loop_status(loop.loop_id, status=JobStatus.COMPLETED,
+                          started_at=_at(0), completed_at=_at(100))
+    by_model = {"claude-sonnet-5-5": {"input": 1_000_000, "cache_read": 2_000_000,
+                                      "cache_write": 0, "output": 100_000},
+                "claude-haiku-5-5": {"input": 0, "cache_read": 0, "cache_write": 0,
+                                     "output": 1_000_000}}
+    for step_id, iteration, step_type, dimension, runs, status in (
+        ("plan-1", 1, "plan", None,
+         [TokenUsage(1_000_000, 2_000_000, 0, 1_100_000, by_model=by_model)],
+         TaskStatus.COMPLETED),
+        ("eval-1c", 1, "evaluate", "clarity", [TokenUsage(0, 0, 1_000_000, 0)],
+         TaskStatus.COMPLETED),
+        ("eval-1a", 1, "evaluate", "accuracy", [None], TaskStatus.COMPLETED),
+        ("eval-2c", 2, "evaluate", "clarity", [], TaskStatus.COMPLETED),
+        ("impl-2", 2, "implement", None, [], TaskStatus.PENDING),
+    ):
+        done = status == TaskStatus.COMPLETED
+        db.create_loop_step(LoopStep(
+            step_id=step_id, loop_id=loop.loop_id, iteration=iteration, step_type=step_type,
+            dimension=dimension, status=status, started_at=_at(0) if done else None,
+            completed_at=_at(5) if done else None,
+        ))
+        for tokens in runs:
+            seed_run(db, tokens, loop_id=loop.loop_id, step_id=step_id)
+    return loop
+
+
+def _dicts(value):
+    """Every dict in a JSON value, nested ones included."""
+    if isinstance(value, dict):
+        yield value
+        value = list(value.values())
+    if isinstance(value, list):
+        for item in value:
+            yield from _dicts(item)
+
+
+def test_loop_api_carries_cost_next_to_every_token_figure_when_priced(
+        api_server, mock_job_controller, db, seed_run, temp_db_dir):
+    loop = _cost_loop(api_server, db, seed_run)
+    client = _priced_client(db, mock_job_controller, temp_db_dir / "config")
+
+    response = client.get(f"/api/loops/{loop.loop_id}")
+    data = response.get_json()
+
+    plan = (3 + 0.6 + 1.5) + 5  # sonnet's buckets; haiku's 1M output at default
+    clarity = 2  # 1M cache write at default
+    assert data["prices_as_of"] == "2026-10-26"
+    timeline_steps = [s for g in data["timeline"]["groups"] for s in g["steps"]]
+    for steps in (data["steps"], timeline_steps):
+        assert {s["step_id"]: s["cost_usd"] for s in steps} == {
+            "plan-1": pytest.approx(plan), "eval-1c": pytest.approx(clarity),
+            "eval-1a": None,  # reported nothing: its tokens are null
+            "eval-2c": 0, "impl-2": 0,  # no agent ran
+        }
+    first, second = data["timeline"]["groups"]
+    assert first["cost_total"] == {"usd": pytest.approx(plan + clarity), "lower_bound": True}
+    assert second["cost_total"] == {"usd": 0, "lower_bound": False}
+    assert data["cost_total"] == first["cost_total"]
+    for d in _dicts(data):
+        assert ("tokens" in d) == ("cost_usd" in d)
+        assert ("tokens_total" in d) == ("cost_total" in d)
+    for hidden in ("reasoning", "by_model", "claude-sonnet", "claude-haiku"):
+        assert hidden not in response.get_data(as_text=True), hidden
+
+
+def test_loop_api_without_prices_is_unchanged(client, api_server, mock_job_controller, db,
+                                              seed_run, temp_db_dir):
+    loop = _cost_loop(api_server, db, seed_run)
+    unpriced = _priced_client(db, mock_job_controller, temp_db_dir / "config",
+                              "version: 0.0.1\nharness: claude\n")
+
+    body = unpriced.get(f"/api/loops/{loop.loop_id}").get_data(as_text=True)
+
+    assert body == client.get(f"/api/loops/{loop.loop_id}").get_data(as_text=True)
+    for key in ("cost", "usd", "prices_as_of", "lower_bound"):
+        assert key not in body
+
+
+def test_loop_api_untracked_loop_has_null_cost(api_server, mock_job_controller, db, seed_run,
+                                               untrack, temp_db_dir):
+    loop = _cost_loop(api_server, db, seed_run)
+    untrack(db, loop_id=loop.loop_id)
+    client = _priced_client(db, mock_job_controller, temp_db_dir / "config")
+
+    data = client.get(f"/api/loops/{loop.loop_id}").get_json()
+
+    assert data["cost_total"] is None
+    assert [g["cost_total"] for g in data["timeline"]["groups"]] == [None, None]
+    timeline_steps = [s for g in data["timeline"]["groups"] for s in g["steps"]]
+    assert {s["cost_usd"] for s in data["steps"] + timeline_steps} == {None}
+
+
+def test_loop_api_reads_prices_on_every_request(api_server, mock_job_controller, db, seed_run,
+                                                temp_db_dir):
+    loop = _cost_loop(api_server, db, seed_run)
+    client = _priced_client(db, mock_job_controller, temp_db_dir / "config")
+    settings = temp_db_dir / "config" / "settings.yaml"
+    url = f"/api/loops/{loop.loop_id}"
+
+    assert client.get(url).get_json()["cost_total"]["usd"] == pytest.approx(12.1)
+    settings.write_text(_PRICES_YAML.replace("cache_write: 2,", "cache_write: 20,"))
+    assert client.get(url).get_json()["cost_total"]["usd"] == pytest.approx(30.1)
+    settings.write_text("version: 0.0.1\n")
+    assert "cost" not in client.get(url).get_data(as_text=True)
+
+
+def test_loop_api_bad_prices_fail_naming_the_key(api_server, mock_job_controller, db,
+                                                 seed_run, temp_db_dir):
+    loop = _cost_loop(api_server, db, seed_run)
+    client = _priced_client(db, mock_job_controller, temp_db_dir / "config",
+                            _PRICES_YAML.replace("output: 15", "output: -15"))
+
+    response = client.get(f"/api/loops/{loop.loop_id}")
+
+    assert response.status_code == 500
+    assert "prices.models.claude-sonnet-5-5.output" in response.get_json()["error"]
+
+
 def test_loops_list_api_and_page_carry_no_tokens(client, api_server, db, seed_run):
     from minimise.models import JobStatus, LoopStep, TaskStatus, TokenUsage
 

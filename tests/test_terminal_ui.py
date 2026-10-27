@@ -1810,6 +1810,117 @@ def test_tokens_summary_line():
     assert tokens_summary(None) == "—"  # an untracked owner
 
 
+# cost rules: an estimate at the user's prices (USD per million tokens)
+
+_SONNET = {"input": 3, "cache_read": 0.3, "cache_write": 6, "output": 15}
+_HAIKU = {"input": 1, "cache_read": 0.1, "cache_write": 2, "output": 5}
+
+
+def _prices(**models):
+    from minimise.settings import Prices
+    return Prices(as_of="2026-10-26", models={k.replace("_", "-"): v for k, v in models.items()})
+
+
+def _two_model_usage():
+    """A Claude run: 1M input, 2M cache read, 0.5M cache write and 0.1M output on
+    sonnet, and 1M output on haiku (a subagent)."""
+    by_model = {"claude-sonnet-5-5": {"input": 1_000_000, "cache_read": 2_000_000,
+                                      "cache_write": 500_000, "output": 100_000},
+                "claude-haiku-5-5": {"input": None, "cache_read": 0, "cache_write": 0,
+                                     "output": 1_000_000}}
+    return _usage(1_000_000, 2_000_000, 500_000, 1_100_000, by_model=by_model)
+
+
+def test_run_cost_prices_each_model_of_a_claude_run_at_its_own_prices():
+    from minimise.interfaces.formatting import run_cost
+    prices = _prices(claude_sonnet_5_5=_SONNET, claude_haiku_5_5=_HAIKU, default=_SONNET)
+    # sonnet 3 + 0.6 + 3 + 1.5; haiku's 1M output at 5 (its None input adds nothing)
+    assert run_cost(prices, _two_model_usage()) == pytest.approx(8.1 + 5)
+
+
+def test_run_cost_falls_back_to_default():
+    from minimise.interfaces.formatting import run_cost
+    prices = _prices(claude_sonnet_5_5=_SONNET, default=_HAIKU)
+    assert run_cost(prices, _two_model_usage()) == pytest.approx(8.1 + 5)  # haiku at default
+    # no by_model (Pi, Codex): the four buckets at default; a None bucket adds nothing
+    assert run_cost(prices, _usage(1_000_000, None, 0, 2_000_000)) == pytest.approx(1 + 10)
+
+
+def test_run_cost_is_none_for_an_unpriced_model_or_an_unreported_run():
+    from minimise.interfaces.formatting import run_cost
+    prices = _prices(claude_sonnet_5_5=_SONNET)  # no default
+    assert run_cost(prices, _two_model_usage()) is None  # haiku has no price
+    assert run_cost(prices, _usage()) is None  # no by_model and no default
+    assert run_cost(_prices(default=_SONNET), None) is None
+
+
+def test_row_cost_rules(sample_job):
+    from minimise.interfaces.formatting import row_cost
+    prices = _prices(default=_HAIKU)
+    million_out = _usage(0, 0, 0, 1_000_000)
+    assert row_cost(_loop(), [], prices) == 0  # no agent ran in it
+    assert row_cost(_loop(), [_run(million_out), _run(million_out)], prices) == pytest.approx(10)
+    assert row_cost(_loop(), [_run(million_out), _run(None)], prices) is None  # tokens null
+    assert row_cost(_loop(), [_run(million_out), _run(ended=False)], prices) is None
+    assert row_cost(_loop(), [_run(_two_model_usage())],
+                    _prices(claude_sonnet_5_5=_SONNET)) is None  # a run can't be priced
+    for owner in (_untracked(_loop()), _untracked(sample_job)):
+        assert row_cost(owner, [_run(million_out)], prices) is None
+        assert row_cost(owner, [], prices) is None
+
+
+def test_cost_total_with_no_counted_runs_is_zero_and_exact():
+    from minimise.interfaces.formatting import cost_total
+    prices = _prices(default=_HAIKU)
+    exact_zero = {"usd": 0, "lower_bound": False}
+    assert cost_total(_loop(), [], prices) == exact_zero
+    assert cost_total(_loop(JobStatus.RUNNING), [_run(ended=False)], prices) == exact_zero
+
+
+def test_cost_total_is_a_lower_bound_when_a_counted_run_cant_be_priced():
+    from minimise.interfaces.formatting import cost_total
+    prices = _prices(claude_sonnet_5_5=_SONNET)
+    sonnet = _usage(0, 0, 0, 1_000_000, by_model={"claude-sonnet-5-5": {"output": 1_000_000}})
+    assert cost_total(_loop(), [_run(sonnet), _run(sonnet)], prices) == {
+        "usd": pytest.approx(30), "lower_bound": False}
+    for unpriced in (_run(None), _run(_two_model_usage())):  # reported nothing; no price
+        assert cost_total(_loop(), [_run(sonnet), unpriced], prices) == {
+            "usd": pytest.approx(15), "lower_bound": True}
+    assert cost_total(_loop(), [_run(None), _run(_usage())], prices) == {
+        "usd": None, "lower_bound": True}  # none of the counted runs could be priced
+
+
+def test_cost_total_counts_the_runs_tokens_total_counts(sample_job):
+    from dataclasses import replace
+    from minimise.interfaces.formatting import cost_total
+    prices = _prices(default=_HAIKU)
+    runs = [_run(_usage(0, 0, 0, 1_000_000)), _run(ended=False)]
+    # in progress while its owner runs; killed (counted, nothing reported) once it doesn't
+    assert cost_total(_loop(JobStatus.RUNNING), runs, prices) == {
+        "usd": pytest.approx(5), "lower_bound": False}
+    assert cost_total(replace(sample_job, status=JobStatus.STOPPED), runs, prices) == {
+        "usd": pytest.approx(5), "lower_bound": True}
+    for owner in (_untracked(_loop()), _untracked(sample_job)):
+        assert cost_total(owner, runs, prices) is None
+        assert cost_total(owner, [], prices) is None
+
+
+@pytest.mark.parametrize("usd, lower_bound, text", [
+    (0.94, False, "$0.94"), (0.9, False, "$0.90"), (12.3456, False, "$12.35"),
+    (0.004, False, "<$0.01"), (0.0099, False, "<$0.01"), (0.01, False, "$0.01"),
+    (0, False, "$0"), (0.0, False, "$0"),
+    (1234, False, "$1,234"), (1234.4, False, "$1,234"), (1_234_567.89, False, "$1,234,568"),
+    (100, False, "$100"), (99.99, False, "$99.99"), (99.996, False, "$100"),
+    (0.125, False, "$0.13"),  # halves round up, as JavaScript's toFixed does
+    (0.94, True, "≥ $0.94"), (1234, True, "≥ $1,234"), (0.001, True, "≥ <$0.01"),
+    (0, True, "≥ $0"),
+    (None, False, "—"), (None, True, "—"),
+])
+def test_format_cost(usd, lower_bound, text):
+    from minimise.interfaces.formatting import format_cost
+    assert format_cost(usd, lower_bound) == text
+
+
 def test_stage_timing_tokens_row_per_iteration():
     # Iteration 1: plan + a gate-retried implement add up; the carried-over pass
     # ran no agent. Iteration 2: a run that reported nothing -> "—". Iteration 3

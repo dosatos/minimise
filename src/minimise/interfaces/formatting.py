@@ -2,9 +2,11 @@
 
 from dataclasses import replace
 from datetime import datetime
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Iterable, Optional, Union
 
 from minimise.models import AgentRun, Job, JobStatus, Loop, LoopStep, TaskStatus, TokenUsage
+from minimise.settings import Prices
 
 
 def _now_or_default(now: Optional[datetime]) -> datetime:
@@ -94,8 +96,10 @@ def carried_from(record: dict) -> Optional[int]:
 
 # ---- tokens: one shape for CLI --format json and the web API ----------------
 # Keys are only ever added; a key never changes meaning. Never reasoning,
-# by_model, model names or cost. Every figure is a sum over agent_runs, one row
-# per agent call; the owner is the job or loop the runs belong to.
+# by_model or model names. Nothing about cost is stored; cost (below) appears
+# only in the web API and pages, only when prices are configured. Every figure
+# is a sum over agent_runs, one row per agent call; the owner is the job or
+# loop the runs belong to.
 # 0 when we know no tokens were used; None only when tokens were (or are being)
 # used but we don't know how many, or the owner predates agent_runs.
 
@@ -115,6 +119,14 @@ def tokens_json(usage: Optional[TokenUsage]) -> Optional[dict]:
     }
 
 
+def _counted_runs(owner: Union[Job, Loop], runs: Iterable[AgentRun]) -> list[AgentRun]:
+    """The runs a rollup counts: ended ones, and unended ones once the owner
+    isn't running (killed or crashed). An unended run of a running owner is in
+    progress."""
+    running = owner.status == JobStatus.RUNNING
+    return [run for run in runs if run.ended_at is not None or not running]
+
+
 def tokens_total(owner: Union[Job, Loop], runs: Iterable[AgentRun]) -> Optional[dict]:
     """The rollup of a loop, iteration, task or job over its runs; None for an
     untracked owner. A run counts once it ended, or if it never ended and its
@@ -124,8 +136,7 @@ def tokens_total(owner: Union[Job, Loop], runs: Iterable[AgentRun]) -> Optional[
     reported. not_reported = counted runs with no tokens."""
     if owner.tokens_untracked:
         return None
-    running = owner.status == JobStatus.RUNNING
-    counted = [run for run in runs if run.ended_at is not None or not running]
+    counted = _counted_runs(owner, runs)
     if not counted:
         return {**dict.fromkeys(_TOKEN_KEYS, 0), "not_reported": 0}
     summed = sum((run.tokens for run in counted if run.tokens is not None), None)
@@ -204,3 +215,75 @@ def tokens_summary(rollup: Optional[dict]) -> str:
     if missing:
         text += f" ({missing} run{'' if missing == 1 else 's'} not reported)"
     return text
+
+
+# ---- cost: an estimate at the user's own prices, not a bill -----------------
+# Computed from agent_runs tokens on every request with settings.yaml's prices
+# (USD per million tokens); nothing about cost is stored, and editing the prices
+# re-prices past runs. Only the web API and pages carry it, and only when prices
+# are configured.
+
+def run_cost(prices: Prices, usage: Optional[TokenUsage]) -> Optional[float]:
+    """One run's cost in USD, or None when it can't be priced: it reported
+    nothing, or one of its models has no price and there's no default. Runs
+    that split their tokens by model (Claude's) are priced model by model; the
+    rest at default. A bucket that wasn't reported adds nothing."""
+    if usage is None:
+        return None
+    by_model = usage.by_model or {"default": {b: getattr(usage, b) for b in TokenUsage.BUCKETS}}
+    usd = 0.0
+    for model, counts in by_model.items():
+        price = prices.models.get(model, prices.models.get("default"))
+        if price is None:
+            return None
+        usd += sum((counts.get(b) or 0) * price[b] for b in TokenUsage.BUCKETS)
+    return usd / 1_000_000
+
+
+def row_cost(owner: Union[Job, Loop], runs: Iterable[AgentRun],
+             prices: Prices) -> Optional[float]:
+    """One row's cost_usd, next to its row_tokens: None when its tokens are
+    None or any of its runs can't be priced, 0 when no agent ran in it, else
+    the sum of its runs."""
+    runs = list(runs)
+    if row_tokens(owner, runs) is None:
+        return None
+    costs = [run_cost(prices, run.tokens) for run in runs]
+    return None if None in costs else sum(costs)
+
+
+def cost_total(owner: Union[Job, Loop], runs: Iterable[AgentRun],
+               prices: Prices) -> Optional[dict]:
+    """A rollup's cost_total, next to its tokens_total and over the same
+    counted runs: usd sums the counted runs that can be priced, and
+    lower_bound says some counted run can't be priced or reported nothing.
+    usd is 0 with no counted runs, None when none of them can be priced; the
+    whole rollup is None for an untracked owner."""
+    if owner.tokens_untracked:
+        return None
+    costs = [run_cost(prices, run.tokens) for run in _counted_runs(owner, runs)]
+    priced = [usd for usd in costs if usd is not None]
+    return {
+        "usd": sum(priced) if priced or not costs else None,
+        "lower_bound": len(priced) < len(costs),
+    }
+
+
+def format_cost(usd: Optional[float], lower_bound: bool = False) -> str:
+    """A cost as a cell shows it: "$0.94"; "<$0.01" under a cent; whole dollars
+    from $100 up ("$1,234"); "$0" for exactly 0; an em dash when unknown; "≥ "
+    in front of a lower bound. Halves round up, as JavaScript's toFixed does,
+    so the web's formatter can print exactly the same."""
+    if usd is None:
+        return "\u2014"
+    if usd == 0:
+        text = "$0"
+    elif usd < 0.01:
+        text = "<$0.01"
+    else:
+        cents = Decimal(usd).quantize(Decimal("0.01"), ROUND_HALF_UP)
+        if cents >= 100:  # 99.996 rounds to $100.00: whole dollars, like $100
+            text = f"${Decimal(usd).quantize(Decimal('1'), ROUND_HALF_UP):,}"
+        else:
+            text = f"${cents}"
+    return f"\u2265 {text}" if lower_bound else text

@@ -4,6 +4,7 @@ import time
 
 import click
 
+import minimise.interfaces.cli as _cli  # patchable CONFIG_DIR; read at call time
 from minimise.interfaces.api_server import APIServer
 from minimise.interfaces.cli._shared import console, get_db, get_job_controller
 
@@ -26,7 +27,7 @@ def view_start(port: int):
         db = get_db()
         job_controller = get_job_controller(db)
 
-        api_server = APIServer(db, job_controller, port=port)
+        api_server = APIServer(db, job_controller, port=port, config_dir=_cli.CONFIG_DIR)
 
         console.print(f"[green]Starting web server on port {port}...[/green]")
         api_server.start()

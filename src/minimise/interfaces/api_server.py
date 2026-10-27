@@ -4,13 +4,20 @@ import json
 import threading
 from collections import deque
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import markdown
 from flask import Flask, jsonify, request, render_template
 from flask_cors import CORS
 
-from minimise.interfaces.formatting import attempt_runs, row_tokens, tokens_total
+from minimise.interfaces.formatting import (
+    attempt_runs,
+    cost_total,
+    row_cost,
+    row_tokens,
+    tokens_total,
+)
 from minimise.interfaces.loop_views import register_loop_routes
 from minimise.interfaces.prompt_preview import persona_preview
 from minimise.interfaces.timeline import build_steps, project_steps, steps_from_executions
@@ -19,6 +26,7 @@ from minimise.storage.database import Database
 from minimise.storage.loop_store import LoopStore
 from minimise.orchestration.job_controller import JobController
 from minimise.personas import load_personas
+from minimise.settings import Prices, load_prices
 
 NAV_LINKS = [
     ("Jobs", "job_list_page"),
@@ -142,7 +150,8 @@ def _timeline_group(kind: str, name: str, task_id: Optional[str], status: str,
     }
 
 
-def _job_timeline(job: Job, steps: list, now: datetime, runs: list = ()) -> dict:
+def _job_timeline(job: Job, steps: list, now: datetime, runs: list = (),
+                  prices: Optional[Prices] = None) -> dict:
     """Group every step by task (and plan hooks by phase) on one timeline
     measured in seconds from its origin.
 
@@ -158,6 +167,8 @@ def _job_timeline(job: Job, steps: list, now: datetime, runs: list = ()) -> dict
     task's ``tokens_total``. Hooks write no runs (review-plan's ``claude -p``
     is never captured), so a plan-hook group's ``tokens_total`` is null like
     its rows. The job's own total is the route's top-level ``tokens_total``.
+    With ``prices``, every ``tokens`` gets a ``cost_usd`` (row_cost; null on
+    hooks) and every ``tokens_total`` a ``cost_total`` (null on plan hooks).
     """
     origin = min([t for t in (job.started_at, *(s.started_at for s in steps)) if t],
                  default=now)
@@ -171,7 +182,10 @@ def _job_timeline(job: Job, steps: list, now: datetime, runs: list = ()) -> dict
     rows = []
     for step, (start, actual_end, projected_end) in zip(steps, placements):
         ran = step.status != TaskStatus.PENDING
-        rows.append({
+        # Step.attempt is 1-based; agent_runs.attempt is 0-based. Hooks have no runs.
+        step_runs = [] if step.is_hook else attempt_runs(
+            runs, step.task_id, step.attempt - 1 if step.attempt else None)
+        row = {
             "name": step.name,
             "phase": step.phase,
             "kind": "hook" if step.is_hook else "task",
@@ -180,9 +194,7 @@ def _job_timeline(job: Job, steps: list, now: datetime, runs: list = ()) -> dict
             "status": step.status.value,
             "assignee": step.assignee,
             "exit_reason": step.exit_reason,
-            # Step.attempt is 1-based; agent_runs.attempt is 0-based.
-            "tokens": None if step.is_hook else row_tokens(job, attempt_runs(
-                runs, step.task_id, step.attempt - 1 if step.attempt else None)),
+            "tokens": None if step.is_hook else row_tokens(job, step_runs),
             "estimate_secs": step.estimate * 60 if step.estimate else None,
             "timeout_secs": step.timeout * 60 if step.timeout else None,
             "start_offset": offset(step.started_at),
@@ -196,7 +208,10 @@ def _job_timeline(job: Job, steps: list, now: datetime, runs: list = ()) -> dict
                 "actual_end": round(actual_end, 1),
                 "projected_end": round(projected_end, 1),
             },
-        })
+        }
+        if prices is not None:
+            row["cost_usd"] = None if step.is_hook else row_cost(job, step_runs, prices)
+        rows.append(row)
     if finished:
         total = max([r["bar"]["projected_end"] for r in rows if r["bar"]] + [offset(end) or 0, 1])
 
@@ -205,18 +220,25 @@ def _job_timeline(job: Job, steps: list, now: datetime, runs: list = ()) -> dict
     for phase, indices in _group_steps(steps):
         parts = [rows[i] for i in indices]
         if phase in PLAN_HOOK_GROUPS:
-            groups.append(_timeline_group("plan_hooks", PLAN_HOOK_GROUPS[phase], None,
-                                          _rollup_status(parts), parts, None))
+            group = _timeline_group("plan_hooks", PLAN_HOOK_GROUPS[phase], None,
+                                    _rollup_status(parts), parts, None)
+            if prices is not None:
+                group["cost_total"] = None
+            groups.append(group)
             continue
         task_id = parts[0]["task_id"]
-        tokens = tokens_total(job, (run for run in runs if run.task_id == task_id))
+        task_runs = [run for run in runs if run.task_id == task_id]
+        tokens = tokens_total(job, task_runs)
         task = tasks.get(task_id)
         name = task.name if task else next(
             (p["name"] for p in parts if p["kind"] == "task"), task_id or "")
         # pre_task hooks run while the task is still PENDING, so a running part wins
         status = "running" if any(p["status"] == "running" for p in parts) else (
             task.status.value if task else _rollup_status(parts))
-        groups.append(_timeline_group("task", name, task_id, status, parts, tokens))
+        group = _timeline_group("task", name, task_id, status, parts, tokens)
+        if prices is not None:
+            group["cost_total"] = cost_total(job, task_runs, prices)
+        groups.append(group)
 
     return {
         "now_offset": offset(end) if job.started_at else None,
@@ -236,7 +258,8 @@ def _persona_summary(system_prompt: str, width: int = 70) -> str:
 class APIServer:
     """REST API server exposing read-only job/task state over HTTP."""
 
-    def __init__(self, db: Database, job_controller: JobController, port: int = 5000):
+    def __init__(self, db: Database, job_controller: JobController, port: int = 5000,
+                 config_dir: Optional[Path] = None):
         """
         Initialize the API server.
 
@@ -244,9 +267,12 @@ class APIServer:
             db: Database instance for accessing job/task data
             job_controller: JobController instance for job operations
             port: Port to run the server on (default: 5000)
+            config_dir: Where settings.yaml lives; its prices are read on every
+                request. None: no prices, so no cost anywhere.
         """
         self.db = db
         self.job_controller = job_controller
+        self.config_dir = config_dir
         self.loop_store = LoopStore(db, job_controller.store.jobs_dir)
         self.port = port
         self.app = Flask(__name__)
@@ -259,7 +285,7 @@ class APIServer:
 
         # Register routes
         self._register_routes()
-        register_loop_routes(self.app, self.db, self.loop_store)
+        register_loop_routes(self.app, self.db, self.loop_store, config_dir)
 
     def _load_job_with_tasks(self, job_id: str) -> Optional[Job]:
         """Fetch a job and attach its task list, or None if it doesn't exist."""
@@ -416,11 +442,15 @@ class APIServer:
                     for ex in executions if ex.execution_type != "task"
                 ]
                 runs = self.db.list_agent_runs_for_job(job_id)
+                prices = load_prices(self.config_dir)
                 job_dict = job.to_dict()
                 job_dict["hooks"] = hooks
                 job_dict["tokens_total"] = tokens_total(job, runs)  # task agents only
+                if prices is not None:
+                    job_dict["cost_total"] = cost_total(job, runs, prices)
+                    job_dict["prices_as_of"] = prices.as_of
                 job_dict["timeline"] = _job_timeline(
-                    job, self._timeline_steps(job, executions), datetime.utcnow(), runs
+                    job, self._timeline_steps(job, executions), datetime.utcnow(), runs, prices
                 )
                 return jsonify(job_dict), 200
             except Exception as e:

@@ -783,3 +783,132 @@ def test_job_api_unstarted_job_reports_zero_tokens(client, mock_job_controller):
     [group] = data["timeline"]["groups"]
     assert group["tokens_total"] == data["tokens_total"]
     assert group["steps"][0]["tokens"] == zeros  # pending: no agent ran yet
+
+
+# ---- cost: only when settings.yaml has prices -------------------------------
+
+_PRICES_YAML = """version: 0.0.1
+prices:
+  as_of: 2026-10-26
+  models:
+    claude-opus-5-5: {input: 5, cache_read: 0.5, cache_write: 10, output: 25}
+    default: {input: 1, cache_read: 0.1, cache_write: 2, output: 5}
+"""
+
+
+def _server_client(db, mock_job_controller, config_dir, settings=None):
+    """A test client whose server reads settings.yaml (when given) from config_dir."""
+    config_dir.mkdir(exist_ok=True)
+    if settings is not None:
+        (config_dir / "settings.yaml").write_text(settings)
+    server = APIServer(db, mock_job_controller, port=5001, config_dir=config_dir)
+    server.app.testing = True
+    return server.app.test_client()
+
+
+def _dicts(value):
+    """Every dict in a JSON value, nested ones included."""
+    if isinstance(value, dict):
+        yield value
+        value = list(value.values())
+    if isinstance(value, list):
+        for item in value:
+            yield from _dicts(item)
+
+
+def test_job_api_carries_cost_next_to_every_token_figure_when_priced(
+        mock_job_controller, db, seed_run, temp_db_dir):
+    """Build's attempt 0 has by_model (only opus, input 100): priced at opus.
+    Attempt 1 has none: its buckets at default. Docs reported nothing; Ship
+    ran no agent; hooks and plan-hook groups are null."""
+    job = _token_job(mock_job_controller, db, seed_run)
+    client = _server_client(db, mock_job_controller, temp_db_dir / "config", _PRICES_YAML)
+
+    data = client.get(f"/jobs/{job.id}").get_json()
+
+    try1 = 100 * 5 / 1e6  # opus input; the run's other buckets aren't in its by_model
+    try2 = (20 * 1 + 0 * 2 + 30 * 5) / 1e6  # default; cache_read None adds nothing
+    assert data["prices_as_of"] == "2026-10-26"
+    rows = [(s["name"], s["attempt"], s["cost_usd"])
+            for g in data["timeline"]["groups"] for s in g["steps"]]
+    assert rows == [
+        ("review-plan", None, None),
+        ("Build", 1, pytest.approx(try1)),
+        ("Build", 2, pytest.approx(try2)),
+        ("tests", None, None),
+        ("Docs", 1, None),  # its tokens are null
+        ("lint", None, None),
+        ("Ship", 1, 0),  # no agent ran
+    ]
+    assert [(g["name"], g["cost_total"]) for g in data["timeline"]["groups"]] == [
+        ("Before all tasks", None),
+        ("Build", {"usd": pytest.approx(try1 + try2), "lower_bound": False}),
+        ("Docs", {"usd": None, "lower_bound": True}),
+        ("Ship", {"usd": 0, "lower_bound": False}),
+    ]
+    assert data["cost_total"] == {"usd": pytest.approx(try1 + try2), "lower_bound": True}
+    for d in _dicts(data):
+        assert ("tokens" in d) == ("cost_usd" in d)
+        assert ("tokens_total" in d) == ("cost_total" in d)
+    assert not any("cost" in key for task in data["tasks"] for key in task)
+    for hidden in ("reasoning", "by_model", "claude-opus"):
+        assert hidden not in json.dumps(data), hidden
+
+
+def test_job_api_without_prices_is_unchanged(client, mock_job_controller, db, seed_run,
+                                             temp_db_dir):
+    """A settings.yaml without prices gives byte-for-byte what a server that
+    reads no settings gives: no cost keys at all."""
+    job = _token_job(mock_job_controller, db, seed_run)
+    unpriced = _server_client(db, mock_job_controller, temp_db_dir / "config",
+                              "version: 0.0.1\nharness: claude\n")
+
+    body = unpriced.get(f"/jobs/{job.id}").get_data(as_text=True)
+
+    assert body == client.get(f"/jobs/{job.id}").get_data(as_text=True)
+    for key in ("cost", "usd", "prices_as_of", "lower_bound"):
+        assert key not in body
+    no_file = _server_client(db, mock_job_controller, temp_db_dir / "empty")
+    assert no_file.get(f"/jobs/{job.id}").get_data(as_text=True) == body
+
+
+def test_job_api_untracked_job_has_null_cost(mock_job_controller, db, seed_run, untrack,
+                                             temp_db_dir):
+    job = _token_job(mock_job_controller, db, seed_run)
+    untrack(db, job_id=job.id)
+    client = _server_client(db, mock_job_controller, temp_db_dir / "config", _PRICES_YAML)
+
+    data = client.get(f"/jobs/{job.id}").get_json()
+
+    assert data["cost_total"] is None
+    groups = data["timeline"]["groups"]
+    assert [g["cost_total"] for g in groups] == [None] * len(groups)
+    assert [s["cost_usd"] for g in groups for s in g["steps"]] == [None] * 7
+
+
+def test_job_api_reads_prices_on_every_request(mock_job_controller, db, seed_run, temp_db_dir):
+    job = _token_job(mock_job_controller, db, seed_run)
+    config_dir = temp_db_dir / "config"
+    client = _server_client(db, mock_job_controller, config_dir, _PRICES_YAML)
+    settings = config_dir / "settings.yaml"
+
+    assert client.get(f"/jobs/{job.id}").get_json()["cost_total"]["usd"] == pytest.approx(
+        670 / 1e6)
+    settings.write_text(_PRICES_YAML.replace("as_of: 2026-10-26", "as_of: 2026-11-01")
+                        .replace("input: 5,", "input: 50,"))
+    data = client.get(f"/jobs/{job.id}").get_json()
+    assert data["prices_as_of"] == "2026-11-01"
+    assert data["cost_total"]["usd"] == pytest.approx((100 * 50 + 170) / 1e6)
+    settings.write_text("version: 0.0.1\n")  # prices removed: cost is gone too
+    assert "cost_total" not in client.get(f"/jobs/{job.id}").get_json()
+
+
+def test_job_api_bad_prices_fail_naming_the_key(mock_job_controller, db, seed_run, temp_db_dir):
+    job = _token_job(mock_job_controller, db, seed_run)
+    client = _server_client(db, mock_job_controller, temp_db_dir / "config",
+                            _PRICES_YAML.replace("cache_write: 2, ", ""))
+
+    response = client.get(f"/jobs/{job.id}")
+
+    assert response.status_code == 500
+    assert "prices.models.default.cache_write" in response.get_json()["error"]

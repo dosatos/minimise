@@ -10,9 +10,11 @@ from flask import Flask, jsonify, render_template, request
 
 from minimise.interfaces.formatting import (
     carried_from,
+    cost_total,
     evaluate_records,
     format_duration,
     loop_step_json,
+    row_cost,
     shown_loop_steps,
     tokens_total,
 )
@@ -20,6 +22,7 @@ from minimise.interfaces.prompt_preview import worker_prompt_preview
 from minimise.models import AgentRun, JobStatus, Loop, LoopSpec, LoopStep, TaskStatus
 from minimise.orchestration import loop_journal
 from minimise.personas import load_personas
+from minimise.settings import Prices, load_prices
 from minimise.storage.database import Database
 from minimise.storage.loop_store import LoopStore
 
@@ -46,9 +49,14 @@ def _current_stage(steps: list[LoopStep]) -> str:
     return _stage_label(step.step_type, step.dimension)
 
 
-def _serialize_step(loop: Loop, step: LoopStep, runs: list[AgentRun]) -> dict:
+def _serialize_step(loop: Loop, step: LoopStep, runs: list[AgentRun],
+                    prices: Optional[Prices] = None) -> dict:
+    data = loop_step_json(loop, step, runs)  # the CLI's step shape; the web only adds keys
+    if prices is not None:
+        data["cost_usd"] = row_cost(loop, (run for run in runs if run.step_id == step.step_id),
+                                    prices)
     return {
-        **loop_step_json(loop, step, runs),  # the CLI's step shape; the web only adds keys
+        **data,
         "stage": _stage_label(step.step_type),
         "retries": step.retries,
         "started_at": step.started_at.isoformat() if step.started_at else None,
@@ -116,6 +124,7 @@ def _loop_timeline(
     journal_records=(),
     dimension_count: int = 0,
     runs: list[AgentRun] = (),
+    prices: Optional[Prices] = None,
 ) -> dict:
     """Group a loop's steps by iteration on one timeline measured in seconds
     from its origin.
@@ -132,6 +141,7 @@ def _loop_timeline(
     ``carried_from`` (and no bar: nothing ran), and a re-check has ``recheck``.
     Each iteration's ``tokens_total`` sums its steps' agent ``runs``; a
     carried-over pass ran no agent, so it has none and its ``tokens`` are 0.
+    With ``prices``, each step gets ``cost_usd`` and each iteration ``cost_total``.
 
     A RUNNING step of a loop that isn't running shows as stopped (shown_loop_steps).
     """
@@ -162,7 +172,7 @@ def _loop_timeline(
         )
         carried = carried_from(record)
         return {
-            **_serialize_step(loop, step, runs),
+            **_serialize_step(loop, step, runs, prices),
             "start_offset": start,
             "duration": (
                 round((step.completed_at - step.started_at).total_seconds(), 1)
@@ -192,7 +202,8 @@ def _loop_timeline(
         )
         parts = [timed(step) for step in members]
         step_ids = {step.step_id for step in members}
-        groups.append({
+        group_runs = [run for run in runs if run.step_id in step_ids]
+        group = {
             "iteration": iteration,
             "status": status,
             "start_offset": offset(first),
@@ -201,9 +212,12 @@ def _loop_timeline(
                 if first and last and status != "running" else None
             ),
             "passing": _iteration_passing(parts, dimension_count),
-            "tokens_total": tokens_total(loop, (run for run in runs if run.step_id in step_ids)),
-            "steps": parts,
-        })
+            "tokens_total": tokens_total(loop, group_runs),
+        }
+        if prices is not None:
+            group["cost_total"] = cost_total(loop, group_runs, prices)
+        group["steps"] = parts
+        groups.append(group)
 
     durations = [g["duration"] for g in groups
                  if g["status"] != "running" and g["duration"] is not None]
@@ -227,7 +241,10 @@ def _serialize_loop(
     include_steps: bool = True,
     journal_records=(),
     runs: list[AgentRun] = (),
+    prices: Optional[Prices] = None,
 ) -> dict:
+    """A loop as the web shows it. With ``prices`` (and steps), the cost keys
+    sit next to the token keys and ``prices_as_of`` says when the prices are from."""
     steps = shown_loop_steps(loop, steps)  # orphaned RUNNING steps show as stopped
     current_iteration = max((step.iteration for step in steps), default=0)
     max_iterations = spec.max_iterations if spec else loop.max_iterations
@@ -251,8 +268,11 @@ def _serialize_loop(
     }
     if include_steps:
         result["stop_reason"] = loop.stop_reason
-        result["steps"] = [_serialize_step(loop, step, runs) for step in steps]
+        result["steps"] = [_serialize_step(loop, step, runs, prices) for step in steps]
         result["tokens_total"] = tokens_total(loop, runs)
+        if prices is not None:
+            result["cost_total"] = cost_total(loop, runs, prices)
+            result["prices_as_of"] = prices.as_of
         result["timeline"] = _loop_timeline(
             loop,
             steps,
@@ -260,6 +280,7 @@ def _serialize_loop(
             journal_records=journal_records,
             dimension_count=len(spec.loop.evaluate.dimensions) if spec else 0,
             runs=runs,
+            prices=prices,
         )
     return result
 
@@ -479,8 +500,10 @@ def _artifact_limit() -> int:
     return ARTIFACT_LIMIT if limit is None or limit <= 0 else min(limit, 500)
 
 
-def register_loop_routes(app: Flask, db: Database, store: LoopStore) -> None:
-    """Register loop HTML pages and read-only JSON endpoints."""
+def register_loop_routes(app: Flask, db: Database, store: LoopStore,
+                         config_dir: Optional[Path] = None) -> None:
+    """Register loop HTML pages and read-only JSON endpoints. settings.yaml's
+    prices are read from config_dir on every request (None: no prices)."""
 
     @app.route("/loops", methods=["GET"], strict_slashes=False)
     def loop_list_page():
@@ -528,6 +551,10 @@ def register_loop_routes(app: Flask, db: Database, store: LoopStore) -> None:
         loop = store.load(loop_id)
         if loop is None:
             return jsonify({"error": "Loop not found"}), 404
+        try:
+            prices = load_prices(config_dir)
+        except ValueError as exc:  # a bad settings.yaml: say which key
+            return jsonify({"error": str(exc)}), 500
         spec, _, _ = _load_spec(store, loop_id)
         return jsonify(_serialize_loop(
             loop,
@@ -535,6 +562,7 @@ def register_loop_routes(app: Flask, db: Database, store: LoopStore) -> None:
             spec,
             journal_records=_read_journal(store, loop_id),
             runs=db.list_agent_runs_for_loop(loop_id),
+            prices=prices,
         )), 200
 
     @app.route("/api/loops/<loop_id>/journal", methods=["GET"])
