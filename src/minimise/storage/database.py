@@ -3,7 +3,7 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List
+from typing import Dict, Optional, List
 from minimise.models import AgentRun, Job, Task, Execution, Loop, LoopStep, JobStatus, TaskStatus, TokenUsage
 from minimise.utils import new_id
 
@@ -850,6 +850,23 @@ class Database:
             "SELECT * FROM agent_runs WHERE loop_id = ? ORDER BY started_at, run_id", (loop_id,)
         )
         return [_row_to_agent_run(row) for row in rows]
+
+    def agent_runs_by_owner(self, owner: str, ids: List[str]) -> Dict[str, List[AgentRun]]:
+        """The agent runs of many jobs (owner "job") or loops (owner "loop") in
+        one query, as owner id -> its runs in start order. An id with no runs
+        is absent. For a list page: one query, not one per row."""
+        column = {"job": "job_id", "loop": "loop_id"}[owner]
+        if not ids:
+            return {}
+        rows = self._query(
+            f"SELECT * FROM agent_runs WHERE {column} IN ({', '.join('?' * len(ids))})"
+            " ORDER BY started_at, run_id",
+            tuple(ids),
+        )
+        runs: Dict[str, List[AgentRun]] = {}
+        for row in rows:
+            runs.setdefault(row[column], []).append(_row_to_agent_run(row))
+        return runs
 
     def current_iteration(self, loop_id: str) -> int:
         """Derived iteration numerator: MAX(iteration) across a loop's steps (0 if none)."""

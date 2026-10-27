@@ -330,19 +330,29 @@ def _load_loop_page(
     db: Database,
     store: LoopStore,
     page: int,
+    prices: Optional[Prices] = None,
 ) -> tuple[list[dict], bool]:
+    """One page of loops, each with its tokens_total (and cost_total with
+    ``prices``); the runs of the whole page come from one query."""
     offset = (page - 1) * LOOPS_PAGE_SIZE
     loops = store.load_many(limit=LOOPS_PAGE_SIZE + 1, offset=offset)
     has_next = len(loops) > LOOPS_PAGE_SIZE
+    loops = loops[:LOOPS_PAGE_SIZE]
+    runs = db.agent_runs_by_owner("loop", [loop.loop_id for loop in loops])
     views = []
-    for loop in loops[:LOOPS_PAGE_SIZE]:
+    for loop in loops:
         spec, _, _ = _load_spec(store, loop.loop_id)
-        views.append(_serialize_loop(
+        view = _serialize_loop(
             loop,
             db.list_loop_steps(loop.loop_id),
             spec,
             include_steps=False,
-        ))
+        )
+        loop_runs = runs.get(loop.loop_id, [])
+        view["tokens_total"] = tokens_total(loop, loop_runs)
+        if prices is not None:
+            view["cost_total"] = cost_total(loop, loop_runs, prices)
+        views.append(view)
     return views, has_next
 
 
@@ -541,9 +551,15 @@ def register_loop_routes(app: Flask, db: Database, store: LoopStore,
     @app.route("/api/loops", methods=["GET"])
     def get_loops_api():
         page = max(1, request.args.get("page", 1, type=int))
-        loops, has_next = _load_loop_page(db, store, page)
+        try:
+            prices = load_prices(config_dir)
+        except ValueError as exc:  # a bad settings.yaml: say which key
+            return jsonify({"error": str(exc)}), 500
+        loops, has_next = _load_loop_page(db, store, page, prices)
         response = jsonify(loops)
         response.headers["X-Has-Next"] = "true" if has_next else "false"
+        if prices is not None:
+            response.headers["X-Prices-As-Of"] = prices.as_of
         return response, 200
 
     @app.route("/api/loops/<loop_id>", methods=["GET"])

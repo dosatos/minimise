@@ -10,10 +10,12 @@ from typing import Optional
 import markdown
 from flask import Flask, jsonify, request, render_template
 from flask_cors import CORS
+from markupsafe import Markup
 
 from minimise.interfaces.formatting import (
     attempt_runs,
     cost_total,
+    format_tokens,
     row_cost,
     row_tokens,
     tokens_total,
@@ -46,6 +48,27 @@ def _duration_label(minutes: Optional[int]) -> str:
     if not remaining:
         return f"{hours} hr"
     return f"{hours} hr {remaining} min"
+
+
+def _tokens_figure(tokens: Optional[dict]) -> Markup:
+    """A tokens or tokens_total cell exactly as poll.js's tokensFigure renders
+    it, so a server-rendered row matches the polled one: the total, with the
+    buckets and any not-reported count in its title; an em dash for null."""
+    if not tokens:
+        return Markup("—")
+    title = " ".join(filter(None, [
+        "" if not tokens["total"] else
+        f"input {format_tokens(tokens['input'])}"
+        f" · cache write {format_tokens(tokens['cache_write'])}"
+        f" · cache read {format_tokens(tokens['cache_read'])}"
+        f" · output {format_tokens(tokens['output'])}",
+        "" if not tokens.get("not_reported") else
+        f"({tokens['not_reported']} run{'' if tokens['not_reported'] == 1 else 's'} not reported)",
+    ]))
+    text = format_tokens(tokens["total"])
+    if not title:
+        return Markup.escape(text)
+    return Markup('<span class="tokens" title="{}">{}</span>').format(title, text)
 
 
 def _plan_summary(plan: Plan) -> dict:
@@ -277,6 +300,7 @@ class APIServer:
         self.port = port
         self.app = Flask(__name__)
         self.app.add_template_filter(_duration_label, "duration_label")
+        self.app.add_template_filter(_tokens_figure, "tokens_figure")
 
         # Enable CORS
         CORS(self.app, resources={r"/*": {"origins": "*"}})
@@ -321,7 +345,10 @@ class APIServer:
             """Server-rendered job list page, polled client-side via /jobs."""
             page = max(1, request.args.get("page", 1, type=int))
             jobs, has_next = self._load_page_with_tasks(page)
-            return render_template("list.html", jobs=jobs, page=page, has_next=has_next)
+            runs = self.db.agent_runs_by_owner("job", [job.id for job in jobs])
+            tokens = {job.id: tokens_total(job, runs.get(job.id, [])) for job in jobs}
+            return render_template("list.html", jobs=jobs, tokens=tokens, page=page,
+                                   has_next=has_next)
 
         @self.app.route("/jobs/<job_id>/view", methods=["GET"])
         def job_detail_page(job_id: str):
@@ -399,8 +426,19 @@ class APIServer:
             try:
                 page = max(1, request.args.get("page", 1, type=int))
                 jobs, has_next = self._load_page_with_tasks(page)
-                resp = jsonify([job.to_dict() for job in jobs])
+                prices = load_prices(self.config_dir)
+                runs = self.db.agent_runs_by_owner("job", [job.id for job in jobs])
+                items = []
+                for job in jobs:
+                    item = job.to_dict()  # the route adds the rollups, not Job.to_dict
+                    item["tokens_total"] = tokens_total(job, runs.get(job.id, []))
+                    if prices is not None:
+                        item["cost_total"] = cost_total(job, runs.get(job.id, []), prices)
+                    items.append(item)
+                resp = jsonify(items)
                 resp.headers["X-Has-Next"] = "true" if has_next else "false"
+                if prices is not None:
+                    resp.headers["X-Prices-As-Of"] = prices.as_of
                 return resp, 200
             except Exception as e:
                 return jsonify({"error": str(e)}), 500

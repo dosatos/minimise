@@ -158,3 +158,6 @@ select optgroup, select option { background-color: var(--bg); color: var(--fg); 
         content: none;
     }
 }
+
+/* A token figure's title holds its four-bucket breakdown. */
+.tokens[title] { cursor: help; }

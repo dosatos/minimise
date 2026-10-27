@@ -1392,7 +1392,7 @@ def test_loop_timeline_unstarted_loop_has_no_origin():
 
 
 def test_get_loop_api_includes_timeline_and_list_is_unchanged(client, api_server, db):
-    """f) the detail API gains "timeline"; the list API stays as it was."""
+    """f) the detail API gains "timeline"; the list API gains only tokens_total."""
     from minimise.models import JobStatus, LoopStep, TaskStatus
 
     loop = _make_loop(api_server)
@@ -1418,7 +1418,7 @@ def test_get_loop_api_includes_timeline_and_list_is_unchanged(client, api_server
     [listed] = client.get("/api/loops").get_json()
     assert set(listed) == {"loop_id", "name", "status", "iteration", "max_iterations",
                            "stage", "plan_version", "evaluator_count", "created_at",
-                           "started_at", "completed_at", "elapsed"}
+                           "started_at", "completed_at", "elapsed", "tokens_total"}
 
 
 def test_loop_api_steps_share_the_clis_step_shape(client, api_server, db, seed_run):
@@ -2160,20 +2160,136 @@ def test_loop_api_bad_prices_fail_naming_the_key(api_server, mock_job_controller
     assert "prices.models.claude-sonnet-5-5.output" in response.get_json()["error"]
 
 
-def test_loops_list_api_and_page_carry_no_tokens(client, api_server, db, seed_run):
-    from minimise.models import JobStatus, LoopStep, TaskStatus, TokenUsage
+def _listed_loops(api_server, db, seed_run, untrack):
+    """_cost_loop's loop, an untracked loop with a run, and a loop no agent ran in."""
+    from minimise.models import LoopStep, TaskStatus, TokenUsage
 
-    loop = _make_loop(api_server)
-    db.update_loop_status(loop.loop_id, status=JobStatus.COMPLETED,
-                          started_at=_at(0), completed_at=_at(8))
+    tracked = _cost_loop(api_server, db, seed_run)
+    untracked = _make_loop(api_server)
     db.create_loop_step(LoopStep(
-        step_id="step-plan", loop_id=loop.loop_id, iteration=1, step_type="plan",
+        step_id="old-plan", loop_id=untracked.loop_id, iteration=1, step_type="plan",
         status=TaskStatus.COMPLETED, started_at=_at(0), completed_at=_at(2),
     ))
-    seed_run(db, TokenUsage(1, 2, 3, 4), loop_id=loop.loop_id, step_id="step-plan")
+    seed_run(db, TokenUsage(1, 2, 3, 4), loop_id=untracked.loop_id, step_id="old-plan")
+    untrack(db, loop_id=untracked.loop_id)
+    idle = _make_loop(api_server)
+    return tracked, untracked, idle
 
-    assert "tokens" not in client.get("/api/loops").get_data(as_text=True)
-    assert "tokens" not in client.get("/loops").get_data(as_text=True).lower()
+
+def test_loops_list_api_carries_each_loops_tokens_total(client, api_server, mock_job_controller,
+                                                        db, seed_run, untrack, temp_db_dir):
+    tracked, untracked, idle = _listed_loops(api_server, db, seed_run, untrack)
+
+    response = client.get("/api/loops")
+
+    listed = {loop["loop_id"]: loop for loop in response.get_json()}
+    assert listed[tracked.loop_id]["tokens_total"] == {
+        "input": 1_000_000, "cache_read": 2_000_000, "cache_write": 1_000_000,
+        "output": 1_100_000, "total": 5_100_000, "not_reported": 1,
+    }
+    assert listed[tracked.loop_id]["tokens_total"] == (
+        client.get(f"/api/loops/{tracked.loop_id}").get_json()["tokens_total"])
+    assert listed[untracked.loop_id]["tokens_total"] is None
+    assert listed[idle.loop_id]["tokens_total"] == {
+        "input": 0, "cache_read": 0, "cache_write": 0, "output": 0, "total": 0,
+        "not_reported": 0,
+    }
+    # no prices: no cost, and a settings.yaml without prices changes nothing
+    body = response.get_data(as_text=True)
+    for key in ("cost", "usd", "lower_bound", "prices_as_of"):
+        assert key not in body, key
+    assert "X-Prices-As-Of" not in response.headers
+    unpriced = _priced_client(db, mock_job_controller, temp_db_dir / "config",
+                              "version: 0.0.1\n").get("/api/loops")
+    assert unpriced.get_data(as_text=True) == body
+    assert "X-Prices-As-Of" not in unpriced.headers
+
+
+def test_loops_list_api_carries_cost_total_and_prices_header_when_priced(
+        api_server, mock_job_controller, db, seed_run, untrack, temp_db_dir):
+    tracked, untracked, idle = _listed_loops(api_server, db, seed_run, untrack)
+    client = _priced_client(db, mock_job_controller, temp_db_dir / "config")
+
+    response = client.get("/api/loops")
+
+    assert response.headers["X-Prices-As-Of"] == "2026-10-26"
+    assert response.headers["X-Has-Next"] == "false"
+    listed = {loop["loop_id"]: loop for loop in response.get_json()}
+    plan, clarity = (3 + 0.6 + 1.5) + 5, 2  # as in the detail API's cost test
+    assert listed[tracked.loop_id]["cost_total"] == {
+        "usd": pytest.approx(plan + clarity), "lower_bound": True}  # accuracy reported nothing
+    assert listed[tracked.loop_id]["cost_total"] == (
+        client.get(f"/api/loops/{tracked.loop_id}").get_json()["cost_total"])
+    assert listed[untracked.loop_id]["cost_total"] is None
+    assert listed[idle.loop_id]["cost_total"] == {"usd": 0, "lower_bound": False}
+    assert all("tokens_total" in loop for loop in listed.values())
+    assert not any("prices_as_of" in loop for loop in listed.values())  # it's the header
+
+
+def test_loops_list_loads_the_pages_runs_in_one_query(api_server, mock_job_controller, db,
+                                                      seed_run, untrack, temp_db_dir,
+                                                      monkeypatch):
+    loops = _listed_loops(api_server, db, seed_run, untrack)
+    client = _priced_client(db, mock_job_controller, temp_db_dir / "config")
+    monkeypatch.setattr(db, "list_agent_runs_for_loop",
+                        Mock(side_effect=AssertionError("one runs query per loop")))
+    queries, query = [], db._query
+
+    def counting(sql, params=()):
+        if "agent_runs" in sql:
+            queries.append(params)
+        return query(sql, params)
+
+    monkeypatch.setattr(db, "_query", counting)
+
+    for url in ("/api/loops", "/loops"):
+        queries.clear()
+        assert client.get(url).status_code == 200, url
+        assert [sorted(params) for params in queries] == [
+            sorted(loop.loop_id for loop in loops)], url
+
+
+def test_loops_list_api_bad_prices_fail_naming_the_key(api_server, mock_job_controller, db,
+                                                       seed_run, temp_db_dir):
+    _cost_loop(api_server, db, seed_run)
+    client = _priced_client(db, mock_job_controller, temp_db_dir / "config",
+                            _PRICES_YAML.replace("input: 1,", "input: cheap,"))
+
+    response = client.get("/api/loops")
+
+    assert response.status_code == 500
+    assert "prices.models.default.input" in response.get_json()["error"]
+
+
+def test_loops_list_page_shows_each_loops_tokens(client, api_server, db, seed_run, untrack):
+    import re
+
+    tracked, untracked, idle = _listed_loops(api_server, db, seed_run, untrack)
+
+    html = client.get("/loops").get_data(as_text=True)
+
+    assert re.findall(r"<th>(\w+)</th>", html) == [
+        "ID", "Name", "Status", "Iteration", "Stage", "Tokens", "Created"]
+
+    def tokens_cell(loop):
+        row = html[html.index(f">{loop.loop_id}</a>"):]
+        return re.search(r'<td data-label="Tokens">(.*?)</td>', row).group(1)
+
+    # the same HTML loop.js writes with tokensFigure on every refresh
+    assert tokens_cell(tracked) == (
+        '<span class="tokens" title="input 1.0M · cache write 1.0M · cache read 2.0M · '
+        'output 1.1M (1 run not reported)">5.1M</span>')
+    assert tokens_cell(untracked) == "—"
+    assert tokens_cell(idle) == "0"
+    js = client.get("/static/loop.js").get_data(as_text=True)
+    assert '<td data-label="Tokens">${tokensFigure(loop.tokens_total)}</td>' in js
+    assert '<td colspan="7" class="empty">No loops yet</td>' in js
+
+
+def test_loops_list_page_empty_state_spans_the_tokens_column(client):
+    html = client.get("/loops").get_data(as_text=True)
+
+    assert '<td colspan="7" class="empty">No loops yet</td>' in html
 
 
 def test_loop_detail_page_shows_tokens_next_to_elapsed_and_duration(client, api_server):
@@ -2231,10 +2347,12 @@ def test_job_detail_page_shows_task_agent_tokens(client, mock_job_controller):
 
 def test_web_token_figures_match_the_clis_format(client, tmp_path):
     """poll.js's formatTokens prints what format_tokens prints, halves included
-    (Python rounds 1250 to 1.2K; plain toFixed would say 1.3K)."""
+    (Python rounds 1250 to 1.2K; plain toFixed would say 1.3K), and its
+    tokensFigure what the templates' tokens_figure filter renders."""
     import json
     import shutil
     import subprocess
+    from minimise.interfaces.api_server import _tokens_figure
     from minimise.interfaces.formatting import format_tokens
 
     if shutil.which("node") is None:
@@ -2278,3 +2396,5 @@ def test_web_token_figures_match_the_clis_format(client, tmp_path):
         "0",  # a row no agent ran in, e.g. a carried-over pass
         "0",  # a rollup with no counted runs
     ]
+    # the list pages' server-rendered cells are the HTML their polling writes
+    assert [str(_tokens_figure(f)) for f in figures] == shown

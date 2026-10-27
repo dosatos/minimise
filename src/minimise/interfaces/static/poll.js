@@ -98,7 +98,7 @@ function startJobListPolling(intervalMs) {
         const tbody = document.getElementById("job-rows");
         if (!tbody) return;
         if (jobs.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="empty">No jobs yet</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="empty">No jobs yet</td></tr>';
             stopPolling();
             return;
         }
@@ -110,6 +110,7 @@ function startJobListPolling(intervalMs) {
                 <td data-label="Name">${job.name}</td>
                 <td data-label="Status"><span class="${statusClass(job.status)}">${job.status}</span></td>
                 <td data-label="Tasks">${done}/${total}</td>
+                <td data-label="Tokens">${tokensFigure(job.tokens_total)}</td>
                 <td data-label="Created">${job.created_at || ""}</td>
             </tr>`;
         }).join("");

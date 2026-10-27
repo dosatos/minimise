@@ -189,8 +189,6 @@
 .timeline-table .col-estimate { width: 6.5rem; }
 .timeline-table .col-timeout { width: 6rem; }
 .timeline-table .col-tokens { width: 5.5rem; }
-/* A token figure's title holds its four-bucket breakdown. */
-.tokens[title] { cursor: help; }
 .timeline-table th small {
     margin-left: 0.5rem;
     color: var(--muted);

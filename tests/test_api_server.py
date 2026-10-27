@@ -718,7 +718,10 @@ def test_job_api_carries_tokens_for_task_agents_only(client, mock_job_controller
     assert "tokens" not in data
     assert not any(key.startswith("tokens") for task in data["tasks"] for key in task)
     assert "tokens" not in json.dumps(loaded.to_dict(), default=str)
-    assert "tokens" not in client.get("/jobs").get_data(as_text=True)
+    [listed] = client.get("/jobs").get_json()  # the list route adds the job's rollup
+    assert listed["tokens_total"] == data["tokens_total"]
+    assert [key for key in listed if "tokens" in key] == ["tokens_total"]
+    assert not any("tokens" in key for task in listed["tasks"] for key in task)
     assert "tokens" not in client.get(f"/jobs/{job.id}/tasks/{build}").get_data(as_text=True)
 
 
@@ -912,3 +915,127 @@ def test_job_api_bad_prices_fail_naming_the_key(mock_job_controller, db, seed_ru
 
     assert response.status_code == 500
     assert "prices.models.default.cache_write" in response.get_json()["error"]
+
+
+# ---- the job list: each job's tokens_total, and cost_total when priced ------
+
+def _listed_jobs(mock_job_controller, db, seed_run, untrack):
+    """_token_job's job, an untracked copy of it, and a job no agent ran in."""
+    tracked = _token_job(mock_job_controller, db, seed_run)
+    untracked = _token_job(mock_job_controller, db, seed_run)
+    untrack(db, job_id=untracked.id)
+    idle = mock_job_controller.store.create(_make_plan_yaml(None), base_commit="abc123",
+                                            plan_path="/tmp/plan.yaml")
+    return tracked, untracked, idle
+
+
+def test_job_list_api_carries_each_jobs_tokens_total(client, mock_job_controller, db,
+                                                     seed_run, untrack, temp_db_dir):
+    tracked, untracked, idle = _listed_jobs(mock_job_controller, db, seed_run, untrack)
+
+    response = client.get("/jobs")
+
+    listed = {job["id"]: job for job in response.get_json()}
+    assert listed[tracked.id]["tokens_total"] == {
+        "input": 120, "cache_read": 2_000_000, "cache_write": 50_000, "output": 1530,
+        "total": 2_051_650, "not_reported": 1,
+    }
+    assert listed[tracked.id]["tokens_total"] == (
+        client.get(f"/jobs/{tracked.id}").get_json()["tokens_total"])
+    assert listed[untracked.id]["tokens_total"] is None
+    assert listed[idle.id]["tokens_total"] == {"input": 0, "cache_read": 0, "cache_write": 0,
+                                               "output": 0, "total": 0, "not_reported": 0}
+    # no prices: no cost, and a settings.yaml without prices changes nothing
+    body = response.get_data(as_text=True)
+    for key in ("cost", "usd", "lower_bound", "prices_as_of"):
+        assert key not in body, key
+    assert "X-Prices-As-Of" not in response.headers
+    unpriced = _server_client(db, mock_job_controller, temp_db_dir / "config",
+                              "version: 0.0.1\n").get("/jobs")
+    assert unpriced.get_data(as_text=True) == body
+    assert "X-Prices-As-Of" not in unpriced.headers
+
+
+def test_job_list_api_carries_cost_total_and_prices_header_when_priced(
+        mock_job_controller, db, seed_run, untrack, temp_db_dir):
+    tracked, untracked, idle = _listed_jobs(mock_job_controller, db, seed_run, untrack)
+    client = _server_client(db, mock_job_controller, temp_db_dir / "config", _PRICES_YAML)
+
+    response = client.get("/jobs")
+
+    assert response.headers["X-Prices-As-Of"] == "2026-10-26"
+    assert response.headers["X-Has-Next"] == "false"
+    listed = {job["id"]: job for job in response.get_json()}
+    assert listed[tracked.id]["cost_total"] == {"usd": pytest.approx(670 / 1e6),
+                                                "lower_bound": True}  # Docs reported nothing
+    assert listed[tracked.id]["cost_total"] == (
+        client.get(f"/jobs/{tracked.id}").get_json()["cost_total"])
+    assert listed[untracked.id]["cost_total"] is None
+    assert listed[idle.id]["cost_total"] == {"usd": 0, "lower_bound": False}
+    assert all("tokens_total" in job for job in listed.values())
+    assert not any("prices_as_of" in job for job in listed.values())  # it's the header
+
+
+def test_job_list_loads_the_pages_runs_in_one_query(mock_job_controller, db, seed_run,
+                                                    untrack, temp_db_dir, monkeypatch):
+    jobs = _listed_jobs(mock_job_controller, db, seed_run, untrack)
+    client = _server_client(db, mock_job_controller, temp_db_dir / "config", _PRICES_YAML)
+    monkeypatch.setattr(db, "list_agent_runs_for_job",
+                        Mock(side_effect=AssertionError("one runs query per job")))
+    queries, query = [], db._query
+
+    def counting(sql, params=()):
+        if "agent_runs" in sql:
+            queries.append(params)
+        return query(sql, params)
+
+    monkeypatch.setattr(db, "_query", counting)
+
+    for url in ("/jobs", "/"):
+        queries.clear()
+        assert client.get(url).status_code == 200, url
+        assert [sorted(params) for params in queries] == [sorted(job.id for job in jobs)], url
+
+
+def test_job_list_api_bad_prices_fail_naming_the_key(mock_job_controller, db, seed_run,
+                                                     temp_db_dir):
+    _token_job(mock_job_controller, db, seed_run)
+    client = _server_client(db, mock_job_controller, temp_db_dir / "config",
+                            _PRICES_YAML.replace("as_of: 2026-10-26\n", ""))
+
+    response = client.get("/jobs")
+
+    assert response.status_code == 500
+    assert "prices.as_of" in response.get_json()["error"]
+
+
+def test_job_list_page_shows_each_jobs_tokens(client, mock_job_controller, db, seed_run,
+                                              untrack):
+    import re
+
+    tracked, untracked, idle = _listed_jobs(mock_job_controller, db, seed_run, untrack)
+
+    html = client.get("/").get_data(as_text=True)
+
+    assert re.findall(r"<th>(\w+)</th>", html) == [
+        "ID", "Name", "Status", "Tasks", "Tokens", "Created"]
+
+    def tokens_cell(job):
+        row = html[html.index(f">{job.id}</a>"):]
+        return re.search(r'<td data-label="Tokens">(.*?)</td>', row).group(1)
+
+    # the same HTML poll.js's tokensFigure writes on every refresh
+    assert tokens_cell(tracked) == (
+        '<span class="tokens" title="input 120 · cache write 50.0K · cache read 2.0M · '
+        'output 1.5K (1 run not reported)">2.1M</span>')
+    assert tokens_cell(untracked) == "—"
+    assert tokens_cell(idle) == "0"
+    js = client.get("/static/poll.js").get_data(as_text=True)
+    assert '<td data-label="Tokens">${tokensFigure(job.tokens_total)}</td>' in js
+    assert '<td colspan="6" class="empty">No jobs yet</td>' in js
+
+
+def test_job_list_page_empty_state_spans_the_tokens_column(client):
+    html = client.get("/").get_data(as_text=True)
+
+    assert '<td colspan="6" class="empty">No jobs yet</td>' in html
