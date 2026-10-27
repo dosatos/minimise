@@ -212,8 +212,8 @@ function figures(tokens, cost) {
 // The Tokens/cost toggle, on priced pages only: the templates render its
 // click targets (the Tokens header, the Tokens tile) and the as-of note, and
 // the root's data-figures picks which figure shows. One choice for every
-// page, kept in localStorage; tokens unless cost was picked.
-const figureToggle = {asOf: null, picked: "tokens"};
+// page, kept in localStorage; cost unless tokens were picked.
+const figureToggle = {asOf: null, picked: "cost"};
 
 function showFigures() {
     const root = document.documentElement;
@@ -239,7 +239,7 @@ function setPricesAsOf(asOf) {
 
 function initFigureToggle(asOf) {
     try {
-        if (localStorage.getItem("figures") === "cost") figureToggle.picked = "cost";
+        if (localStorage.getItem("figures") === "tokens") figureToggle.picked = "tokens";
     } catch (e) {}
     function flip() {
         if (!figureToggle.asOf) return;

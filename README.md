@@ -822,7 +822,7 @@ On the job and loop detail pages and the job and loop lists, clicking the Tokens
 column header, or the Tokens tile on a detail page, flips every token figure on the
 page to its cost and back. The header reads Cost and the tile Est. cost while cost
 shows. The choice is the same on all four pages and is remembered in the browser;
-tokens show until you pick cost. While cost shows, a note near the table says when the
+cost shows until you pick tokens. While cost shows, a note near the table says when the
 prices are from: "Estimated at your prices as of 2026-10-26, to build intuition, not to
 track what you actually pay."
 

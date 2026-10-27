@@ -2581,8 +2581,8 @@ def test_web_cost_figures_match_format_cost(client, tmp_path):
 
 
 def test_figure_toggle_flips_every_page_and_remembers_the_choice(client, tmp_path):
-    """initFigureToggle against a stub DOM: tokens by default; a click flips
-    the root to cost and stores it, so the next page opens on cost; a second
+    """initFigureToggle against a stub DOM: cost by default; a click flips
+    the root to tokens and stores it, so the next page opens on tokens; a second
     click flips back; a broken localStorage still flips; no prices, no toggle."""
     runner = r"""
 const vm = require('vm'), fs = require('fs');
@@ -2635,18 +2635,19 @@ console.log(JSON.stringify(out));
     out = _run_poll_js(client, tmp_path, runner, None)
 
     asof = "2026-10-26"
-    assert out["fresh"] == {"figures": "tokens", "note": asof, "pressed": ["false", "false"]}
-    assert out["clicked"] == [{"figures": "cost", "note": asof, "pressed": ["true", "true"]},
-                              "cost"]
-    assert out["nextPage"] == {"figures": "cost", "note": asof, "pressed": ["true", "true"]}
+    assert out["fresh"] == {"figures": "cost", "note": asof, "pressed": ["true", "true"]}
+    assert out["clicked"] == [{"figures": "tokens", "note": asof, "pressed": ["false", "false"]},
+                              "tokens"]
+    assert out["nextPage"] == {"figures": "tokens", "note": asof, "pressed": ["false", "false"]}
     # the tile (not a button) flips on Enter; the header button gets its keys natively
-    assert out["tileKey"] == [{"figures": "tokens", "note": asof, "pressed": ["false", "false"]},
-                              "tokens", True, False]
-    assert out["polled"] == {"figures": "cost", "note": "2026-11-01", "pressed": ["true", "true"]}
+    assert out["tileKey"] == [{"figures": "cost", "note": asof, "pressed": ["true", "true"]},
+                              "cost", True, False]
+    assert out["polled"] == {"figures": "tokens", "note": "2026-11-01",
+                             "pressed": ["false", "false"]}
     assert out["unpriced"]["figures"] is None  # tokens show; the stored choice stays
-    assert out["unpricedClick"] == [out["unpriced"], "cost"]
-    assert out["brokenFresh"]["figures"] == "tokens"
-    assert out["brokenClick"]["figures"] == "cost"
+    assert out["unpricedClick"] == [out["unpriced"], "tokens"]
+    assert out["brokenFresh"]["figures"] == "cost"
+    assert out["brokenClick"]["figures"] == "tokens"
     assert out["noToggles"]["figures"] is None
     assert out["noPrices"]["figures"] is None
 
