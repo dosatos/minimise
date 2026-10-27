@@ -59,7 +59,9 @@ mini job start <id>            # starts in the background and returns immediatel
    `tokens_total` for the job and each task (hooks never count). README → Token Usage.
 6. **Report** with `mini job results diff <id>` and `mini job results logs <id>`. Summarize
    what landed and what the review hooks said — the user delegated so they would not have to
-   read the logs.
+   read the logs. End with one line from `tokens_total` in `mini job status <id> --format json`:
+   `Tokens: 16.2M, task agents only (96% cache reads)`, where the share is `cache_read` /
+   `total`. Leave the line out when `tokens_total` is null.
 
 If the job fails, `mini job start <id>` again resumes from the first incomplete task; already-
 committed tasks are not re-run. Read the failing task's logs before re-running blindly.

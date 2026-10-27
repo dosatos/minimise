@@ -105,7 +105,9 @@ said, and whether it stopped because the goal was met or because it ran out of i
 two endings mean very different things and the user needs to know which one they got.
 **`Status: completed` only means the planner chose to stop — it does not mean every dimension
 passed.** Always surface the verdict table (or journal verdicts) alongside a "completed" report;
-a planner can stop with failing dimensions if it judged that acceptable.
+a planner can stop with failing dimensions if it judged that acceptable. End with one line from
+`tokens_total` in `mini loop status <id> --format json`: `Tokens: 16.2M (96% cache reads)`, where
+the share is `cache_read` / `total`. Leave the line out when `tokens_total` is null.
 
 Token figures: `mini loop status` prints the loop's `Tokens:` line and a `tokens` row per iteration
 (Claude Code runs only; `0` = no agent ran, `—` = unknown: not reported, still running, or a loop
