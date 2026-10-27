@@ -10,17 +10,19 @@ from typing import Optional
 import markdown
 from flask import Flask, jsonify, request, render_template
 from flask_cors import CORS
+from jinja2 import Undefined
 from markupsafe import Markup
 
 from minimise.interfaces.formatting import (
     attempt_runs,
     cost_total,
+    format_cost,
     format_tokens,
     row_cost,
     row_tokens,
     tokens_total,
 )
-from minimise.interfaces.loop_views import register_loop_routes
+from minimise.interfaces.loop_views import page_prices, register_loop_routes
 from minimise.interfaces.prompt_preview import persona_preview
 from minimise.interfaces.timeline import build_steps, project_steps, steps_from_executions
 from minimise.models import Job, JobStatus, Plan, TaskStatus
@@ -69,6 +71,24 @@ def _tokens_figure(tokens: Optional[dict]) -> Markup:
     if not title:
         return Markup.escape(text)
     return Markup('<span class="tokens" title="{}">{}</span>').format(title, text)
+
+
+def _cost_figure(cost) -> Markup:
+    """A row's cost_usd or a rollup's cost_total as poll.js's costFigure
+    renders it; an em dash for null."""
+    if isinstance(cost, dict):
+        return Markup.escape(format_cost(cost["usd"], cost["lower_bound"]))
+    return Markup.escape(format_cost(cost))
+
+
+def _figures(tokens: Optional[dict], cost=Undefined()) -> Markup:
+    """A figure cell exactly as poll.js's figures renders it: the tokens alone
+    without prices (cost undefined, as Jinja leaves a missing key), else the
+    tokens and the cost side by side for the Tokens/cost toggle."""
+    if isinstance(cost, Undefined):
+        return _tokens_figure(tokens)
+    return Markup('<span class="fig-tokens">{}</span><span class="fig-cost">{}</span>').format(
+        _tokens_figure(tokens), _cost_figure(cost))
 
 
 def _plan_summary(plan: Plan) -> dict:
@@ -300,7 +320,7 @@ class APIServer:
         self.port = port
         self.app = Flask(__name__)
         self.app.add_template_filter(_duration_label, "duration_label")
-        self.app.add_template_filter(_tokens_figure, "tokens_figure")
+        self.app.add_template_filter(_figures, "figures")
 
         # Enable CORS
         CORS(self.app, resources={r"/*": {"origins": "*"}})
@@ -345,10 +365,14 @@ class APIServer:
             """Server-rendered job list page, polled client-side via /jobs."""
             page = max(1, request.args.get("page", 1, type=int))
             jobs, has_next = self._load_page_with_tasks(page)
+            prices = page_prices(self.config_dir)
             runs = self.db.agent_runs_by_owner("job", [job.id for job in jobs])
             tokens = {job.id: tokens_total(job, runs.get(job.id, [])) for job in jobs}
-            return render_template("list.html", jobs=jobs, tokens=tokens, page=page,
-                                   has_next=has_next)
+            costs = {} if prices is None else {
+                job.id: cost_total(job, runs.get(job.id, []), prices) for job in jobs}
+            return render_template("list.html", jobs=jobs, tokens=tokens, costs=costs,
+                                   page=page, has_next=has_next,
+                                   prices_as_of=prices.as_of if prices else None)
 
         @self.app.route("/jobs/<job_id>/view", methods=["GET"])
         def job_detail_page(job_id: str):
@@ -380,8 +404,10 @@ class APIServer:
                     # Keep operational status and logs available in that case.
                     plan_error = f"The cached plan could not be parsed: {e}"
 
+            prices = page_prices(self.config_dir)
             return render_template(
                 "detail.html",
+                prices_as_of=prices.as_of if prices else None,
                 job=job,
                 plan=plan,
                 plan_raw=plan_raw,

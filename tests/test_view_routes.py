@@ -2275,14 +2275,14 @@ def test_loops_list_page_shows_each_loops_tokens(client, api_server, db, seed_ru
         row = html[html.index(f">{loop.loop_id}</a>"):]
         return re.search(r'<td data-label="Tokens">(.*?)</td>', row).group(1)
 
-    # the same HTML loop.js writes with tokensFigure on every refresh
+    # the same HTML loop.js writes with figures on every refresh (unpriced: tokensFigure's)
     assert tokens_cell(tracked) == (
         '<span class="tokens" title="input 1.0M · cache write 1.0M · cache read 2.0M · '
         'output 1.1M (1 run not reported)">5.1M</span>')
     assert tokens_cell(untracked) == "—"
     assert tokens_cell(idle) == "0"
     js = client.get("/static/loop.js").get_data(as_text=True)
-    assert '<td data-label="Tokens">${tokensFigure(loop.tokens_total)}</td>' in js
+    assert '<td data-label="Tokens">${figures(loop.tokens_total, loop.cost_total)}</td>' in js
     assert '<td colspan="7" class="empty">No loops yet</td>' in js
 
 
@@ -2308,11 +2308,11 @@ def test_loop_detail_page_shows_tokens_next_to_elapsed_and_duration(client, api_
     assert '<col class="col-duration"><col class="col-tokens">' in table
 
     js = client.get("/static/loop.js").get_data(as_text=True)
-    assert 'setHtml("loop-tokens", tokensFigure(loop.tokens_total))' in js
+    assert 'setHtml("loop-tokens", figures(loop.tokens_total, loop.cost_total))' in js
     assert 'setText("loop-tokens-note", tokensNotReported(loop.tokens_total))' in js
-    assert 'data-label="Tokens">${tokensFigure(g.tokens_total)}</td>' in js
+    assert 'data-label="Tokens">${figures(g.tokens_total, g.cost_total)}</td>' in js
     # a carried-over pass shows its 0 like any other row (no agent ran in it)
-    assert 'data-label="Tokens">${tokensFigure(s.tokens)}</td>' in js
+    assert 'data-label="Tokens">${figures(s.tokens, s.cost_usd)}</td>' in js
     assert "carried ? \"\"" not in js
     assert 'colspan="5" class="empty">No loop steps yet' in js
 
@@ -2337,18 +2337,18 @@ def test_job_detail_page_shows_task_agent_tokens(client, mock_job_controller):
 
     js = client.get("/static/poll.js").get_data(as_text=True)
     # the job's total is top-level in GET /jobs/<id>, not in its timeline
-    assert 'setHtml("job-tokens", tokensFigure(job.tokens_total))' in js
+    assert 'setHtml("job-tokens", figures(job.tokens_total, job.cost_total))' in js
     assert '["task agents only", tokensNotReported(job.tokens_total)]' in js
     assert "tl.tokens_total" not in js
-    assert 'data-label="Tokens">${tokensFigure(g.tokens_total)}</td>' in js
-    assert 'data-label="Tokens">${tokensFigure(s.tokens)}</td>' in js  # null on hooks: "—"
+    assert 'data-label="Tokens">${figures(g.tokens_total, g.cost_total)}</td>' in js
+    assert 'data-label="Tokens">${figures(s.tokens, s.cost_usd)}</td>' in js  # null on hooks: "—"
     assert 'colspan="7" class="empty">No tasks' in js
 
 
 def test_web_token_figures_match_the_clis_format(client, tmp_path):
     """poll.js's formatTokens prints what format_tokens prints, halves included
     (Python rounds 1250 to 1.2K; plain toFixed would say 1.3K), and its
-    tokensFigure what the templates' tokens_figure filter renders."""
+    tokensFigure what the server's _tokens_figure renders."""
     import json
     import shutil
     import subprocess
@@ -2398,3 +2398,265 @@ def test_web_token_figures_match_the_clis_format(client, tmp_path):
     ]
     # the list pages' server-rendered cells are the HTML their polling writes
     assert [str(_tokens_figure(f)) for f in figures] == shown
+
+
+# ---- the Tokens/cost toggle: only on priced pages ---------------------------
+
+_COST_NOTE = ('<p class="cost-note fig-cost">Estimated at your prices as of '
+              '<span class="prices-as-of">2026-10-26</span>, to build intuition, '
+              'not to track what you actually pay.</p>')
+_TOGGLE_HEADER = (
+    '<th><button type="button" class="figure-toggle" data-figure-toggle aria-pressed="false" '
+    'title="Switch between tokens and estimated cost"><span class="fig-tokens">Tokens</span>'
+    '<span class="fig-cost">Cost</span></button></th>')
+_TOGGLE_TILE = (
+    '<div data-figure-toggle role="button" tabindex="0" aria-pressed="false" '
+    'title="Switch between tokens and estimated cost">\n{indent}<span><span class="fig-tokens">'
+    'Tokens</span><span class="fig-cost">Est. cost</span></span>\n{indent}<strong id="{id}">')
+
+
+def _toggle_pages(api_server, mock_job_controller):
+    """The four pages with token figures: url -> its Tokens tile (detail pages)."""
+    job = _make_job(mock_job_controller)
+    loop = _make_loop(api_server)
+    return {
+        "/": None,
+        "/loops": None,
+        f"/jobs/{job.id}/view": _TOGGLE_TILE.format(indent=" " * 12, id="job-tokens"),
+        f"/loops/{loop.loop_id}/view": _TOGGLE_TILE.format(indent=" " * 16, id="loop-tokens"),
+    }
+
+
+def test_priced_pages_render_the_tokens_cost_toggle_and_note(api_server, mock_job_controller,
+                                                              db, temp_db_dir):
+    import re
+
+    pages = _toggle_pages(api_server, mock_job_controller)
+    client = _priced_client(db, mock_job_controller, temp_db_dir / "config")
+
+    for url, tile in pages.items():
+        html = client.get(url).get_data(as_text=True)
+
+        assert html.count(_TOGGLE_HEADER) == 1, url
+        if tile:
+            assert html.count(tile) == 1, url
+        assert html.count("data-figure-toggle") == (2 if tile else 1), url
+        assert html.count(_COST_NOTE) == 1, url  # one note per page, near the table
+        table = html.index('<table class="timeline-table">' if tile else "<table>")
+        assert html.index(_COST_NOTE) < table, url
+        if tile:
+            assert html.index('class="live-summary"') < html.index(_COST_NOTE), url
+        assert re.sub("<[^>]+>", "", _COST_NOTE) == (
+            "Estimated at your prices as of 2026-10-26, to build intuition, "
+            "not to track what you actually pay.")
+        assert 'initFigureToggle("2026-10-26");' in html, url
+
+
+def test_unpriced_pages_have_no_toggle_and_no_note(client, api_server, mock_job_controller, db,
+                                                   temp_db_dir):
+    pages = _toggle_pages(api_server, mock_job_controller)
+    unpriced = _priced_client(db, mock_job_controller, temp_db_dir / "config",
+                              "version: 0.0.1\nharness: claude\n")
+
+    for url, tile in pages.items():
+        html = client.get(url).get_data(as_text=True)
+
+        for hook in ("data-figure-toggle", "figure-toggle", "fig-cost", "fig-tokens",
+                     "Est. cost", "Estimated at your prices", "prices-as-of"):
+            assert hook not in html, (url, hook)
+        assert "<th>Tokens</th>" in html, url
+        if tile:
+            assert "<div>\n" + " " * (16 if "loops" in url else 12) + "<span>Tokens</span>" in html
+        assert "initFigureToggle(null);" in html, url
+        # a settings.yaml without prices renders the same page
+        assert unpriced.get(url).get_data(as_text=True) == html, url
+
+
+def test_pages_with_bad_prices_still_render_tokens_only(api_server, mock_job_controller, db,
+                                                        temp_db_dir):
+    pages = _toggle_pages(api_server, mock_job_controller)
+    client = _priced_client(db, mock_job_controller, temp_db_dir / "config",
+                            _PRICES_YAML.replace("output: 15", "output: -15"))
+
+    for url in pages:
+        response = client.get(url)
+
+        assert response.status_code == 200, url
+        html = response.get_data(as_text=True)
+        assert "data-figure-toggle" not in html and "Estimated at" not in html, url
+        assert "initFigureToggle(null);" in html, url
+
+
+def test_priced_loops_list_rows_carry_tokens_and_cost(api_server, mock_job_controller, db,
+                                                      seed_run, untrack, temp_db_dir):
+    import re
+
+    tracked, untracked, idle = _listed_loops(api_server, db, seed_run, untrack)
+    client = _priced_client(db, mock_job_controller, temp_db_dir / "config")
+
+    html = client.get("/loops").get_data(as_text=True)
+
+    def tokens_cell(loop):
+        row = html[html.index(f">{loop.loop_id}</a>"):]
+        return re.search(r'<td data-label="Tokens">(.*?)</td>', row).group(1)
+
+    # the HTML loop.js's figures writes: both figures; the toggle shows one
+    assert tokens_cell(tracked) == (
+        '<span class="fig-tokens"><span class="tokens" title="input 1.0M · cache write 1.0M · '
+        'cache read 2.0M · output 1.1M (1 run not reported)">5.1M</span></span>'
+        '<span class="fig-cost">≥ $12.10</span>')  # accuracy reported nothing: a lower bound
+    assert tokens_cell(untracked) == '<span class="fig-tokens">—</span><span class="fig-cost">—</span>'
+    assert tokens_cell(idle) == '<span class="fig-tokens">0</span><span class="fig-cost">$0</span>'
+
+
+def test_polling_keeps_the_toggles_prices_as_of_current(client):
+    poll = client.get("/static/poll.js").get_data(as_text=True)
+    loop = client.get("/static/loop.js").get_data(as_text=True)
+
+    # lists read the header, detail pages the JSON key
+    assert 'setPricesAsOf(resp.headers.get("X-Prices-As-Of"));' in poll
+    assert "setPricesAsOf(job.prices_as_of);" in poll
+    assert 'setPricesAsOf(response.headers.get("X-Prices-As-Of"));' in loop
+    assert "setPricesAsOf(loop.prices_as_of);" in loop
+    # every figure cell goes through figures(): tokensFigure's only callers are in it
+    assert poll.count("tokensFigure(") == 3  # its definition, and figures' two calls
+    assert "tokensFigure(" not in loop
+
+
+def _run_poll_js(client, tmp_path, runner, payload):
+    import json
+    import shutil
+    import subprocess
+
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+    script = tmp_path / "poll.js"
+    script.write_text(client.get("/static/poll.js").get_data(as_text=True))
+    out = subprocess.run(["node", "-e", runner, str(script)], input=json.dumps(payload),
+                         capture_output=True, text=True, check=True, timeout=30).stdout
+    return json.loads(out)
+
+
+def test_web_cost_figures_match_format_cost(client, tmp_path):
+    """poll.js's formatCost prints exactly what format_cost prints, halves and
+    the $100 switch included, and costFigure / figures what the templates'
+    filters render."""
+    import random
+    from minimise.interfaces.api_server import _cost_figure, _figures
+    from minimise.interfaces.formatting import format_cost
+
+    rng = random.Random(20261026)
+    values = [None, 0, 0.0, 1e-9, 0.001, 0.004999, 0.005, 0.00999999, 0.01, 0.0100001,
+              0.015, 0.125, 0.375, 0.625, 1.005, 1.125, 2.675, 0.94, 0.945, 9.995, 99.99,
+              99.994, 99.995, 99.996, 99.999, 100, 100.5, 101.5, 999.5, 1234.4, 1234.5,
+              99_999.5, 1_000_000.49, 12_345_678.5, 3, 15, 0.3,
+              *(i / 8 for i in range(0, 2000)), *(i / 2 for i in range(150, 2500)),
+              *(i * 0.005 for i in range(0, 3000)), *(i / 1000 for i in range(0, 20_000, 7)),
+              *(10 ** rng.uniform(-4, 8) for _ in range(3000))]
+    cases = [[v, lower] for v in values for lower in (False, True)]
+    costs = [None, 0, 0.004, 0.94, 1234.5, {"usd": None, "lower_bound": True},
+             {"usd": 0, "lower_bound": False}, {"usd": 0.004, "lower_bound": True},
+             {"usd": 12.1, "lower_bound": True}, {"usd": 99.996, "lower_bound": False}]
+    tokens = {"input": 1200, "cache_read": 2_100_000, "cache_write": 3, "output": 40,
+              "total": 2_101_243}
+    pairs = [[None], [tokens], *([t, c] for t in (None, tokens) for c in costs)]
+    runner = (
+        "const vm = require('vm'), fs = require('fs'); const ctx = {};"
+        "vm.createContext(ctx); vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);"
+        "const [cases, costs, pairs] = JSON.parse(fs.readFileSync(0, 'utf8'));"
+        "console.log(JSON.stringify([cases.map(([v, lower]) => ctx.formatCost(v, lower)),"
+        " costs.map(c => ctx.costFigure(c)), pairs.map(([t, ...c]) => ctx.figures(t, ...c))]));"
+    )
+
+    formatted, cost_cells, figure_cells = _run_poll_js(client, tmp_path, runner,
+                                                       [cases, costs, pairs])
+
+    assert formatted == [format_cost(v, lower) for v, lower in cases]
+    assert {"$0", "<$0.01", "$0.13", "$1.13", "$100", "$101", "$1,234", "$1,235",
+            "$12,345,679", "≥ $0.94", "—"} <= set(formatted)  # the rules are all covered
+    assert cost_cells == [str(_cost_figure(c)) for c in costs]
+    assert cost_cells[2] == "&lt;$0.01" and cost_cells[7] == "≥ &lt;$0.01"
+    assert figure_cells == [str(_figures(*pair)) for pair in pairs]
+    assert figure_cells[0] == "—"  # no prices: the tokens alone, as before
+
+
+def test_figure_toggle_flips_every_page_and_remembers_the_choice(client, tmp_path):
+    """initFigureToggle against a stub DOM: tokens by default; a click flips
+    the root to cost and stores it, so the next page opens on cost; a second
+    click flips back; a broken localStorage still flips; no prices, no toggle."""
+    runner = r"""
+const vm = require('vm'), fs = require('fs');
+const src = fs.readFileSync(process.argv[1], 'utf8');
+function page(asOf, {storage, toggles = 2}) {
+    const els = Array.from({length: toggles}, (_, i) => ({
+        tagName: i ? 'DIV' : 'BUTTON', attrs: {}, listeners: {},
+        addEventListener(type, fn) { this.listeners[type] = fn; },
+        setAttribute(name, value) { this.attrs[name] = value; },
+    }));
+    const note = {textContent: 'stale'};
+    const root = {dataset: {}};
+    const document = {documentElement: root, querySelectorAll: sel =>
+        sel === '[data-figure-toggle]' ? els : sel === '.prices-as-of' ? [note] : []};
+    const ctx = {document, localStorage: storage};
+    vm.createContext(ctx);
+    vm.runInContext(src, ctx);
+    ctx.initFigureToggle(asOf);
+    const state = () => ({figures: root.dataset.figures ?? null, note: note.textContent,
+                          pressed: els.map(el => el.attrs['aria-pressed'] ?? null)});
+    return {ctx, els, state};
+}
+const store = {}, storage = {getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v; }};
+const broken = {getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); }};
+const out = {};
+let p = page('2026-10-26', {storage});
+out.fresh = p.state();
+p.els[0].listeners.click();
+out.clicked = [p.state(), store.figures];
+p = page('2026-10-26', {storage});  // another page: the choice carries over
+out.nextPage = p.state();
+let prevented = false;
+p.els[1].listeners.keydown({key: 'Enter', preventDefault() { prevented = true; }});
+out.tileKey = [p.state(), store.figures, prevented, 'keydown' in p.els[0].listeners];
+p.els[1].listeners.click();
+p.ctx.setPricesAsOf('2026-11-01');  // a poll brought a new as-of date
+out.polled = p.state();
+p.ctx.setPricesAsOf(null);  // prices removed while the page is open
+out.unpriced = p.state();
+p.els[0].listeners.click();
+out.unpricedClick = [p.state(), store.figures];
+p = page('2026-10-26', {storage: broken});
+out.brokenFresh = p.state();
+p.els[0].listeners.click();
+out.brokenClick = p.state();
+out.noToggles = page('2026-10-26', {storage, toggles: 0}).state();
+out.noPrices = page(null, {storage, toggles: 0}).state();
+console.log(JSON.stringify(out));
+"""
+    out = _run_poll_js(client, tmp_path, runner, None)
+
+    asof = "2026-10-26"
+    assert out["fresh"] == {"figures": "tokens", "note": asof, "pressed": ["false", "false"]}
+    assert out["clicked"] == [{"figures": "cost", "note": asof, "pressed": ["true", "true"]},
+                              "cost"]
+    assert out["nextPage"] == {"figures": "cost", "note": asof, "pressed": ["true", "true"]}
+    # the tile (not a button) flips on Enter; the header button gets its keys natively
+    assert out["tileKey"] == [{"figures": "tokens", "note": asof, "pressed": ["false", "false"]},
+                              "tokens", True, False]
+    assert out["polled"] == {"figures": "cost", "note": "2026-11-01", "pressed": ["true", "true"]}
+    assert out["unpriced"]["figures"] is None  # tokens show; the stored choice stays
+    assert out["unpricedClick"] == [out["unpriced"], "cost"]
+    assert out["brokenFresh"]["figures"] == "tokens"
+    assert out["brokenClick"]["figures"] == "cost"
+    assert out["noToggles"]["figures"] is None
+    assert out["noPrices"]["figures"] is None
+
+
+def test_toggle_css_shows_one_figure_at_a_time(client):
+    css = client.get("/static/style.css").get_data(as_text=True)
+
+    assert '[data-figures="cost"] .fig-tokens,\n:root:not([data-figures="cost"]) .fig-cost ' \
+           '{ display: none; }' in css
+    detail = client.get("/static/detail.css").get_data(as_text=True)
+    # a figure's spans inside a tile's strong aren't styled as the tile's label
+    assert ".live-summary span" not in detail
+    assert ".live-summary > div > span {" in detail

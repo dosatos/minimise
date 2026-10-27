@@ -161,3 +161,15 @@ select optgroup, select option { background-color: var(--bg); color: var(--fg); 
 
 /* A token figure's title holds its four-bucket breakdown. */
 .tokens[title] { cursor: help; }
+
+/* The Tokens/cost toggle (priced pages only): each figure cell holds both,
+   and poll.js sets the root's data-figures to pick the one that shows. */
+[data-figures="cost"] .fig-tokens,
+:root:not([data-figures="cost"]) .fig-cost { display: none; }
+.figure-toggle { background: none; border: none; border-bottom: 1px dotted var(--th-color); padding: 0; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; }
+[data-figure-toggle] { cursor: pointer; }
+.cost-note { color: var(--th-color); font-size: 0.8rem; margin: 0 0 0.75rem; }
+@media (max-width: 640px) {
+    /* On phones a cell's data-label stands in for the hidden header. */
+    [data-figures="cost"] .table-wrap table td[data-label="Tokens"]::before { content: "Cost"; }
+}

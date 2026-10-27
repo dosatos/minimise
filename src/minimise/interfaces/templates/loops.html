@@ -1,10 +1,12 @@
 {% extends "base.html" %}
+{% from "_figures.html" import tokens_header, cost_note %}
 {% block title %}Loops - minimise{% endblock %}
 {% block content %}
+{{ cost_note(prices_as_of) }}
 <div class="table-wrap">
 <table>
     <thead>
-        <tr><th>ID</th><th>Name</th><th>Status</th><th>Iteration</th><th>Stage</th><th>Tokens</th><th>Created</th></tr>
+        <tr><th>ID</th><th>Name</th><th>Status</th><th>Iteration</th><th>Stage</th><th>{{ tokens_header(prices_as_of) }}</th><th>Created</th></tr>
     </thead>
     <tbody id="loop-rows">
         {% if not loops %}
@@ -17,7 +19,7 @@
             <td data-label="Status"><span class="status status-{{ loop_view.status }}">{{ loop_view.status }}</span></td>
             <td data-label="Iteration">{{ loop_view.iteration }}/{{ loop_view.max_iterations }}</td>
             <td data-label="Stage">{{ loop_view.stage }}</td>
-            <td data-label="Tokens">{{ loop_view.tokens_total|tokens_figure }}</td>
+            <td data-label="Tokens">{{ loop_view.tokens_total|figures(loop_view.cost_total) }}</td>
             <td data-label="Created">{{ loop_view.created_at }}</td>
         </tr>
         {% endfor %}

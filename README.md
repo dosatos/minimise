@@ -374,7 +374,8 @@ model: openai/gpt-5.5   # optional, default: harness default
 ```
 
 Both keys are optional; a missing file or missing keys fall back to the hardcoded
-defaults. Check what's active with `mini doctor`.
+defaults. Check what's active with `mini doctor`. An optional `prices` section adds an
+estimated cost to the web UI: see [Cost estimate](#cost-estimate).
 
 **Example — pin loops to pi, keep jobs on claude:**
 
@@ -685,13 +686,15 @@ figure is a sum over runs.
   a job task's retry and a resumed job's rerun of a task are new runs, so they add
   records; nothing is ever overwritten. Only Claude Code reports tokens: Pi and Codex
   runs report nothing yet. Hooks are shell commands, not agent calls, so they have
-  no runs, and a job's figures cover its task agents only. There's no dollar cost
-  anywhere: tokens only.
+  no runs, and a job's figures cover its task agents only. Nothing about cost is
+  recorded; with prices configured, the web estimates it from the tokens (see
+  [Cost estimate](#cost-estimate)).
 - **Where it shows:** `mini loop status <ID>` prints a `Tokens:` line and a `tokens`
   row with each iteration's total. `mini job status <ID>` prints a
   `Tokens (task agents only):` line and a Tokens column with each attempt's total.
   Both carry the objects below in `--format json`. The web loop and job pages show the
-  same figures; hover one for its four buckets.
+  same figures; hover one for its four buckets. The web job and loop lists have a
+  Tokens column with each job's or loop's total.
 - Figures print as `243.1M`, `12.4K` or the plain integer. A `Tokens` line adds
   ` (3 runs not reported)` (or ` (1 run not reported)`) when some counted runs
   reported nothing.
@@ -747,9 +750,82 @@ A rollup (a loop, an iteration, a job task, a job) has `tokens_total`:
 | `mini job status <ID> --format json` | — | top level (the job), each `tasks[]` |
 | `GET /api/loops/<ID>` (web) | `steps[]`, `timeline.groups[].steps[]` | top level (the loop), each `timeline.groups[]` (an iteration) |
 | `GET /jobs/<ID>` (web) | `timeline.groups[].steps[]` (`null` on hooks) | top level (the job), each `timeline.groups[]` (a task, or plan hooks: `null`) |
+| `GET /api/loops` (web) | — | each loop |
+| `GET /jobs` (web) | — | each job |
 
 Change policy: keys are only ever added; a key never changes meaning. No JSON carries
-reasoning tokens, per-model counts, model names or cost.
+reasoning tokens, per-model counts or model names. Nothing about cost is stored: cost
+appears only in the web API and pages, and only when prices are configured.
+
+### Cost estimate
+
+Tokens of different kinds cost very different amounts: cache reads are cheap, cache
+writes and output are not. To show where the spend goes, the web UI can turn token
+figures into an estimated cost at prices you give it. It's there to build intuition for
+how expensive your runs are. It's an estimate at your own prices, not a bill.
+
+Add a `prices` section to `~/.minimise/settings.yaml`, in USD per million tokens. The
+numbers below are illustrative, not real prices: use your own.
+
+```yaml
+# ~/.minimise/settings.yaml
+version: "0.0.1"
+prices:                       # USD per million tokens
+  as_of: 2026-10-26           # required when prices is set; shown in the UI
+  models:
+    claude-sonnet-5-5: {input: 3, cache_read: 0.3, cache_write: 6, output: 15}
+    default:           {input: 3, cache_read: 0.3, cache_write: 6, output: 15}
+```
+
+- **No `prices` section, no cost anywhere.** The detail APIs and pages are exactly what
+  they are without it. The CLI never shows cost.
+- Each model needs all four prices, as non-negative numbers. A bad `prices` section
+  makes the web JSON fail with an error that names the bad key, and the pages' figures
+  stop updating until you fix it.
+- **One price list for every run.** Cost is computed on every request and never
+  stored, so editing the prices re-prices past runs too. Edits apply without
+  restarting `mini view`.
+- **Model matching:** a model is priced at its exact model id, else at `default`; with
+  neither, it can't be priced. Claude runs split their tokens by model, and each
+  model's share is priced at that model's prices. A run without that split is priced
+  at `default`.
+
+The rules:
+
+- **A run's cost** is the sum of each bucket times its price, divided by 1,000,000. A
+  bucket that wasn't reported adds nothing. A run can't be priced when it reported
+  nothing, or when one of its models has no price.
+- **A row's `cost_usd`** (a loop step, a job task attempt) is the sum of its runs'
+  costs: `0` when no agent ran in it, and `null` when its `tokens` is `null` or one of
+  its runs can't be priced. A hook row is always `null`.
+- **A rollup's `cost_total`** counts the same runs as its `tokens_total`:
+  `{"usd": 12.1, "lower_bound": true}`. `usd` sums the counted runs that can be priced.
+  `lower_bound` is `true` when some counted run can't be priced or reported nothing.
+  - With no counted runs, it's `{"usd": 0, "lower_bound": false}`.
+  - When runs were counted but none can be priced, `usd` is `null` and `lower_bound`
+    is `true`.
+  - It's `null` wherever `tokens_total` is: a job or loop from before token tracking,
+    and a job's plan-hook groups.
+
+With prices configured, the web JSON gets these keys:
+
+- `prices_as_of`, the `as_of` date, on `GET /api/loops/<ID>` and `GET /jobs/<ID>`. The
+  lists `GET /api/loops` and `GET /jobs` are arrays, so they send it as the
+  `X-Prices-As-Of` response header.
+- `cost_usd` next to every `tokens`, and `cost_total` next to every `tokens_total`, in
+  the web rows of the table above, the lists included.
+
+On the job and loop detail pages and the job and loop lists, clicking the Tokens
+column header, or the Tokens tile on a detail page, flips every token figure on the
+page to its cost and back. The header reads Cost and the tile Est. cost while cost
+shows. The choice is the same on all four pages and is remembered in the browser;
+tokens show until you pick cost. While cost shows, a note near the table says when the
+prices are from: "Estimated at your prices as of 2026-10-26, to build intuition, not to
+track what you actually pay."
+
+Costs print as `$0.94`, `<$0.01` under a cent, whole dollars from $100 up (`$1,234`),
+and `$0` for exactly nothing. A rollup that's a lower bound gets `≥ ` in front
+(`≥ $12.10`), and `—` means the cost is unknown.
 
 ## Architecture
 

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_figures.html" import tokens_header, tile_toggle, tile_label, cost_note %}
 {% block title %}{{ job.id }} — minimise{% endblock %}
 {% block styles %}
 <link rel="stylesheet" href="{{ url_for('static', filename='detail.css') }}">
@@ -37,8 +38,8 @@
             <strong id="job-elapsed">—</strong>
             <small id="job-elapsed-note"></small>
         </div>
-        <div>
-            <span>Tokens</span>
+        <div{{ tile_toggle(prices_as_of) }}>
+            <span>{{ tile_label(prices_as_of) }}</span>
             <strong id="job-tokens">—</strong>
             <small id="job-tokens-note">task agents only</small>
         </div>
@@ -53,6 +54,7 @@
             <small id="job-progress-note"></small>
         </div>
     </div>
+    {{ cost_note(prices_as_of) }}
     <div class="table-wrap">
         <table class="timeline-table">
             <colgroup>
@@ -65,7 +67,7 @@
                     <th>Duration</th>
                     <th>Estimate</th>
                     <th>Timeout</th>
-                    <th>Tokens</th>
+                    <th>{{ tokens_header(prices_as_of) }}</th>
                     <th>Timeline<small id="timeline-scale"></small></th>
                 </tr>
             </thead>

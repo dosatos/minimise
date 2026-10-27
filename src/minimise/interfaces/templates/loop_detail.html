@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_figures.html" import tokens_header, tile_toggle, tile_label, cost_note %}
 {% block title %}{{ loop_view.loop_id }} - minimise{% endblock %}
 {% block styles %}
 <link rel="stylesheet" href="{{ url_for('static', filename='detail.css') }}">
@@ -48,8 +49,8 @@
                 <span>Elapsed</span>
                 <strong id="loop-elapsed">{{ loop_view.elapsed }}</strong>
             </div>
-            <div>
-                <span>Tokens</span>
+            <div{{ tile_toggle(prices_as_of) }}>
+                <span>{{ tile_label(prices_as_of) }}</span>
                 <strong id="loop-tokens">—</strong>
                 <small id="loop-tokens-note"></small>
             </div>
@@ -59,6 +60,7 @@
                 <small id="loop-avg-iteration-note"></small>
             </div>
         </div>
+        {{ cost_note(prices_as_of) }}
 
         <div class="table-wrap">
             <table class="timeline-table">
@@ -70,7 +72,7 @@
                         <th>Step</th>
                         <th>Status</th>
                         <th>Duration</th>
-                        <th>Tokens</th>
+                        <th>{{ tokens_header(prices_as_of) }}</th>
                         <th>Timeline<small id="loop-timeline-scale"></small></th>
                     </tr>
                 </thead>

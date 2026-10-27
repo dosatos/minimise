@@ -28,6 +28,7 @@
             document.documentElement.dataset.theme = next;
             localStorage.setItem('theme', next);
         });
+        initFigureToggle({{ prices_as_of|default(none)|tojson }});
     </script>
     {% block scripts %}{% endblock %}
 </body>

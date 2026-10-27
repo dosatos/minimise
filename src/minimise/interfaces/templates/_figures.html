@@ -1,0 +1,32 @@
+{# The Tokens/cost toggle (poll.js initFigureToggle). Each macro renders
+   exactly what the page had before when prices_as_of is unset. #}
+
+{# A table's Tokens header; with prices, a button flipping it to Cost. #}
+{% macro tokens_header(prices_as_of) -%}
+{%- if prices_as_of -%}
+<button type="button" class="figure-toggle" data-figure-toggle aria-pressed="false" title="Switch between tokens and estimated cost"><span class="fig-tokens">Tokens</span><span class="fig-cost">Cost</span></button>
+{%- else -%}
+Tokens
+{%- endif -%}
+{%- endmacro %}
+
+{# The Tokens tile's attributes: with prices, the whole tile is the toggle. #}
+{% macro tile_toggle(prices_as_of) -%}
+{%- if prices_as_of %} data-figure-toggle role="button" tabindex="0" aria-pressed="false" title="Switch between tokens and estimated cost"{% endif -%}
+{%- endmacro %}
+
+{# The Tokens tile's label; with prices, Est. cost while cost shows. #}
+{% macro tile_label(prices_as_of) -%}
+{%- if prices_as_of -%}
+<span class="fig-tokens">Tokens</span><span class="fig-cost">Est. cost</span>
+{%- else -%}
+Tokens
+{%- endif -%}
+{%- endmacro %}
+
+{# Shown near the table while cost shows; poll.js keeps the date current. #}
+{% macro cost_note(prices_as_of) -%}
+{%- if prices_as_of -%}
+<p class="cost-note fig-cost">Estimated at your prices as of <span class="prices-as-of">{{ prices_as_of }}</span>, to build intuition, not to track what you actually pay.</p>
+{%- endif -%}
+{%- endmacro %}

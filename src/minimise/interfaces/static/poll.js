@@ -95,6 +95,7 @@ function startJobListPolling(intervalMs) {
         const resp = await fetch(`/jobs?page=${page}`);
         if (!resp.ok) return;
         const jobs = await resp.json();
+        setPricesAsOf(resp.headers.get("X-Prices-As-Of"));
         const tbody = document.getElementById("job-rows");
         if (!tbody) return;
         if (jobs.length === 0) {
@@ -110,7 +111,7 @@ function startJobListPolling(intervalMs) {
                 <td data-label="Name">${job.name}</td>
                 <td data-label="Status"><span class="${statusClass(job.status)}">${job.status}</span></td>
                 <td data-label="Tasks">${done}/${total}</td>
-                <td data-label="Tokens">${tokensFigure(job.tokens_total)}</td>
+                <td data-label="Tokens">${figures(job.tokens_total, job.cost_total)}</td>
                 <td data-label="Created">${job.created_at || ""}</td>
             </tr>`;
         }).join("");
@@ -175,6 +176,89 @@ function tokensFigure(tokens) {
     ].filter(Boolean).join(" ");
     const text = formatTokens(tokens.total);
     return title ? `<span class="tokens" title="${title}">${text}</span>` : text;
+}
+
+// A cost as the server's format_cost prints it: "$0.94"; "<$0.01" under a
+// cent; whole dollars from $100 up ("$1,234"); "$0" for exactly 0; an em dash
+// when unknown; "≥ " in front of a lower bound. toFixed and Math.round round
+// the exact value's halves up, as format_cost's Decimal does.
+function formatCost(usd, lowerBound = false) {
+    if (usd == null) return "—";
+    let text;
+    if (usd === 0) text = "$0";
+    else if (usd < 0.01) text = "<$0.01";
+    else if (Number(usd.toFixed(2)) >= 100) {  // 99.996 rounds to $100.00: whole dollars
+        text = "$" + String(Math.round(usd)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    } else text = "$" + usd.toFixed(2);
+    return lowerBound ? `≥ ${text}` : text;
+}
+
+// A row's cost_usd, or a rollup's cost_total ({usd, lower_bound}), as HTML.
+function costFigure(cost) {
+    const text = cost !== null && typeof cost === "object"
+        ? formatCost(cost.usd, cost.lower_bound) : formatCost(cost);
+    return text.replace("<", "&lt;");
+}
+
+// A token figure, and with prices its cost beside it (cost is undefined
+// without prices: the JSON leaves the key out). The Tokens/cost toggle shows
+// one of the two, so flipping it needs no re-render.
+function figures(tokens, cost) {
+    if (cost === undefined) return tokensFigure(tokens);
+    return `<span class="fig-tokens">${tokensFigure(tokens)}</span>`
+        + `<span class="fig-cost">${costFigure(cost)}</span>`;
+}
+
+// The Tokens/cost toggle, on priced pages only: the templates render its
+// click targets (the Tokens header, the Tokens tile) and the as-of note, and
+// the root's data-figures picks which figure shows. One choice for every
+// page, kept in localStorage; tokens unless cost was picked.
+const figureToggle = {asOf: null, picked: "tokens"};
+
+function showFigures() {
+    const root = document.documentElement;
+    const toggles = document.querySelectorAll("[data-figure-toggle]");
+    if (!figureToggle.asOf || !toggles.length) {
+        delete root.dataset.figures;
+        return;
+    }
+    const cost = figureToggle.picked === "cost";
+    root.dataset.figures = cost ? "cost" : "tokens";
+    toggles.forEach(el => el.setAttribute("aria-pressed", String(cost)));
+    document.querySelectorAll(".prices-as-of").forEach(el => {
+        el.textContent = figureToggle.asOf;
+    });
+}
+
+// The page's prices_as_of: the template's, then each poll's (the detail JSON
+// key, the lists' X-Prices-As-Of header). Null: no prices, tokens only.
+function setPricesAsOf(asOf) {
+    figureToggle.asOf = asOf || null;
+    showFigures();
+}
+
+function initFigureToggle(asOf) {
+    try {
+        if (localStorage.getItem("figures") === "cost") figureToggle.picked = "cost";
+    } catch (e) {}
+    function flip() {
+        if (!figureToggle.asOf) return;
+        figureToggle.picked = figureToggle.picked === "cost" ? "tokens" : "cost";
+        try {
+            localStorage.setItem("figures", figureToggle.picked);
+        } catch (e) {}
+        showFigures();
+    }
+    document.querySelectorAll("[data-figure-toggle]").forEach(el => {
+        el.addEventListener("click", flip);
+        if (el.tagName === "BUTTON") return;
+        el.addEventListener("keydown", event => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            flip();
+        });
+    });
+    setPricesAsOf(asOf);
 }
 
 // The API serializes naive UTC datetimes; read them as UTC.
@@ -247,7 +331,7 @@ function renderJobSummary(job) {
             : `started ${clockTime(jobStart)}`);
     }
 
-    setHtml("job-tokens", tokensFigure(job.tokens_total));
+    setHtml("job-tokens", figures(job.tokens_total, job.cost_total));
     setText("job-tokens-note",
         ["task agents only", tokensNotReported(job.tokens_total)].filter(Boolean).join(" "));
 
@@ -331,7 +415,7 @@ function renderTimelineRows(job) {
             <td data-label="Duration">${timelineDuration(g, nowOff)}</td>
             <td class="timeline-estimate" data-label="Estimate">${g.estimate_secs ? formatSecs(g.estimate_secs) : "—"}</td>
             <td data-label="Timeout"></td>
-            <td class="timeline-tokens" data-label="Tokens">${tokensFigure(g.tokens_total)}</td>
+            <td class="timeline-tokens" data-label="Tokens">${figures(g.tokens_total, g.cost_total)}</td>
             <td data-label="Timeline"></td>
         </tr>`;
     }
@@ -372,7 +456,7 @@ function renderTimelineRows(job) {
             <td data-label="Duration">${timelineDuration(s, nowOff)}</td>
             <td class="timeline-estimate" data-label="Estimate">${s.estimate_secs ? formatSecs(s.estimate_secs) : "—"}</td>
             <td class="timeline-estimate" data-label="Timeout">${s.timeout_secs ? formatSecs(s.timeout_secs) : "—"}</td>
-            <td class="timeline-tokens" data-label="Tokens">${tokensFigure(s.tokens)}</td>
+            <td class="timeline-tokens" data-label="Tokens">${figures(s.tokens, s.cost_usd)}</td>
             <td data-label="Timeline">${track}</td>
         </tr>`;
     }
@@ -410,6 +494,7 @@ function startJobDetailPolling(jobId, intervalMs) {
         jobClock.nowOffset = job.timeline.now_offset;
         jobClock.fetchedAt = performance.now();
         jobClock.live = job.status === "running";
+        setPricesAsOf(job.prices_as_of);
         renderJobSummary(job);
         renderTimelineRows(job);
         if (isTerminalStatus(job.status)) {

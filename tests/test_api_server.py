@@ -1024,15 +1024,37 @@ def test_job_list_page_shows_each_jobs_tokens(client, mock_job_controller, db, s
         row = html[html.index(f">{job.id}</a>"):]
         return re.search(r'<td data-label="Tokens">(.*?)</td>', row).group(1)
 
-    # the same HTML poll.js's tokensFigure writes on every refresh
+    # the same HTML poll.js's figures writes on every refresh (unpriced: tokensFigure's)
     assert tokens_cell(tracked) == (
         '<span class="tokens" title="input 120 · cache write 50.0K · cache read 2.0M · '
         'output 1.5K (1 run not reported)">2.1M</span>')
     assert tokens_cell(untracked) == "—"
     assert tokens_cell(idle) == "0"
     js = client.get("/static/poll.js").get_data(as_text=True)
-    assert '<td data-label="Tokens">${tokensFigure(job.tokens_total)}</td>' in js
+    assert '<td data-label="Tokens">${figures(job.tokens_total, job.cost_total)}</td>' in js
     assert '<td colspan="6" class="empty">No jobs yet</td>' in js
+
+
+def test_priced_job_list_rows_carry_tokens_and_cost(mock_job_controller, db, seed_run,
+                                                    untrack, temp_db_dir):
+    import re
+
+    tracked, untracked, idle = _listed_jobs(mock_job_controller, db, seed_run, untrack)
+    client = _server_client(db, mock_job_controller, temp_db_dir / "config", _PRICES_YAML)
+
+    html = client.get("/").get_data(as_text=True)
+
+    def tokens_cell(job):
+        row = html[html.index(f">{job.id}</a>"):]
+        return re.search(r'<td data-label="Tokens">(.*?)</td>', row).group(1)
+
+    # the HTML poll.js's figures writes: both figures; the Tokens/cost toggle shows one
+    assert tokens_cell(tracked) == (
+        '<span class="fig-tokens"><span class="tokens" title="input 120 · cache write 50.0K · '
+        'cache read 2.0M · output 1.5K (1 run not reported)">2.1M</span></span>'
+        '<span class="fig-cost">≥ &lt;$0.01</span>')  # $0.00067, and Docs reported nothing
+    assert tokens_cell(untracked) == '<span class="fig-tokens">—</span><span class="fig-cost">—</span>'
+    assert tokens_cell(idle) == '<span class="fig-tokens">0</span><span class="fig-cost">$0</span>'
 
 
 def test_job_list_page_empty_state_spans_the_tokens_column(client):

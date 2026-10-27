@@ -510,6 +510,15 @@ def _artifact_limit() -> int:
     return ARTIFACT_LIMIT if limit is None or limit <= 0 else min(limit, 500)
 
 
+def page_prices(config_dir: Optional[Path]) -> Optional[Prices]:
+    """The prices a page renders its Tokens/cost toggle with. A bad prices
+    section leaves the page tokens-only: the JSON APIs report the bad key."""
+    try:
+        return load_prices(config_dir)
+    except ValueError:
+        return None
+
+
 def register_loop_routes(app: Flask, db: Database, store: LoopStore,
                          config_dir: Optional[Path] = None) -> None:
     """Register loop HTML pages and read-only JSON endpoints. settings.yaml's
@@ -518,12 +527,14 @@ def register_loop_routes(app: Flask, db: Database, store: LoopStore,
     @app.route("/loops", methods=["GET"], strict_slashes=False)
     def loop_list_page():
         page = max(1, request.args.get("page", 1, type=int))
-        loops, has_next = _load_loop_page(db, store, page)
+        prices = page_prices(config_dir)
+        loops, has_next = _load_loop_page(db, store, page, prices)
         return render_template(
             "loops.html",
             loops=loops,
             page=page,
             has_next=has_next,
+            prices_as_of=prices.as_of if prices else None,
         )
 
     @app.route("/loops/<loop_id>/view", methods=["GET"])
@@ -535,6 +546,7 @@ def register_loop_routes(app: Flask, db: Database, store: LoopStore,
         spec, spec_raw, spec_error = _load_spec(store, loop_id)
         steps = db.list_loop_steps(loop_id)
         journal = _read_journal(store, loop_id)
+        prices = page_prices(config_dir)
         return render_template(
             "loop_detail.html",
             loop_view=_serialize_loop(loop, steps, spec, journal_records=journal,
@@ -546,6 +558,7 @@ def register_loop_routes(app: Flask, db: Database, store: LoopStore,
             journal_entries=_journal_entries(journal, ARTIFACT_LIMIT),
             log_entries=_loop_log_entries(store, loop_id, ARTIFACT_LIMIT),
             log_filter_options=_loop_log_filter_options(spec, steps),
+            prices_as_of=prices.as_of if prices else None,
         )
 
     @app.route("/api/loops", methods=["GET"])

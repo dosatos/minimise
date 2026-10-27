@@ -5,7 +5,7 @@ function loopListRow(loop) {
         <td data-label="Status"><span class="${statusClass(loop.status)}">${escapeHtml(loop.status)}</span></td>
         <td data-label="Iteration">${escapeHtml(`${loop.iteration}/${loop.max_iterations}`)}</td>
         <td data-label="Stage">${escapeHtml(loop.stage)}</td>
-        <td data-label="Tokens">${tokensFigure(loop.tokens_total)}</td>
+        <td data-label="Tokens">${figures(loop.tokens_total, loop.cost_total)}</td>
         <td data-label="Created">${escapeHtml(loop.created_at || "")}</td>
     </tr>`;
 }
@@ -16,6 +16,7 @@ async function refreshLoopList() {
     if (!response.ok) return null;
 
     const loops = await response.json();
+    setPricesAsOf(response.headers.get("X-Prices-As-Of"));
     const rows = document.getElementById("loop-rows");
     if (rows) {
         rows.innerHTML = loops.map(loopListRow).join("")
@@ -51,7 +52,7 @@ function renderLoopSummary(loop) {
     } else {
         setText("loop-elapsed", loop.elapsed);
     }
-    setHtml("loop-tokens", tokensFigure(loop.tokens_total));
+    setHtml("loop-tokens", figures(loop.tokens_total, loop.cost_total));
     setText("loop-tokens-note", tokensNotReported(loop.tokens_total));
 
     const finished = tl.groups.filter(g => g.status !== "running" && g.duration != null).length;
@@ -87,7 +88,7 @@ function renderLoopTimelineRows(loop) {
             <td class="timeline-step" data-label="Step"><span class="timeline-name">Iteration ${escapeHtml(g.iteration)}</span></td>
             <td data-label="Status"><span class="${statusClass(g.status)}">${escapeHtml(g.status)}</span>${passing}</td>
             <td data-label="Duration">${timelineDuration(g, nowOff)}</td>
-            <td class="timeline-tokens" data-label="Tokens">${tokensFigure(g.tokens_total)}</td>
+            <td class="timeline-tokens" data-label="Tokens">${figures(g.tokens_total, g.cost_total)}</td>
             <td data-label="Timeline"></td>
         </tr>`;
     }
@@ -120,7 +121,7 @@ function renderLoopTimelineRows(loop) {
             <td class="timeline-step" data-label="Step"><span class="timeline-name">${escapeHtml(label)}</span>${recheck}</td>
             <td data-label="Status">${status}${retries}</td>
             <td data-label="Duration">${timelineDuration(s, nowOff)}</td>
-            <td class="timeline-tokens" data-label="Tokens">${tokensFigure(s.tokens)}</td>
+            <td class="timeline-tokens" data-label="Tokens">${figures(s.tokens, s.cost_usd)}</td>
             <td data-label="Timeline">${track}</td>
         </tr>`;
     }
@@ -156,6 +157,7 @@ async function refreshLoopDetail(loopId) {
     jobClock.nowOffset = loop.timeline.now_offset;
     jobClock.fetchedAt = performance.now();
     jobClock.live = loop.status === "running";
+    setPricesAsOf(loop.prices_as_of);
     renderLoopSummary(loop);
     renderLoopTimelineRows(loop);
     return loop;
