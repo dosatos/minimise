@@ -755,8 +755,9 @@ def test_a_retry_writes_a_second_run_with_attempt_1(temp_db_dir, db, git_repo):
     assert _runs(db, job_id) == [(task.id, 0, True, _tokens(1)), (task.id, 1, True, _tokens(2))]
 
 
-def test_rerunning_attempt_0_adds_a_run_and_keeps_the_old_one(temp_db_dir, db, git_repo):
-    """A resumed job re-runs the task from attempt 0: a new run, the first untouched."""
+def test_a_resumed_task_continues_at_the_next_attempt(temp_db_dir, db, git_repo):
+    """A resumed job runs the task at the attempt after the earlier run's: a new run,
+    the first untouched."""
     from dataclasses import replace
     from minimise.orchestration.task_executor import JobStopped
 
@@ -767,7 +768,90 @@ def test_rerunning_attempt_0_adds_a_run_and_keeps_the_old_one(temp_db_dir, db, g
 
     assert executor.execute_task(task, job_id, "")[0]  # the resume
 
-    assert _runs(db, job_id) == [(task.id, 0, True, _tokens(3)), (task.id, 0, True, _tokens(4))]
+    assert _runs(db, job_id) == [(task.id, 0, True, _tokens(3)), (task.id, 1, True, _tokens(4))]
+
+
+# --- a resume continues the attempt numbers; the earlier attempts stay ---
+
+def test_a_resume_adds_attempt_1_and_leaves_attempt_0_as_it_was(temp_db_dir, db, git_repo):
+    from minimise.orchestration.task_executor import JobStopped
+
+    executor, (job_id, task) = _executor_with(git_repo, db, temp_db_dir, [_limited(), _ran(1)])
+    with pytest.raises(JobStopped):
+        executor.execute_task(task, job_id, "")
+    [before] = db.list_executions_for_task(task.id)
+    assert (before.attempt, before.status, before.exit_reason) == (0, TaskStatus.STOPPED, "usage_limit")
+
+    assert executor.execute_task(task, job_id, "")[0]  # the resume
+
+    first, second = db.list_executions_for_task(task.id)
+    assert first == before  # status, exit_reason, started_at, completed_at all kept
+    assert (second.attempt, second.status, second.exit_reason) == (1, TaskStatus.COMPLETED, "success")
+    assert second.execution_id != first.execution_id
+    assert db.get_task(task.id).retries == 1
+
+
+def test_a_resumed_attempt_writes_its_own_handoff(temp_db_dir, db, git_repo):
+    from minimise.orchestration.task_executor import JobStopped
+
+    git_tracker = GitTracker(git_repo)
+    store = JobStore(db, temp_db_dir)
+    executor = TaskExecutor(store, git_tracker)
+    job_id, task = _setup_job_and_task(db, git_tracker)
+    replies = iter([(False, _LIMIT_MESSAGE, "agent_error", "resets 4am"), (True, "ok", "success", None)])
+
+    def agent(harness, context):
+        Path(context["handoff_path"]).write_text(f"handoff of attempt {context['attempt']}")
+        return next(replies)
+    executor._invoke_agent = agent
+
+    with pytest.raises(JobStopped):
+        executor.execute_task(task, job_id, "")
+    assert executor.execute_task(task, job_id, "")[0]  # the resume
+
+    assert store.handoff_path(job_id, task.id, 0).read_text() == "handoff of attempt 0"
+    assert store.handoff_path(job_id, task.id, 1).read_text() == "handoff of attempt 1"
+
+
+def test_each_run_gets_the_full_retry_budget_numbered_after_the_last(temp_db_dir, db, git_repo):
+    git_tracker = GitTracker(git_repo)
+    executor = TaskExecutor(JobStore(db, temp_db_dir), git_tracker)
+    job_id, task = _setup_job_and_task(db, git_tracker)
+    attempts = []
+
+    def agent(harness, context):
+        attempts.append(context["attempt"])
+        return False, "boom", "agent_error", None
+    executor._invoke_agent = agent
+    budget = TaskExecutor.MAX_RETRIES + 1
+
+    assert executor.execute_task(task, job_id, "")[0] is False
+    assert attempts == list(range(budget))
+    assert executor.execute_task(task, job_id, "")[0] is False  # the resume
+
+    assert attempts[budget:] == list(range(budget, 2 * budget))
+    execs = db.list_executions_for_task(task.id)
+    assert [e.attempt for e in execs] == list(range(2 * budget))
+    assert all(e.status == TaskStatus.FAILED for e in execs)
+
+
+def test_a_resumed_attempt_is_labelled_by_its_number_in_job_log(temp_db_dir, db, git_repo):
+    """The resumed attempt 1 is "try 2" in the fields the harness logs with and in
+    the executor's own job.log line."""
+    import json
+    from minimise.orchestration.task_executor import JobStopped
+
+    executor, (job_id, task) = _executor_with(git_repo, db, temp_db_dir, [_limited(), _limited()])
+    with pytest.raises(JobStopped):
+        executor.execute_task(task, job_id, "")
+    with pytest.raises(JobStopped):
+        executor.execute_task(task, job_id, "")  # the resume, limited again
+
+    harness = executor._factory.for_task(task)
+    assert [c.kwargs["log_fields"]["step"] for c in harness.run.call_args_list] == ["T", "T  · try 2"]
+    log = [json.loads(line) for line in executor.store.job_log_path(job_id).read_text().splitlines()]
+    assert [rec["step"] for rec in log] == ["T", "T  · try 2"]
+    assert log[-1]["step"].endswith("· try 2")
 
 
 def test_a_run_whose_harness_raised_is_finished_without_tokens(temp_db_dir, db, git_repo):

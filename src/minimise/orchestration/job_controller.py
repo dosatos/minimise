@@ -115,6 +115,9 @@ class JobController:
             print(f"Error reading plan file: {e}")
             return RAN_FAILED
 
+        # Rows the earlier run left RUNNING (stop or crash) end as interrupted;
+        # the resume adds new attempt rows beside them.
+        self.store.close_interrupted_executions(job_id)
         self.store.mark_job_running(job_id)
         self.hook_executor.job_id = job_id
         self.hook_executor.log_path = self.store.job_log_path(job_id)

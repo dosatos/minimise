@@ -126,19 +126,32 @@ class JobStore:
         task.base_commit = base_commit
         self.db.update_task(task)
 
-    def mark_running(self, task: Task, attempt: int) -> None:
-        """Mark a task RUNNING for the given attempt (stamps started_at on attempt 0).
+    def next_attempt(self, task: Task) -> int:
+        """The attempt number a new run of this task starts at: one past its highest
+        task attempt so far (a resume continues the earlier run's numbering), else 0."""
+        return max(
+            (e.attempt + 1 for e in self.db.list_executions_for_task(task.id)
+             if e.execution_type == "task"),
+            default=0,
+        )
 
-        Also opens an Execution row for this attempt — both writes in one transaction.
+    def mark_running(self, task: Task, attempt: int, *, first_of_run: Optional[bool] = None) -> None:
+        """Mark a task RUNNING for the given attempt.
+
+        The first attempt of a run (``first_of_run``; None means attempt 0) stamps
+        the task's started_at. Also opens an Execution row for this attempt — both
+        writes in one transaction.
         """
+        if first_of_run is None:
+            first_of_run = attempt == 0
         task.retries = attempt
         with self.db.transaction() as conn:
             self.db.update_task_status(
                 task.id, TaskStatus.RUNNING,
-                started_at=datetime.utcnow() if attempt == 0 else None,
-                # attempt 0 = a fresh (re-)run: clear any stale completed_at from a
-                # prior FAILED/STOPPED so duration math doesn't render negative.
-                completed_at=None if attempt == 0 else _UNSET,
+                started_at=datetime.utcnow() if first_of_run else None,
+                # A fresh (re-)run: clear any stale completed_at from a prior
+                # FAILED/STOPPED so duration math doesn't render negative.
+                completed_at=None if first_of_run else _UNSET,
                 conn=conn,
             )
             self.db.save_execution(Execution(
@@ -229,6 +242,25 @@ class JobStore:
     def list_executions_for_job(self, job_id: str) -> list[Execution]:
         """All executions for a job, in timeline order."""
         return self.db.list_executions_for_job(job_id)
+
+    def close_interrupted_executions(self, job_id: str) -> None:
+        """Close the Execution rows an earlier run left RUNNING (`mini job stop` or
+        a crash): STOPPED if the job is STOPPED, else FAILED, exit_reason
+        "interrupted", ending when the job ended (never before the row started).
+        Every other field stays, so each row keeps its execution_id."""
+        # Read afresh: a crash that load() just reconciled has its end time only in the db.
+        job = self.db.get_job(job_id)
+        if not job:
+            return
+        status = TaskStatus.STOPPED if job.status == JobStatus.STOPPED else TaskStatus.FAILED
+        running = [e for e in self.db.list_executions_for_job(job_id) if e.status == TaskStatus.RUNNING]
+        with self.db.transaction() as conn:
+            for e in running:
+                ended = job.completed_at or e.started_at
+                if ended and e.started_at and ended < e.started_at:
+                    ended = e.started_at
+                e.status, e.exit_reason, e.completed_at = status, "interrupted", ended
+                self.db.save_execution(e, conn=conn)
 
     def mark_task_stopped(self, task: Task) -> None:
         self.db.update_task_status(task.id, TaskStatus.STOPPED, completed_at=datetime.utcnow())

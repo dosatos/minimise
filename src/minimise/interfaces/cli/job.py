@@ -815,7 +815,8 @@ def job_show(job_id: str, task_id: Optional[str]):
                 for execution in db.list_executions_for_task(task.id)
                 if execution.execution_type == "task"
             ]
-            # Attempts restart at zero when a failed/stopped job resumes.
+            # Jobs from before attempts continued across runs restarted them at
+            # zero when a failed/stopped job resumed.
             # Timestamp order avoids treating a larger old attempt as current.
             latest_execution = max(
                 task_execs,

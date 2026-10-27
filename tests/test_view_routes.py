@@ -665,6 +665,39 @@ def test_get_job_includes_hooks(client, mock_job_controller, db):
     assert hooks[0]["execution_type"] == "pre_plan"
 
 
+def test_get_job_shows_both_attempts_of_a_resumed_task(client, mock_job_controller, db):
+    """A task stopped mid-attempt and resumed keeps its interrupted attempt 1 beside
+    the completed attempt 2 in the job JSON."""
+    from datetime import datetime, timedelta
+    from minimise.models import Execution, JobStatus, TaskStatus
+
+    store = mock_job_controller.store
+    job = _make_job(mock_job_controller)
+    [task] = job.tasks
+    t0 = datetime.utcnow() - timedelta(minutes=10)
+    db.save_execution(Execution(job_id=job.id, task_id=task.id, attempt=0,
+                                status=TaskStatus.RUNNING, started_at=t0))
+    db.update_job_status(job.id, JobStatus.STOPPED, started_at=t0,
+                         completed_at=t0 + timedelta(minutes=2))
+    store.close_interrupted_executions(job.id)  # as start_job does on the resume
+    db.save_execution(Execution(job_id=job.id, task_id=task.id, attempt=1,
+                                status=TaskStatus.COMPLETED, exit_reason="success",
+                                started_at=t0 + timedelta(minutes=3),
+                                completed_at=t0 + timedelta(minutes=5)))
+    db.update_task_status(task.id, TaskStatus.COMPLETED, retries=1,
+                          completed_at=t0 + timedelta(minutes=5))
+    db.update_job_status(job.id, JobStatus.COMPLETED, completed_at=t0 + timedelta(minutes=5))
+
+    resp = client.get(f"/jobs/{job.id}")
+
+    assert resp.status_code == 200
+    [group] = resp.get_json()["timeline"]["groups"]
+    assert [(r["kind"], r["attempt"], r["status"], r["exit_reason"]) for r in group["steps"]] == [
+        ("task", 1, "stopped", "interrupted"), ("task", 2, "completed", "success"),
+    ]
+    assert group["steps"][0]["duration"] == 120.0
+
+
 def _make_job(mock_job_controller):
     from minimise.models import Plan, PlanTask
 

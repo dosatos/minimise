@@ -136,8 +136,12 @@ class TaskExecutor:
                 return f"{msg}\n\nUncommitted work from this attempt was stashed: git stash pop"
             return msg
 
-        for attempt in range(self.MAX_RETRIES + 1):
-            self.store.mark_running(task, attempt)
+        # A resumed task continues the earlier run's attempt numbers, so its rows
+        # and handoffs stay; the retry budget is per run (k is the run-local index).
+        first_attempt = self.store.next_attempt(task)
+        for k in range(self.MAX_RETRIES + 1):
+            attempt = first_attempt + k
+            self.store.mark_running(task, attempt, first_of_run=k == 0)
 
             # Identity now lives in each JSON log line, not a flat banner.
             ex = Execution(
@@ -162,7 +166,7 @@ class TaskExecutor:
                 "log_fields": {
                     "execution_id": ex.execution_id,
                     "type": ex.execution_type,
-                    "step": task.name + (f"  · try {attempt + 1}" if attempt > 0 else ""),
+                    "step": _step_label(attempt),
                     "task_id": ex.task_id,
                 },
             })
@@ -188,7 +192,7 @@ class TaskExecutor:
                         self.store.mark_task_failed(task, msg, exit_reason="hook_failed", ended_at=agent_end)
                         return False, msg
                     if outcome == "retry":
-                        if attempt >= self.MAX_RETRIES:
+                        if k >= self.MAX_RETRIES:
                             msg = _stash_work(f"Post-task hook failed (retries exhausted)\n{combined}")
                             _log_failure(_step_label(attempt), msg)
                             self.store.mark_task_failed(task, msg, exit_reason="hook_failed", ended_at=agent_end)
@@ -211,7 +215,7 @@ class TaskExecutor:
                         continue
                 final_success = True
                 break
-            if attempt < self.MAX_RETRIES:
+            if k < self.MAX_RETRIES:
                 _log_failure(_step_label(attempt), output)
                 self.store.record_attempt(task, attempt, output, exit_reason=exit_reason, ended_at=agent_end)
                 # learn-from-failure: feed this attempt's handoff into the next.

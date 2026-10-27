@@ -284,7 +284,96 @@ def test_usage_limit_stops_the_job_and_start_resumes_it(temp_db_dir, git_repo, p
     job = db.get_job(job_id)
     assert job.status == JobStatus.COMPLETED and job.stop_reason is None
     assert [t.status for t in db.list_tasks_for_job(job_id)] == [TaskStatus.COMPLETED] * 2
-    assert [e.exit_reason for e in db.list_executions_for_task(first.id)] == ["success"]
+    assert [(e.attempt, e.exit_reason) for e in db.list_executions_for_task(first.id)] == [
+        (0, "usage_limit"), (1, "success"),
+    ]
+
+
+def _interrupted_job(temp_db_dir, git_repo, plan_file, job_status, job_ended):
+    """A job an earlier run left with task 1's attempt 0 and a post_task hook of it
+    still RUNNING, as `mini job stop` or a crash leaves them."""
+    from datetime import timedelta
+    from minimise.models import Execution
+
+    db = Database(temp_db_dir / "test.db")
+    db.init_db()
+    controller = JobController(db, GitTracker(git_repo), temp_db_dir / "jobs", git_repo,
+                               factory=_OneHarnessFactory(_ScriptedHarness(_done(), _done())))
+    job_id = controller.create_job(plan_file).id
+    first = db.list_tasks_for_job(job_id)[0]
+    started = datetime.utcnow() - timedelta(minutes=10)
+    for ex in (
+        Execution(job_id=job_id, task_id=first.id, attempt=0, execution_type="task",
+                  status=TaskStatus.RUNNING, started_at=started),
+        Execution(job_id=job_id, task_id=first.id, attempt=0, execution_type="post_task",
+                  hook_name="review", status=TaskStatus.RUNNING,
+                  started_at=started + timedelta(minutes=1)),
+    ):
+        db.save_execution(ex)
+    db.update_task_status(first.id, TaskStatus.STOPPED, completed_at=job_ended)
+    db.update_job_status(job_id, job_status, completed_at=job_ended)
+    return db, controller, job_id, first, started
+
+
+def _rows(db, task_id):
+    return {(e.execution_type, e.attempt): e for e in db.list_executions_for_task(task_id)}
+
+
+@pytest.mark.parametrize("job_status, closed_as", [
+    (JobStatus.STOPPED, TaskStatus.STOPPED), (JobStatus.FAILED, TaskStatus.FAILED),
+])
+def test_start_closes_the_earlier_runs_running_rows_as_interrupted(
+        temp_db_dir, git_repo, plan_file, job_status, closed_as):
+    """The task attempt and the hook the earlier run left RUNNING end STOPPED or
+    FAILED by the job's status, at the job's end; the resume adds attempt 1."""
+    from datetime import timedelta
+
+    job_ended = datetime.utcnow() - timedelta(minutes=2)
+    db, controller, job_id, first, started = _interrupted_job(
+        temp_db_dir, git_repo, plan_file, job_status, job_ended)
+    before = _rows(db, first.id)
+
+    assert controller.start_job(job_id) == RAN_OK
+
+    rows = _rows(db, first.id)
+    for key in (("task", 0), ("post_task", 0)):
+        old, closed = before[key], rows[key]
+        assert (closed.status, closed.exit_reason, closed.completed_at) == (
+            closed_as, "interrupted", job_ended)
+        assert (closed.execution_id, closed.started_at, closed.hook_name) == (
+            old.execution_id, old.started_at, old.hook_name)
+    assert rows[("task", 0)].started_at == started
+    new = rows[("task", 1)]
+    assert (new.status, new.exit_reason) == (TaskStatus.COMPLETED, "success")
+
+
+def test_an_interrupted_row_never_ends_before_it_started(temp_db_dir, git_repo, plan_file):
+    """A job end earlier than the row's start (a stale completed_at from an older
+    run) closes the row at its own started_at."""
+    from datetime import timedelta
+
+    job_ended = datetime.utcnow() - timedelta(hours=1)
+    db, controller, job_id, first, started = _interrupted_job(
+        temp_db_dir, git_repo, plan_file, JobStatus.STOPPED, job_ended)
+
+    assert controller.start_job(job_id) == RAN_OK
+
+    closed = _rows(db, first.id)[("task", 0)]
+    assert (closed.status, closed.completed_at) == (TaskStatus.STOPPED, started)
+
+
+def test_a_crashed_runs_rows_end_when_the_crash_was_noticed(temp_db_dir, git_repo, plan_file):
+    """A RUNNING job whose engine is gone is reconciled to FAILED as start_job loads
+    it; its RUNNING rows end FAILED at that moment."""
+    db, controller, job_id, first, started = _interrupted_job(
+        temp_db_dir, git_repo, plan_file, JobStatus.RUNNING, None)  # pid None: dead
+    noticed_after = datetime.utcnow()
+
+    assert controller.start_job(job_id) == RAN_OK
+
+    closed = _rows(db, first.id)[("task", 0)]
+    assert (closed.status, closed.exit_reason) == (TaskStatus.FAILED, "interrupted")
+    assert noticed_after <= closed.completed_at <= datetime.utcnow()
 
 
 def test_cancel_job_basic(job_controller, plan_file):

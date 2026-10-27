@@ -419,6 +419,45 @@ def test_mark_running_clears_stale_completed_at(temp_db_dir, db, git_repo):
     assert reloaded.completed_at is None  # cleared → no negative duration
 
 
+def _task_with_stale_times(db, git_tracker):
+    """A task a prior run left FAILED, with its started_at and completed_at set."""
+    from datetime import datetime, timedelta
+
+    job_id = str(uuid.uuid4())
+    db.create_job(Job(id=job_id, name="J", status=JobStatus.PENDING,
+                      base_commit=git_tracker.get_current_commit()))
+    task = Task(estimated_duration_min=5, id=str(uuid.uuid4()), job_id=job_id,
+                name="T1", description="d1", status=TaskStatus.PENDING)
+    db.create_task(task)
+    db.update_task_status(task.id, TaskStatus.FAILED, retries=3,
+                          started_at=datetime.utcnow() - timedelta(hours=2),
+                          completed_at=datetime.utcnow() - timedelta(hours=1))
+    return task, db.get_task(task.id)
+
+
+def test_mark_running_first_of_a_resumed_run_stamps_started_at(temp_db_dir, db, git_repo):
+    """A resumed run's first attempt (number 4, after the earlier run's 0-3) starts
+    the task afresh: a new started_at and no stale completed_at."""
+    task, before = _task_with_stale_times(db, GitTracker(git_repo))
+
+    JobStore(db, temp_db_dir).mark_running(task, 4, first_of_run=True)
+
+    after = db.get_task(task.id)
+    assert after.started_at > before.started_at
+    assert after.completed_at is None
+    assert after.status == TaskStatus.RUNNING and task.retries == 4
+
+
+def test_mark_running_retry_keeps_started_at_and_completed_at(temp_db_dir, db, git_repo):
+    task, before = _task_with_stale_times(db, GitTracker(git_repo))
+
+    JobStore(db, temp_db_dir).mark_running(task, 4, first_of_run=False)
+
+    after = db.get_task(task.id)
+    assert (after.started_at, after.completed_at) == (before.started_at, before.completed_at)
+    assert after.status == TaskStatus.RUNNING
+
+
 def _two_task_job(db, git_tracker, tmp_path):
     """A two-task job with every kind of hook, each touching a marker file."""
     def hook(name):
