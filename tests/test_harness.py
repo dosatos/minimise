@@ -147,6 +147,8 @@ def test_build_env_bedrock_includes_aws_excludes_anthropic():
     assert "ANTHROPIC_API_KEY" not in env
     # unrelated env vars filtered out
     assert "SOME_OTHER_SECRET" not in env
+    # 5-minute prompt cache, set even though os.environ doesn't have it
+    assert env["FORCE_PROMPT_CACHING_5M"] == "1"
 
 
 # --- _build_env: Anthropic path ---
@@ -178,6 +180,8 @@ def test_build_env_anthropic_includes_key_excludes_aws():
     assert "SOME_OTHER_SECRET" not in env
     # common keys still present
     assert env["PATH"] == "/usr/bin"
+    # 5-minute prompt cache, set even though os.environ doesn't have it
+    assert env["FORCE_PROMPT_CACHING_5M"] == "1"
 
 
 @patch.dict(os.environ, {"CLAUDE_CODE_USE_BEDROCK": "0", "ANTHROPIC_API_KEY": "k"}, clear=True)
@@ -185,6 +189,18 @@ def test_build_env_bedrock_flag_not_one_uses_anthropic():
     env = ClaudeCodeHarness()._build_env()
     assert "ANTHROPIC_API_KEY" in env
     assert "CLAUDE_CODE_USE_BEDROCK" not in env
+
+
+@pytest.mark.parametrize("bedrock", ["0", "1"])
+def test_build_env_forces_5m_prompt_cache_when_unset(bedrock):
+    with patch.dict(os.environ, {"PATH": "/usr/bin", "CLAUDE_CODE_USE_BEDROCK": bedrock}, clear=True):
+        env = ClaudeCodeHarness()._build_env()
+    assert env["FORCE_PROMPT_CACHING_5M"] == "1"
+
+
+@patch.dict(os.environ, {"PATH": "/usr/bin", "FORCE_PROMPT_CACHING_5M": "0"}, clear=True)
+def test_build_env_5m_prompt_cache_is_fixed_not_copied():
+    assert ClaudeCodeHarness()._build_env()["FORCE_PROMPT_CACHING_5M"] == "1"
 
 
 # --- Command construction ---

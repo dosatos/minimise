@@ -6,6 +6,7 @@ JSONL backend so the run is queryable. Failing the job is the run loop's
 concern (JobExecutor/TaskExecutor), not here.
 """
 
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -38,7 +39,9 @@ class HookExecutor:
         if self.store:
             self.store.save_execution(ex)
 
-        env = project_env(self.repo_root) if self.repo_root else None
+        base_env = (project_env(self.repo_root) if self.repo_root else None) or os.environ
+        # Hooks that run `claude -p` (the review gates) use the 5-minute prompt cache.
+        env = {**base_env, "FORCE_PROMPT_CACHING_5M": "1"}
         timeout = hook.timeout_min * 60 if hook.timeout_min else None
         success, output = run_shell_command(hook.shell, cwd=self.repo_root, env=env, stdin=stdin,
                                             timeout=timeout)

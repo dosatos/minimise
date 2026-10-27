@@ -686,7 +686,11 @@ class ClaudeCodeHarness(_JsonlSubprocessHarness):
             # Use only Anthropic credentials
             safe_keys = common_keys | {"ANTHROPIC_API_KEY"}
 
-        return {k: v for k, v in os.environ.items() if k in safe_keys}
+        env = {k: v for k, v in os.environ.items() if k in safe_keys}
+        # Turns inside a task are seconds to minutes apart, so the 5-minute cache
+        # never expires there and its writes cost 1.25x input instead of 2x.
+        env["FORCE_PROMPT_CACHING_5M"] = "1"
+        return env
 
     def _build_command(
         self,

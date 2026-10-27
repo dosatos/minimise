@@ -1,5 +1,10 @@
 import json
+import os
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
 from minimise.orchestration.hook_executor import HookExecutor
 from minimise.models import Hook
 from minimise.logging.backend import JsonlLogBackend
@@ -60,6 +65,41 @@ def test_runs_in_project_venv(tmp_path):
     h = Hook(name="env", shell="echo $VIRTUAL_ENV", estimated_duration_min=1)
     _, output = HookExecutor(repo_root=tmp_path).run(h, "post_task", task_id="t1")
     assert str((tmp_path / ".venv")) in output
+
+
+def _repo_root(kind, tmp_path):
+    if kind == "none":
+        return None
+    if kind == "venv":
+        (tmp_path / ".venv" / "bin").mkdir(parents=True)
+    return tmp_path
+
+
+@pytest.mark.parametrize("kind", ["none", "no_venv", "venv"])
+def test_hook_gets_5m_prompt_cache(kind, tmp_path):
+    h = Hook(name="cache", shell='test "$FORCE_PROMPT_CACHING_5M" = 1', estimated_duration_min=1)
+    ok, output = HookExecutor(repo_root=_repo_root(kind, tmp_path)).run(h, "post_task", task_id="t1")
+    assert ok, output
+
+
+@pytest.mark.parametrize("kind", ["none", "no_venv", "venv"])
+@patch.dict(os.environ, {"MINI_TEST_MARKER": "x"})
+def test_hook_still_inherits_os_environ(kind, tmp_path):
+    h = Hook(name="env", shell='echo "marker=$MINI_TEST_MARKER"', estimated_duration_min=1)
+    _, output = HookExecutor(repo_root=_repo_root(kind, tmp_path)).run(h, "post_task", task_id="t1")
+    assert "marker=x" in output
+
+
+def test_venv_hook_keeps_virtual_env_and_path_prefix(tmp_path):
+    venv = tmp_path / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    h = Hook(name="env", shell='echo "venv=$VIRTUAL_ENV"; echo "path=$PATH"; '
+                               'test "$FORCE_PROMPT_CACHING_5M" = 1',
+             estimated_duration_min=1)
+    ok, output = HookExecutor(repo_root=tmp_path).run(h, "post_task", task_id="t1")
+    assert ok, output
+    assert f"venv={venv}" in output
+    assert f"path={venv / 'bin'}{os.pathsep}" in output
 
 
 def test_run_pipes_stdin_to_hook(tmp_path):

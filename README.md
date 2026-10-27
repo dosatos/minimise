@@ -782,6 +782,9 @@ prices:                       # USD per million tokens
 - Each model needs all four prices, as non-negative numbers. A bad `prices` section
   makes the web JSON fail with an error that names the bad key, and the pages' figures
   stop updating until you fix it.
+- **`cache_write` is the 5-minute price.** mini runs Claude agents and hooks with the
+  5-minute prompt cache, so set `cache_write` to the 5-minute cache-write price (1.25x
+  input).
 - **One price list for every run.** Cost is computed on every request and never
   stored, so editing the prices re-prices past runs too. Edits apply without
   restarting `mini view`.
