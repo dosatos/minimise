@@ -651,6 +651,15 @@ class ClaudeCodeHarness(_JsonlSubprocessHarness):
 
     supports_resume = True
 
+    def __init__(
+        self,
+        backend: Optional[JobLogBackend] = None,
+        model: Optional[str] = None,
+        effort: Optional[str] = None,
+    ) -> None:
+        super().__init__(backend=backend, model=model)
+        self._effort = effort
+
     def wrap_prompt(self, prompt: str) -> str:
         return _wrap_with_orchestration_guardrails(prompt)
 
@@ -711,6 +720,8 @@ class ClaudeCodeHarness(_JsonlSubprocessHarness):
         model = _strip_provider_prefix(self._model)
         if model is not None:
             cmd += ["--model", model]
+        if self._effort is not None:
+            cmd += ["--effort", self._effort]
         if system_prompt is not None:
             cmd += ["--system-prompt", system_prompt]
         # A resume keeps every flag above, so the prompt cache prefix still matches.
@@ -1022,6 +1033,26 @@ class _NameResolver:
             persona_name=getattr(task, "assignee", None),
         )
 
+    def resolve_effort(
+        self,
+        *,
+        worker_effort: Optional[str] = None,
+        persona_name: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve which effort level to use from context.
+
+        Resolution order:
+          1. Explicit per-step effort  (Worker.effort)
+          2. Persona default           (personas.yaml → persona.effort)
+          3. None                      (no flag: the harness's own default)
+        """
+        if worker_effort:
+            return worker_effort
+        if persona_name:
+            persona = self._get_persona(persona_name)
+            return getattr(persona, "effort", None)
+        return None
+
 
 class HarnessFactory:
     """Instantiate an AgentHarness for a Task."""
@@ -1071,30 +1102,48 @@ class HarnessFactory:
             raise ValueError(f"unknown persona {assignee!r}")
         return persona.system_prompt
 
-    def _instantiate(self, name: str, model: Optional[str] = None) -> AgentHarness:
+    def _instantiate(
+        self, name: str, model: Optional[str] = None, effort: Optional[str] = None
+    ) -> AgentHarness:
         """Look up, availability-check, and instantiate the harness registered under *name*."""
         if name not in _BUILDERS:
             raise ValueError(f"Unknown harness: {name!r}")
+        # Only claude has an effort flag; never drop the setting silently.
+        if effort is not None and name != HARNESS_CLAUDE:
+            raise ValueError(
+                f"effort is only supported on the claude harness, not {name!r}"
+            )
         if shutil.which(name) is None:
             raise HarnessNotFoundError(name)
+        if effort is not None:
+            return _BUILDERS[name](backend=self._backend, model=model, effort=effort)
         return _BUILDERS[name](backend=self._backend, model=model)
 
     def for_task(self, task) -> AgentHarness:
         """Resolve + instantiate the harness for a Task, with its model baked in.
 
         Order: task.harness/model → persona.harness/model → factory default → None.
+        Effort comes only from the assignee persona.
         """
         name = self._resolver.resolve_for_task(task)
         model = self._resolver.resolve_model_for_task(task)
-        return self._instantiate(name, model)
+        effort = self._resolver.resolve_effort(
+            persona_name=getattr(task, "assignee", None)
+        )
+        return self._instantiate(name, model, effort)
 
     def for_worker(self, worker) -> AgentHarness:
         """Resolve + instantiate the harness for a LoopEngine Worker, with its model baked in.
 
-        Order: worker.harness/model → persona.harness/model → factory default → None.
+        Order: worker.harness/model/effort → persona.harness/model/effort
+        → factory default (harness/model only) → None.
         """
         name = self._resolver.resolve_for_worker(worker)
         model = self._resolver.resolve_model(
             task_model=worker.model, persona_name=worker.persona
         )
-        return self._instantiate(name, model)
+        effort = self._resolver.resolve_effort(
+            worker_effort=getattr(worker, "effort", None),
+            persona_name=worker.persona,
+        )
+        return self._instantiate(name, model, effort)

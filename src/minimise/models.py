@@ -315,6 +315,12 @@ class PlanTask(BaseModel):
                         f"task '{self.id}': '{field}' and 'assignee' are mutually exclusive "
                         "(the persona already carries its own harness/model)"
                     )
+        # extra="allow" would silently drop it; Task has no effort column.
+        if "effort" in (self.model_extra or {}):
+            raise ValueError(
+                f"task '{self.id}': 'effort' is not a task field; "
+                "set effort on the task's assignee persona instead"
+            )
         _validate_hook_list(self.pre_hooks, f"task '{self.id}' pre_hooks")
         _validate_hook_list(self.post_hooks, f"task '{self.id}' post_hooks")
         return _validate_timeout(self)
@@ -345,17 +351,22 @@ class Plan(BaseModel):
         return cls.model_validate(raw)
 
 
+# Levels `claude --effort` accepts.
+Effort = Literal["low", "medium", "high", "xhigh", "max"]
+
+
 class Worker(BaseModel):
     """A step's worker: exactly one of persona|prompt|prompt_file, or none
     (= the built-in default). More than one set is an error.
 
-    harness/model may accompany prompt or prompt_file, but not persona
-    (the persona already carries its own harness/model)."""
+    harness/model/effort may accompany prompt or prompt_file, but not persona
+    (the persona already carries its own harness/model/effort)."""
     persona: Optional[str] = None
     prompt: Optional[str] = None
     prompt_file: Optional[str] = None
     harness: Optional[str] = None
     model: Optional[str] = None
+    effort: Optional[Effort] = None
 
     @model_validator(mode="after")
     def _exactly_one_or_none(self):
@@ -366,11 +377,11 @@ class Worker(BaseModel):
                 f"worker must set at most one of persona|prompt|prompt_file, got {set_fields}"
             )
         if self.persona is not None:
-            for field in ("harness", "model"):
+            for field in ("harness", "model", "effort"):
                 if getattr(self, field) is not None:
                     raise ValueError(
                         f"worker: '{field}' and 'persona' are mutually exclusive "
-                        "(the persona already carries its own harness/model)"
+                        "(the persona already carries its own harness/model/effort)"
                     )
         return self
 

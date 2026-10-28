@@ -250,6 +250,24 @@ def test_command_strips_provider_prefix_from_model(mock_popen):
     assert cmd[cmd.index("--model") + 1] == "claude-sonnet-4-8"
 
 
+def test_command_includes_effort_only_when_given():
+    assert "--effort" not in ClaudeCodeHarness()._build_command()
+
+    cmd = ClaudeCodeHarness(model="claude-opus-4-8", effort="high")._build_command()
+    i = cmd.index("--effort")
+    assert cmd[i + 1] == "high"
+    # Right after --model, before the per-run flags.
+    assert cmd[i - 2:i] == ["--model", "claude-opus-4-8"]
+
+
+def test_command_resume_keeps_effort():
+    harness = ClaudeCodeHarness(effort="xhigh")
+    first = harness._build_command(session_id=SID)
+    resumed = harness._build_command(session_id=SID, resume=True)
+    assert resumed[resumed.index("--effort") + 1] == "xhigh"
+    assert _without(resumed, "--resume") == _without(first, "--session-id")
+
+
 @patch("minimise.agents.harness.subprocess.Popen")
 def test_command_includes_system_prompt_only_when_given(mock_popen):
     mock_popen.side_effect = make_fake_popen([])
@@ -1228,6 +1246,69 @@ def test_for_worker_resolution_order():
     # global defaults are the fallback
     harness = factory.for_worker(Worker(harness=None, persona=None, model=None))
     assert isinstance(harness, ClaudeCodeHarness) and harness._model == "default-model"
+
+
+def test_for_worker_effort_worker_beats_persona_beats_none():
+    Persona = SimpleNamespace
+    Worker = SimpleNamespace
+    personas = {
+        "writer": Persona(harness=None, model=None, effort="high"),
+        "plain": Persona(harness=None, model=None, effort=None),
+    }
+    factory = HarnessFactory(personas=personas)
+
+    harness = factory.for_worker(
+        Worker(harness=None, persona=None, model=None, effort="low")
+    )
+    assert harness._effort == "low"
+    harness = factory.for_worker(
+        Worker(harness=None, persona="writer", model=None, effort=None)
+    )
+    assert harness._effort == "high"
+    harness = factory.for_worker(
+        Worker(harness=None, persona="plain", model=None, effort=None)
+    )
+    assert harness._effort is None
+    harness = factory.for_worker(
+        Worker(harness=None, persona=None, model=None, effort=None)
+    )
+    assert harness._effort is None
+
+
+def test_resolve_effort_worker_wins_over_persona():
+    Persona = SimpleNamespace
+    resolver = _NameResolver({"writer": Persona(effort="high")})
+    assert resolver.resolve_effort(worker_effort="max", persona_name="writer") == "max"
+    assert resolver.resolve_effort(persona_name="writer") == "high"
+    assert resolver.resolve_effort() is None
+
+
+def test_for_task_effort_from_assignee_persona():
+    Task = SimpleNamespace
+    Persona = SimpleNamespace
+    personas = {"writer": Persona(harness=None, model=None, effort="high")}
+    factory = HarnessFactory(personas=personas)
+
+    harness = factory.for_task(Task(harness=None, assignee="writer", model=None))
+    assert isinstance(harness, ClaudeCodeHarness) and harness._effort == "high"
+    harness = factory.for_task(Task(harness=None, assignee=None, model=None))
+    assert harness._effort is None
+
+
+@pytest.mark.parametrize("name", ["pi", HARNESS_CODEX])
+def test_effort_on_non_claude_harness_raises(name):
+    Worker = SimpleNamespace
+    Persona = SimpleNamespace
+    Task = SimpleNamespace
+    factory = HarnessFactory(
+        personas={"writer": Persona(harness=name, model=None, effort="high")}
+    )
+    with pytest.raises(ValueError, match=f"not '{name}'"):
+        factory.for_worker(Worker(harness=name, persona=None, model=None, effort="high"))
+    with pytest.raises(ValueError, match=f"not '{name}'"):
+        factory.for_worker(Worker(harness=None, persona="writer", model=None, effort=None))
+    with pytest.raises(ValueError, match=f"not '{name}'"):
+        factory.for_task(Task(harness=None, assignee="writer", model=None))
 
 
 def test_resolve_prompt_for_worker_unknown_persona_raises():

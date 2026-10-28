@@ -345,7 +345,7 @@ bare model ID expected by the Codex CLI.
 
 ### Resolution chain
 
-For each task/step, harness and model are each resolved independently, highest priority first:
+For each task/step, harness, model and effort are each resolved independently, highest priority first:
 
 **Harness:**
 1. `task.harness` (plan YAML) / `step.harness` (loop YAML)
@@ -359,10 +359,20 @@ For each task/step, harness and model are each resolved independently, highest p
 3. `--model` CLI flag → `MINIMISE_MODEL` env var → `settings.yaml` `model:`
 4. `None` (harness's own default model)
 
-`harness`/`model` and `assignee`/`persona` are mutually exclusive — on a task, `harness`/
-`model` vs. `assignee`; on a loop step, `harness`/`model` vs. `persona`. A persona already
-carries its own harness/model, so set one or the other, not both. `harness`/`model` may
-freely accompany a step's `prompt`/`prompt_file`.
+**Effort** (`low`, `medium`, `high`, `xhigh` or `max`; passed as `claude --effort`):
+1. `step.effort` (loop YAML: `plan`, `implement` or an evaluate dimension)
+2. `persona.effort`
+3. none: no flag, so claude uses its own default
+
+Effort works only on the `claude` harness: effort on a `pi` or `codex` step fails
+instead of being dropped. A job task has no `effort:` field (the plan is rejected if
+it sets one); give the task an `assignee` persona that sets `effort`. There is no
+global default: no `settings.yaml` key, env var or CLI flag.
+
+`harness`/`model`/`effort` and `assignee`/`persona` are mutually exclusive — on a task,
+`harness`/`model` vs. `assignee`; on a loop step, `harness`/`model`/`effort` vs. `persona`.
+A persona already carries its own harness/model/effort, so set one or the other, not both.
+`harness`/`model`/`effort` may freely accompany a step's `prompt`/`prompt_file`.
 
 ### `settings.yaml`
 
@@ -405,6 +415,25 @@ loop:
       - name: clarity
         rubric: Is the change easy to follow?
         harness: codex        # this dimension always runs on Codex
+```
+
+**Example — think less while writing:**
+
+```yaml
+# loop spec
+loop:
+  plan:
+    prompt_file: prompts/planner.md
+    effort: xhigh
+  implement:
+    prompt_file: prompts/writer.md
+    effort: high              # claude --effort high
+  evaluate:
+    dimensions:
+      - name: clarity
+        rubric: Is the change easy to follow?
+        prompt_file: prompts/clarity.md
+        effort: xhigh
 ```
 
 ## Task Goals
@@ -498,6 +527,8 @@ dimensions.
 Each top-level key in `~/.minimise/personas.yaml` is a persona name mapping to:
 
 - `model:` — *optional*, pins the model for tasks assigned this persona.
+- `effort:` — *optional*, `low`|`medium`|`high`|`xhigh`|`max`, passed as
+  `claude --effort` (claude harness only). This is how a job task gets an effort.
 - exactly **one** of `prompt:` (inline text) or `prompt_file:` (a path resolved
   relative to `~/.minimise/`).
 

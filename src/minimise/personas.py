@@ -2,13 +2,16 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
+
+from .models import Effort
 
 
 class Persona(BaseModel):
     name: str
     model: Optional[str] = None
     harness: Optional[str] = None
+    effort: Optional[Effort] = None
     system_prompt: str
 
 
@@ -68,6 +71,7 @@ def load_personas(config_dir: Path) -> dict[str, Persona]:
         prompt_file = spec.get("prompt_file")
         model = spec.get("model")
         harness = spec.get("harness")
+        effort = spec.get("effort")
         if (prompt is None) == (prompt_file is None):
             raise ValueError(f"persona '{name}': set exactly one of prompt / prompt_file")
         if prompt_file is not None:
@@ -79,5 +83,11 @@ def load_personas(config_dir: Path) -> dict[str, Persona]:
             system_prompt = fp.read_text()
         else:
             system_prompt = prompt
-        personas[name] = Persona(name=name, model=model, harness=harness, system_prompt=system_prompt)
+        try:
+            personas[name] = Persona(
+                name=name, model=model, harness=harness, effort=effort,
+                system_prompt=system_prompt,
+            )
+        except ValidationError as e:
+            raise ValueError(f"persona '{name}': {e}") from e
     return personas

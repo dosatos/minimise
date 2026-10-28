@@ -55,6 +55,24 @@ def test_inline_prompt_with_harness(tmp_path):
     assert personas["coder"].harness == "codex"
 
 
+def test_effort_loaded(tmp_path):
+    (tmp_path / "personas.yaml").write_text(
+        "writer:\n  prompt: you write\n  effort: high\n"
+        "plain:\n  prompt: you write\n"
+    )
+    personas = load_personas(tmp_path)
+    assert personas["writer"].effort == "high"
+    assert personas["plain"].effort is None
+
+
+def test_invalid_effort_fails(tmp_path):
+    (tmp_path / "personas.yaml").write_text(
+        "writer:\n  prompt: you write\n  effort: huge\n"
+    )
+    with pytest.raises(ValueError, match="(?s)persona 'writer'.*effort"):
+        load_personas(tmp_path)
+
+
 def test_prompt_file_relative(tmp_path):
     (tmp_path / "coder.md").write_text("file-based prompt")
     (tmp_path / "personas.yaml").write_text(

@@ -261,6 +261,58 @@ def test_worker_rejects_persona_with_harness_or_model():
         Worker(persona="planner", model="opus")
 
 
+def test_worker_rejects_persona_with_effort():
+    from minimise.models import Dimension, Worker
+    with pytest.raises(ValueError, match="'effort' and 'persona' are mutually exclusive"):
+        Worker(persona="planner", effort="high")
+    with pytest.raises(ValueError, match="'effort' and 'persona' are mutually exclusive"):
+        Dimension(name="d", rubric="r", persona="planner", effort="high")
+
+
+EFFORT_LOOP_YAML = """\
+version: "0.0.1"
+name: "effort loop"
+goal: "make it good"
+loop:
+  plan:
+    prompt_file: planner.md
+    effort: xhigh
+  implement:
+    prompt_file: writer.md
+    effort: {implement_effort}
+  evaluate:
+    dimensions:
+      - name: clarity
+        prompt_file: clarity.md
+        rubric: "easy to follow"
+        effort: max
+      - name: coverage
+        prompt: "Check coverage."
+        rubric: "cover the edge cases"
+max_iterations: 3
+"""
+
+
+def test_loopspec_parses_worker_effort(tmp_path):
+    from minimise.models import LoopSpec
+    p = tmp_path / "loop.yaml"
+    p.write_text(EFFORT_LOOP_YAML.format(implement_effort="high"))
+    spec = LoopSpec.from_yaml(p)
+    assert spec.loop.plan.effort == "xhigh"
+    assert spec.loop.implement.effort == "high"
+    assert spec.loop.evaluate.dimensions[0].effort == "max"
+    assert spec.loop.evaluate.dimensions[1].effort is None
+
+
+def test_loopspec_rejects_unknown_effort(tmp_path):
+    from pydantic import ValidationError
+    from minimise.models import LoopSpec
+    p = tmp_path / "loop.yaml"
+    p.write_text(EFFORT_LOOP_YAML.format(implement_effort="huge"))
+    with pytest.raises(ValidationError, match="effort"):
+        LoopSpec.from_yaml(p)
+
+
 def test_dimension_rejects_two_workers():
     from minimise.models import Dimension
     with pytest.raises(ValueError):
@@ -362,6 +414,24 @@ def test_harness_and_assignee_mutually_exclusive():
     with pytest.raises(ValueError, match="mutually exclusive"):
         PlanTask(id="t1", name="N", description="d", goal="g",
                  estimated_duration_min=5, harness="pi", assignee="auditor")
+
+
+def test_plan_task_rejects_effort_key(tmp_path):
+    from minimise.models import Plan
+    p = tmp_path / "plan.yaml"
+    p.write_text(
+        "plan:\n"
+        "  name: p\n"
+        "  tasks:\n"
+        "    - id: t1\n"
+        "      name: N\n"
+        "      description: d\n"
+        "      goal: g\n"
+        "      estimated_duration_min: 5\n"
+        "      effort: high\n"
+    )
+    with pytest.raises(ValueError, match="task 't1': 'effort'.*assignee persona"):
+        Plan.from_yaml(p)
 
 
 # --- TokenUsage ---

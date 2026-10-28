@@ -80,7 +80,7 @@ class _FixedHarnessFactory(HarnessFactory):
         super().__init__(personas=personas)
         self._fixed = harness
 
-    def _instantiate(self, name: str, model=None) -> AgentHarness:
+    def _instantiate(self, name: str, model=None, effort=None) -> AgentHarness:
         return self._fixed
 
 
@@ -1174,7 +1174,7 @@ def test_run_step_wraps_prompt_via_harness(tmp_path):
     built = {}
 
     class TrackingFactory(HarnessFactory):
-        def _instantiate(self, name, model=None):
+        def _instantiate(self, name, model=None, effort=None):
             h = built.setdefault(name, WrappingHarness(name, model))
             return h
 
@@ -1193,7 +1193,7 @@ def test_run_step_resolves_harness_per_worker_from_factory(tmp_path):
     built = {}
 
     class TrackingFactory(HarnessFactory):
-        def _instantiate(self, name, model=None):
+        def _instantiate(self, name, model=None, effort=None):
             h = RecordingHarness(name, model)
             built[name] = h
             return h
@@ -1222,7 +1222,7 @@ def test_run_step_uses_persona_model(tmp_path):
     built = {}
 
     class TrackingFactory(HarnessFactory):
-        def _instantiate(self, name, model=None):
+        def _instantiate(self, name, model=None, effort=None):
             h = built.setdefault(name, RecordingHarness(name, model))
             return h
 
@@ -1238,9 +1238,27 @@ def test_run_step_uses_persona_model(tmp_path):
     assert built["claude"].calls == 1
 
 
+def test_run_step_passes_worker_effort_to_claude(tmp_path):
+    """A step whose worker sets effort runs `claude --effort <level>`, resume included."""
+    db, store, lid = _build(tmp_path)
+    procs = [_stream_proc("Implemented it."), _stream_proc('{"control":"done"}')]
+    with patch("minimise.agents.harness.shutil.which", return_value="/usr/local/bin/claude"), \
+            patch("minimise.agents.harness.subprocess.Popen", side_effect=procs) as popen:
+        control = LoopEngine(factory=HarnessFactory(), store=store, db=db)._run_step(
+            lid, store.load_spec(lid), store.journal_path(lid), "implement",
+            Worker(prompt="do it", effort="high"), 1,
+        )
+
+    assert control == "done"
+    first, resumed = (c.args[0] for c in popen.call_args_list)
+    assert "--resume" in resumed
+    for cmd in (first, resumed):
+        assert cmd[0] == "claude" and cmd[cmd.index("--effort") + 1] == "high"
+
+
 def test_harness_and_model_resolution_chain_worker_beats_persona_beats_default():
     class TrackingFactory(HarnessFactory):
-        def _instantiate(self, name, model=None):
+        def _instantiate(self, name, model=None, effort=None):
             return RecordingHarness(name, model)
 
     persona = Persona(name="p", harness="pi", model="persona-model", system_prompt="x")
