@@ -303,8 +303,9 @@ def _load_spec(
         return None, raw, f"The cached loop spec could not be parsed: {exc}"
 
 
-def _worker_prompts(spec: LoopSpec) -> dict:
-    """Prompt previews for the plan, implement and evaluate workers."""
+def _worker_prompts(spec: LoopSpec, cwd: Optional[str] = None) -> dict:
+    """Prompt previews for the plan, implement and evaluate workers; a relative
+    prompt_file resolves against ``cwd``, where the loop's engine last ran."""
     workers = [spec.loop.plan, spec.loop.implement, *spec.loop.evaluate.dimensions]
     personas, load_error = None, None
     if any(worker.persona for worker in workers):
@@ -316,7 +317,7 @@ def _worker_prompts(spec: LoopSpec) -> dict:
             load_error = str(exc)
 
     def preview(worker, step_type: str) -> Optional[dict]:
-        return worker_prompt_preview(worker, step_type, personas, load_error)
+        return worker_prompt_preview(worker, step_type, personas, load_error, cwd)
 
     return {
         "plan": preview(spec.loop.plan, "plan"),
@@ -554,7 +555,7 @@ def register_loop_routes(app: Flask, db: Database, store: LoopStore,
             spec=spec,
             spec_raw=spec_raw,
             spec_error=spec_error,
-            worker_prompts=_worker_prompts(spec) if spec else None,
+            worker_prompts=_worker_prompts(spec, loop.cwd) if spec else None,
             journal_entries=_journal_entries(journal, ARTIFACT_LIMIT),
             log_entries=_loop_log_entries(store, loop_id, ARTIFACT_LIMIT),
             log_filter_options=_loop_log_filter_options(spec, steps),

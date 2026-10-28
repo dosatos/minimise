@@ -68,6 +68,42 @@ def test_prompt_file_preview_relative_path_is_not_guessed(tmp_path, monkeypatch)
     assert preview["source"] == "prompts/implement.md"
 
 
+def test_prompt_file_preview_relative_path_resolves_against_base_dir(tmp_path, monkeypatch):
+    base = tmp_path / "engine"
+    (base / "prompts").mkdir(parents=True)
+    (base / "prompts" / "implement.md").write_text("# From the engine dir")
+    monkeypatch.chdir(tmp_path)  # not the process's cwd: base_dir decides
+
+    preview = prompt_file_preview("prompts/implement.md", base_dir=str(base))
+
+    _assert_one_of_html_or_error(preview)
+    assert "<h1>From the engine dir</h1>" in preview["html"]
+    assert preview["name"] == "implement.md"
+    assert preview["source"] == "prompts/implement.md"
+    assert preview["size_label"] == "21 B"
+
+
+def test_prompt_file_preview_relative_path_missing_names_resolved_path(tmp_path):
+    preview = prompt_file_preview("prompts/gone.md", base_dir=str(tmp_path))
+
+    _assert_one_of_html_or_error(preview)
+    assert preview["error"] == f"Prompt file not found: {tmp_path / 'prompts' / 'gone.md'}"
+    assert preview["name"] == "gone.md"
+    assert preview["source"] == "prompts/gone.md"
+
+
+def test_prompt_file_preview_absolute_path_ignores_base_dir(tmp_path):
+    path = tmp_path / "planner.md"
+    path.write_text("# Planner heading")
+    elsewhere = tmp_path / "elsewhere"
+
+    assert prompt_file_preview(str(path), base_dir=str(elsewhere)) == prompt_file_preview(str(path))
+    gone = tmp_path / "gone.md"
+    assert prompt_file_preview(str(gone), base_dir=str(elsewhere))["error"] == (
+        f"Prompt file not found: {gone}"
+    )
+
+
 def test_prompt_file_preview_does_not_expand_user():
     preview = prompt_file_preview("~/prompts/planner.md")
     assert preview["error"].startswith("Relative path")
@@ -195,3 +231,10 @@ def test_worker_prompt_preview_dispatches_by_worker_setting(tmp_path):
 def test_worker_prompt_preview_passes_load_error_to_persona():
     preview = worker_prompt_preview(Worker(persona="writer"), "plan", None, "boom")
     assert preview["error"] == "Personas could not be loaded: boom"
+
+
+def test_worker_prompt_preview_passes_base_dir_to_prompt_file(tmp_path):
+    (tmp_path / "p.md").write_text("# File")
+    preview = worker_prompt_preview(Worker(prompt_file="p.md"), "plan", None,
+                                    base_dir=str(tmp_path))
+    assert "<h1>File</h1>" in preview["html"]

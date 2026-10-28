@@ -364,6 +364,23 @@ def test_loop_detail_page_shows_notice_for_bad_prompt_sources(
     assert "prompt-fold-body" not in evaluate
 
 
+def test_loop_detail_page_resolves_relative_prompt_file_against_loop_cwd(
+    client, api_server, db, tmp_path
+):
+    (tmp_path / "prompts").mkdir()
+    (tmp_path / "prompts" / "plan.md").write_text("# Plan from the loop cwd\n")
+    loop = _make_prompt_loop(api_server, plan={"prompt_file": "prompts/plan.md"})
+    db.update_loop_status(loop.loop_id, cwd=str(tmp_path))
+
+    plan = _get_loop_page(client, loop)["plan"]
+
+    assert "<h1>Plan from the loop cwd</h1>" in plan
+    assert "<code>prompts/plan.md</code>" in plan
+    assert '<span class="prompt-fold-name">plan.md</span>' in plan
+    assert "Relative path" not in plan
+    assert "prompt-fold-error" not in plan
+
+
 def test_loop_detail_page_survives_malformed_personas_yaml(
     client, api_server, config_dir, tmp_path
 ):

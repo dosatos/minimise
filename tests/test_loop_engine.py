@@ -9,6 +9,7 @@ deterministically.
 import dataclasses
 import importlib
 import json
+import os
 import re
 import tempfile
 import threading
@@ -661,6 +662,22 @@ def test_start_clears_stop_reason_before_running(tmp_path):
     h = StubHarness({}, on_call=lambda key: seen.append(db.get_loop(lid).stop_reason))
     LoopEngine(factory=_fixed(h), store=store, db=db).run(lid)
     assert seen and seen[0] is None
+
+
+def test_run_records_the_process_cwd_when_it_marks_the_loop_running(tmp_path, monkeypatch):
+    # The harness reads a relative prompt_file against the process's cwd, so
+    # that's what is recorded, not the agents' cwd.
+    db, store, lid = _build(tmp_path)
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    assert db.get_loop(lid).cwd is None
+    seen = []
+    h = StubHarness({}, on_call=lambda key: seen.append(db.get_loop(lid)))
+    LoopEngine(factory=_fixed(h), store=store, db=db, cwd=str(tmp_path)).run(lid)
+    assert seen and seen[0].status == JobStatus.RUNNING
+    assert seen[0].cwd == os.getcwd() == str(workdir.resolve())
+    assert db.get_loop(lid).cwd == os.getcwd()
 
 
 def test_external_stop_during_evaluate_wave_leaves_the_iteration_open(tmp_path):

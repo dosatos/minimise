@@ -38,22 +38,27 @@ def _preview(kind: str, label: str, name: str, source: str,
     }
 
 
-def prompt_file_preview(path: str) -> dict:
-    """Read the path as-is, like AgentFactory.resolve_prompt_for_worker."""
+def prompt_file_preview(path: str, base_dir: Optional[str] = None) -> dict:
+    """Read the path like AgentFactory.resolve_prompt_for_worker: as-is, from
+    the engine's working directory ``base_dir`` when it is relative."""
     file_path = Path(path)
 
     def failed(error: str, size_label: Optional[str] = None) -> dict:
         return _preview("file", "Prompt file", file_path.name, path,
                         size_label=size_label, error=error)
 
+    shown_path = path
     if not file_path.is_absolute():
-        # The loop's working directory isn't stored, so any base dir is a guess.
-        return failed("Relative path: the loop's working directory isn't recorded, "
-                      "so this file can't be located.")
+        if base_dir is None:
+            # No working directory recorded (a loop from before v12), so any base dir is a guess.
+            return failed("Relative path: the loop's working directory isn't recorded, "
+                          "so this file can't be located.")
+        file_path = Path(base_dir) / path
+        shown_path = str(file_path)
     try:
         size = file_path.stat().st_size
     except FileNotFoundError:
-        return failed(f"Prompt file not found: {path}")
+        return failed(f"Prompt file not found: {shown_path}")
     except OSError as exc:
         return failed(f"Prompt file could not be read: {exc}")
 
@@ -93,12 +98,13 @@ def default_preview(step_type: str) -> dict:
 
 
 def worker_prompt_preview(worker, step_type: str, personas: Optional[dict],
-                          load_error: Optional[str] = None) -> Optional[dict]:
+                          load_error: Optional[str] = None,
+                          base_dir: Optional[str] = None) -> Optional[dict]:
     """The preview for a worker, or None for an inline prompt (already visible)."""
     if worker.persona:
         return persona_preview(worker.persona, personas, load_error)
     if worker.prompt:
         return None
     if worker.prompt_file:
-        return prompt_file_preview(worker.prompt_file)
+        return prompt_file_preview(worker.prompt_file, base_dir)
     return default_preview(step_type)

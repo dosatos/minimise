@@ -148,6 +148,8 @@ class LoopEngine:
         self.db.update_loop_status(
             loop_id, status=JobStatus.RUNNING, started_at=datetime.utcnow(), pid=os.getpid(),
             stop_reason=None,  # starting again clears why the last run stopped
+            # The harness reads a relative prompt_file against the process's cwd.
+            cwd=os.getcwd(),
         )
 
         anchor = journal.last_committed_iteration(jpath)  # iterations 1..anchor done

@@ -908,7 +908,7 @@ def test_old_db_migrates_to_v11_with_rows_intact_and_marked_untracked(tmp_path, 
     untracked, ones created afterwards aren't, and the old rows keep their data."""
     db = _db_from(tmp_path, script)
 
-    assert _user_version(db) == 11 == Database.SCHEMA_VERSION
+    assert _user_version(db) == Database.SCHEMA_VERSION
     assert "agent_runs" in _tables(db)
     assert db.list_agent_runs_for_job("j1") == [] and db.list_agent_runs_for_loop("l1") == []
     [ex] = db.list_executions_for_task("t1")
@@ -951,7 +951,7 @@ def test_v9_db_migrates_to_v11_without_tokens_columns(tmp_path):
     tokens column on executions or loop_steps (a fresh DB has none either)."""
     for db in (_db_from(tmp_path, _V9_DB), Database(tmp_path / "fresh.db")):
         db.init_db()
-        assert _user_version(db) == 11
+        assert _user_version(db) == Database.SCHEMA_VERSION
         assert "tokens" not in _columns(db, "executions")
         assert "tokens" not in _columns(db, "loop_steps")
         assert "tokens" in _columns(db, "agent_runs")
@@ -981,6 +981,56 @@ def test_fresh_db_jobs_and_loops_are_tracked(db):
     assert db.get_job("j1").tokens_untracked is False
     assert db.get_loop("l1").tokens_untracked is False
     assert "tokens_untracked" not in db.get_job("j1").to_dict()
+
+
+# The same database at v11: agent_runs and tokens_untracked, no loops.cwd.
+_V11_DB = _V9_DB.replace("PRAGMA user_version = 9;", """
+    CREATE TABLE agent_runs (
+        run_id TEXT PRIMARY KEY, job_id TEXT, task_id TEXT, attempt INTEGER,
+        loop_id TEXT, step_id TEXT, started_at TEXT NOT NULL, ended_at TEXT, tokens TEXT
+    );
+    ALTER TABLE jobs ADD COLUMN tokens_untracked INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE loops ADD COLUMN tokens_untracked INTEGER NOT NULL DEFAULT 0;
+    UPDATE jobs SET tokens_untracked = 1;
+    UPDATE loops SET tokens_untracked = 1;
+    UPDATE loops SET started_at = '2026-10-01T00:01:00', stop_reason = 'usage limit';
+    PRAGMA user_version = 11;
+""")
+
+
+def test_v11_db_migrates_to_v12_with_loop_rows_intact_and_cwd_null(tmp_path):
+    """v12 adds a nullable loops.cwd; existing loops keep their data and no cwd."""
+    db = _db_from(tmp_path, _V11_DB)
+
+    assert _user_version(db) == 12 == Database.SCHEMA_VERSION
+    assert "cwd" in _columns(db, "loops")
+    assert "cwd" not in _columns(db, "jobs")
+    loop = db.get_loop("l1")
+    assert (loop.name, loop.status, loop.plan_path, loop.max_iterations, loop.pid) == (
+        "loop", JobStatus.STOPPED, "/l.yaml", 5, 9)
+    assert loop.started_at == datetime(2026, 10, 1, 0, 1)
+    assert (loop.stop_reason, loop.tokens_untracked, loop.cwd) == ("usage limit", True, None)
+
+    db.init_db()  # every cli command runs it again
+    Database(db.db_path).init_db()
+    assert _user_version(db) == Database.SCHEMA_VERSION
+    assert db.get_loop("l1").cwd is None
+
+
+def test_loop_cwd_round_trips_and_survives_updates_without_it(db):
+    db.create_loop(Loop(loop_id="l1", name="n", cwd="/made/here"))
+    assert db.get_loop("l1").cwd == "/made/here"
+
+    db.create_loop(Loop(loop_id="l2", name="n"))
+    assert db.get_loop("l2").cwd is None
+    db.update_loop_status("l2", cwd="/x")
+    assert db.get_loop("l2").cwd == "/x"
+
+    db.update_loop_status("l2", status=JobStatus.STOPPED, completed_at=datetime(2026, 10, 1),
+                          pid=4, stop_reason="usage limit")
+    loop = db.get_loop("l2")
+    assert (loop.status, loop.pid, loop.cwd) == (JobStatus.STOPPED, 4, "/x")
+    assert {l.loop_id: l.cwd for l in db.list_loops()} == {"l1": "/made/here", "l2": "/x"}
 
 
 _TOKENS = TokenUsage(

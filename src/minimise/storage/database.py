@@ -104,6 +104,7 @@ def _row_to_loop(row: sqlite3.Row) -> Loop:
         pid=row['pid'] if 'pid' in keys else None,
         stop_reason=row['stop_reason'] if 'stop_reason' in keys else None,
         tokens_untracked=bool(row['tokens_untracked']) if 'tokens_untracked' in keys else False,
+        cwd=row['cwd'] if 'cwd' in keys else None,
     )
 
 
@@ -195,7 +196,7 @@ class Database:
         finally:
             conn.close()
 
-    SCHEMA_VERSION = 11
+    SCHEMA_VERSION = 12
 
     def init_db(self):
         """Create/migrate the schema once per DB.
@@ -442,6 +443,11 @@ class Database:
             if 'tokens_untracked' not in _column_names(cursor, table):
                 cursor.execute(f"ALTER TABLE {table} ADD COLUMN tokens_untracked INTEGER NOT NULL DEFAULT 0")
                 cursor.execute(f"UPDATE {table} SET tokens_untracked = 1")
+
+        # v12: the directory a loop's engine last ran in, where it resolves relative
+        # prompt files. Additive; older loops keep NULL (not recorded).
+        if 'cwd' not in _column_names(cursor, "loops"):
+            cursor.execute("ALTER TABLE loops ADD COLUMN cwd TEXT")
 
         cursor.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
         conn.commit()
@@ -691,13 +697,13 @@ class Database:
         """Insert a new loop."""
         with self._write(conn) as cursor:
             cursor.execute("""
-                INSERT INTO loops (loop_id, name, status, plan_path, max_iterations, created_at, started_at, completed_at, pid, stop_reason)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO loops (loop_id, name, status, plan_path, max_iterations, created_at, started_at, completed_at, pid, stop_reason, cwd)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (loop.loop_id, loop.name, loop.status.value, loop.plan_path, loop.max_iterations,
                   loop.created_at.isoformat(),
                   loop.started_at.isoformat() if loop.started_at else None,
                   loop.completed_at.isoformat() if loop.completed_at else None, loop.pid,
-                  loop.stop_reason))
+                  loop.stop_reason, loop.cwd))
 
     def get_loop(self, loop_id: str) -> Optional[Loop]:
         """Fetch a loop by ID."""
@@ -715,7 +721,7 @@ class Database:
             rows = self._query("SELECT * FROM loops ORDER BY created_at DESC, loop_id")
         return [_row_to_loop(row) for row in rows]
 
-    def update_loop_status(self, loop_id: str, status: Optional[JobStatus] = None, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, pid: Optional[int] = None, stop_reason=_UNSET, conn: Optional[sqlite3.Connection] = None) -> None:
+    def update_loop_status(self, loop_id: str, status: Optional[JobStatus] = None, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, pid: Optional[int] = None, stop_reason=_UNSET, cwd: Optional[str] = None, conn: Optional[sqlite3.Connection] = None) -> None:
         """Update loop status. Only updates fields that are explicitly provided;
         stop_reason defaults to _UNSET (preserve), pass None to clear it."""
         update_fields = []
@@ -736,6 +742,9 @@ class Database:
         if stop_reason is not _UNSET:
             update_fields.append("stop_reason = ?")
             params.append(stop_reason)
+        if cwd is not None:
+            update_fields.append("cwd = ?")
+            params.append(cwd)
 
         if not update_fields:
             return

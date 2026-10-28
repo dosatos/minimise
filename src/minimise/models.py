@@ -431,6 +431,7 @@ class Loop:
     pid: Optional[int] = None
     stop_reason: Optional[str] = None  # why it stopped on its own, e.g. "usage limit: resets 4am"
     tokens_untracked: bool = False  # made before agent_runs existed: no token figures
+    cwd: Optional[str] = None  # where its engine last ran: relative prompt files resolve here
 
 
 @dataclass
