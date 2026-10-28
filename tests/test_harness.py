@@ -1434,3 +1434,11 @@ def test_another_harness_reports_tokens_by_overriding_only_its_capture_hook(mock
 
     assert result.success and result.output == "done"
     assert result.tokens == reported
+
+
+@pytest.mark.parametrize("bedrock", ["0", "1"])
+def test_build_env_passes_max_output_tokens_through(bedrock):
+    with patch.dict(os.environ, {"CLAUDE_CODE_USE_BEDROCK": bedrock,
+                                 "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000"}, clear=True):
+        env = ClaudeCodeHarness()._build_env()
+    assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "64000"

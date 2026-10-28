@@ -670,6 +670,9 @@ class ClaudeCodeHarness(_JsonlSubprocessHarness):
             "USER",           # Context info
             "SHELL",          # Shell preferences
             "LANG",           # Locale
+            # Thinking counts toward the output cap, so a long think can hit it
+            # before the answer starts; let the user raise it.
+            "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
         }
 
         if use_bedrock:
