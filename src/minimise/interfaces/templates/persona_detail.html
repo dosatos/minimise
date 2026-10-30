@@ -5,6 +5,7 @@
 <p>
     {% if persona.model %}Model: {{ persona.model }}{% endif %}
     {% if persona.harness %}{% if persona.model %} — {% endif %}Harness: {{ persona.harness }}{% endif %}
+    {% if persona.effort %}{% if persona.model or persona.harness %} — {% endif %}Effort: {{ persona.effort }}{% endif %}
 </p>
 <div class="markdown-body">{{ prompt_html | safe }}</div>
 {% endblock %}

@@ -301,6 +301,30 @@ def test_loop_detail_page_folds_prompt_file_collapsed(client, api_server, tmp_pa
     assert '<span class="prompt-fold-size">' in plan
 
 
+def test_loop_detail_page_shows_worker_effort_next_to_model(client, api_server):
+    loop = _make_prompt_loop(
+        api_server, plan={"prompt": "Plan it.", "model": "opus", "effort": "high"}
+    )
+
+    stages = _get_loop_page(client, loop)
+
+    assert "Model: opus</span>" in stages["plan"]
+    assert "Effort: high</span>" in stages["plan"]
+    assert "Effort:" not in stages["implement"]
+
+
+def test_persona_page_shows_effort(client, config_dir):
+    (config_dir / "personas.yaml").write_text(
+        "deep-thinker:\n  model: opus\n  effort: max\n  prompt: Think hard.\n"
+    )
+
+    response = client.get("/personas/deep-thinker")
+
+    assert response.status_code == 200
+    assert "Model: opus" in response.get_data(as_text=True)
+    assert "Effort: max" in response.get_data(as_text=True)
+
+
 def test_loop_detail_page_folds_persona_prompt_with_link(client, api_server, config_dir):
     from minimise.interfaces.prompt_preview import render_prompt_markdown
     from minimise.personas import load_builtin_personas

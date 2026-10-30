@@ -18,6 +18,9 @@
         {% if worker.model %}
         <span class="loop-pill loop-pill-runtime">Model: {{ worker.model }}</span>
         {% endif %}
+        {% if worker.effort %}
+        <span class="loop-pill loop-pill-runtime">Effort: {{ worker.effort }}</span>
+        {% endif %}
     </div>
     {% if worker.prompt %}
     <div class="loop-worker-copy">
