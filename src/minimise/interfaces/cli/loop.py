@@ -328,6 +328,8 @@ def loop_list(format, limit):
     try:
         db = get_db()
         loops = db.list_loops(limit=limit)
+        store = _get_store(db)
+        caps = {lp.loop_id: _max_iterations(_mirror_spec(store, lp.loop_id), lp) for lp in loops}
 
         if not loops:
             if format == "json":
@@ -342,7 +344,7 @@ def loop_list(format, limit):
                 "name": lp.name,
                 "status": lp.status.value,
                 "iteration": _iteration(db, lp),
-                "max_iterations": lp.max_iterations,
+                "max_iterations": caps[lp.loop_id],
                 "created_at": lp.created_at.isoformat() if lp.created_at else None,
                 "started_at": lp.started_at.isoformat() if lp.started_at else None,
                 "completed_at": lp.completed_at.isoformat() if lp.completed_at else None,
@@ -363,7 +365,7 @@ def loop_list(format, limit):
                     lp.name,
                     status_text,
                     _format_datetime(lp.created_at),
-                    f"{_iteration(db, lp)}/{lp.max_iterations}",
+                    f"{_iteration(db, lp)}/{caps[lp.loop_id]}",
                 )
 
             console.print(table)
@@ -378,6 +380,19 @@ def _iteration(db, loop_obj) -> int:
     return db.current_iteration(loop_obj.loop_id)
 
 
+def _mirror_spec(store: LoopStore, loop_id: str) -> Optional[LoopSpec]:
+    """The loop's current spec: the mirror that `loop patch` rewrites. None if it won't load."""
+    try:
+        return store.load_spec(loop_id)
+    except Exception:
+        return None
+
+
+def _max_iterations(spec: Optional[LoopSpec], loop_obj) -> int:
+    """The mirror's cap, else the loops.max_iterations column (written once, at create)."""
+    return spec.max_iterations if spec is not None else loop_obj.max_iterations
+
+
 @loop.command(name="status")
 @click.argument("loop_id")
 @click.option("--format", type=click.Choice(["table", "json"]), default="table", help="Output format")
@@ -386,7 +401,8 @@ def loop_status(loop_id: str, format: str):
     try:
         loop_id = resolve_loop_id(loop_id)
         db = get_db()
-        loop_obj = _get_store(db).load(loop_id)
+        store = _get_store(db)
+        loop_obj = store.load(loop_id)
 
         if loop_obj is None:
             console.print(f"[red]Error: Loop {loop_id} not found[/red]")
@@ -394,25 +410,22 @@ def loop_status(loop_id: str, format: str):
 
         iteration = _iteration(db, loop_obj)
 
-        # Load the spec once: seeds dimension rows and the eval concurrency.
-        dims = None
-        max_concurrent = None
-        try:
-            spec = LoopSpec.from_yaml(Path(loop_obj.plan_path))
-            dims = [d.name for d in spec.loop.evaluate.dimensions]
-            max_concurrent = spec.loop.evaluate.max_concurrent
-        except Exception:
-            pass
+        # Load the spec once, from the mirror (which `loop patch` rewrites), not
+        # plan_path (the original source file, never rewritten by a patch). It
+        # gives the cap, plan_version, dimension rows and eval concurrency.
+        # Mirror unreadable: the DB column for the cap, plan_path for the rest.
+        spec = _mirror_spec(store, loop_id)
+        max_iterations = _max_iterations(spec, loop_obj)
+        plan_version = spec.plan_version if spec is not None else None
+        if spec is None:
+            try:
+                spec = LoopSpec.from_yaml(Path(loop_obj.plan_path))
+            except Exception:
+                pass
+        dims = [d.name for d in spec.loop.evaluate.dimensions] if spec is not None else None
+        max_concurrent = spec.loop.evaluate.max_concurrent if spec is not None else None
 
-        # Current plan_version comes from the mirror (which `loop patch` writes to),
-        # not plan_path (the original source file, never rewritten by a patch).
-        plan_version = None
-        try:
-            plan_version = _get_store(db).load_spec(loop_id).plan_version
-        except Exception:
-            pass
-
-        records = loop_journal.read(_get_store(db).journal_path(loop_id))
+        records = loop_journal.read(store.journal_path(loop_id))
         steps = db.list_loop_steps(loop_id)
         shown = shown_loop_steps(loop_obj, steps)
         runs = db.list_agent_runs_for_loop(loop_id)
@@ -425,7 +438,7 @@ def loop_status(loop_id: str, format: str):
                 "status": loop_obj.status.value,
                 "stop_reason": loop_obj.stop_reason,
                 "iteration": iteration,
-                "max_iterations": loop_obj.max_iterations,
+                "max_iterations": max_iterations,
                 "eval_max_concurrent": max_concurrent,
                 "plan_version": plan_version,
                 "plan_path": loop_obj.plan_path,
@@ -443,7 +456,7 @@ def loop_status(loop_id: str, format: str):
             console.print(f"[bold]Status:[/bold] {loop_obj.status.value}")
             if loop_obj.stop_reason:
                 console.print(f"[bold]Stopped:[/bold] {escape(loop_obj.stop_reason)}")
-            console.print(f"[bold]Iteration:[/bold] {iteration}/{loop_obj.max_iterations}")
+            console.print(f"[bold]Iteration:[/bold] {iteration}/{max_iterations}")
             if plan_version is not None:
                 console.print(f"[bold]Plan version:[/bold] {plan_version}")
             if max_concurrent is not None:

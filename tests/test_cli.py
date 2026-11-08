@@ -3260,6 +3260,111 @@ def test_loop_status_without_stop_reason_has_no_stopped_line(runner, mock_config
     assert "stop_reason" in data and data["stop_reason"] is None
 
 
+def _patched_cap_loop(mock_config_dir):
+    """A loop created with cap 3, then patched (through LoopStore) to cap 5, plan_version 2."""
+    from minimise.models import LoopSpec
+    from minimise.storage.loop_store import LoopStore
+
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+    store = LoopStore(db, mock_config_dir / "jobs")
+    loop_id = store.create(LoopSpec.model_validate({
+        "version": "1", "name": "CapDemo", "goal": "make it better", "max_iterations": 3,
+        "loop": {
+            "plan": {"prompt": "plan it"}, "implement": {"prompt": "do it"},
+            "evaluate": {"max_concurrent": 1, "dimensions": [{"name": "a", "rubric": "ra"}]},
+        },
+    }), "example.yaml").loop_id
+    data = store.load_spec(loop_id).model_dump()
+    data["max_iterations"] = 5
+    data["plan_version"] = 2
+    store.patch(loop_id, LoopSpec.model_validate(data))
+    assert db.get_loop(loop_id).max_iterations == 3  # the column is not rewritten
+    return store, loop_id
+
+
+def test_loop_status_shows_the_patched_max_iterations(runner, mock_config_dir):
+    _, loop_id = _patched_cap_loop(mock_config_dir)
+
+    text = runner.invoke(mini, ["loop", "status", loop_id])
+    assert text.exit_code == 0, text.output
+    assert "Iteration: 0/5" in text.output
+    assert "Plan version: 2" in text.output
+
+    data = json.loads(runner.invoke(mini, ["loop", "status", loop_id, "--format", "json"]).output)
+    assert data["max_iterations"] == 5 and data["plan_version"] == 2
+
+
+def test_loop_list_shows_the_patched_max_iterations(runner, mock_config_dir):
+    _, loop_id = _patched_cap_loop(mock_config_dir)
+
+    text = runner.invoke(mini, ["loop", "list"], terminal_width=250)
+    assert text.exit_code == 0, text.output
+    row = next(line for line in text.output.splitlines() if loop_id in line)
+    assert "0/5" in row and "/3" not in row
+
+    data = json.loads(runner.invoke(mini, ["loop", "list", "--format", "json"]).output)
+    assert next(lp for lp in data if lp["loop_id"] == loop_id)["max_iterations"] == 5
+
+
+def test_loop_status_and_list_fall_back_to_the_column_without_the_mirror(runner, mock_config_dir):
+    store, loop_id = _patched_cap_loop(mock_config_dir)
+    (store.jobs_dir / loop_id / "plan.yaml").unlink()
+
+    data = json.loads(runner.invoke(mini, ["loop", "status", loop_id, "--format", "json"]).output)
+    assert data["max_iterations"] == 3 and data["plan_version"] is None
+
+    listed = json.loads(runner.invoke(mini, ["loop", "list", "--format", "json"]).output)
+    assert next(lp for lp in listed if lp["loop_id"] == loop_id)["max_iterations"] == 3
+
+
+def test_loop_status_shows_a_dimension_added_by_patch_from_another_file(
+    runner, mock_config_dir, tmp_path
+):
+    """`loop patch ID other.yaml` rewrites the mirror, not plan_path; status follows the mirror."""
+    import yaml
+    from minimise.models import LoopSpec
+    from minimise.storage.loop_store import LoopStore
+
+    spec = {
+        "version": "1", "name": "DimDemo", "goal": "make it better", "max_iterations": 3,
+        "loop": {
+            "plan": {"prompt": "plan it"}, "implement": {"prompt": "do it"},
+            "evaluate": {"max_concurrent": 1,
+                         "dimensions": [{"name": "olddimension", "rubric": "ro"}]},
+        },
+    }
+    plan_path = tmp_path / "loop.yaml"
+    plan_path.write_text(yaml.safe_dump(spec))
+    db = Database(mock_config_dir / "minimise.db")
+    db.init_db()
+    loop_id = LoopStore(db, mock_config_dir / "jobs").create(
+        LoopSpec.model_validate(spec), str(plan_path)).loop_id
+    # Started, so status renders the Verdicts table (one row per dimension).
+    db.update_loop_status(loop_id, status=JobStatus.STOPPED, started_at=datetime.utcnow())
+
+    other = tmp_path / "other.yaml"
+    other_spec = yaml.safe_load(yaml.safe_dump(spec))
+    other_spec["plan_version"] = 2
+    other_spec["loop"]["evaluate"]["max_concurrent"] = 2
+    other_spec["loop"]["evaluate"]["dimensions"].append({"name": "newdimension", "rubric": "rn"})
+    other.write_text(yaml.safe_dump(other_spec))
+    patched = runner.invoke(mini, ["loop", "patch", loop_id, str(other)])
+    assert patched.exit_code == 0, patched.output
+
+    # plan_path still has only the old dimension.
+    on_disk = yaml.safe_load(plan_path.read_text())["loop"]["evaluate"]["dimensions"]
+    assert [d["name"] for d in on_disk] == ["olddimension"]
+
+    text = runner.invoke(mini, ["loop", "status", loop_id], terminal_width=200)
+    assert text.exit_code == 0, text.output
+    assert "olddimension" in text.output and "newdimension" in text.output
+    assert "Eval concurrency: 2" in text.output
+
+    data = json.loads(runner.invoke(mini, ["loop", "status", loop_id, "--format", "json"]).output)
+    assert data["eval_max_concurrent"] == 2
+
+
 _TWO_TASK_PLAN = """
 name: Two Tasks
 tasks:

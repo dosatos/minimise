@@ -161,13 +161,19 @@ class LoopEngine:
                     status = JobStatus.STOPPED
                     break
                 iteration += 1
-                spec = self._reload_spec(loop_id, spec)  # a patched max_iterations takes effect here
+                # Fresh spec for this iteration's steps. A patched max_iterations
+                # does not take effect here: the backstop below reloads, so the
+                # cap applies at the end of the iteration the patch lands in.
+                spec = self._reload_spec(loop_id, spec)
                 # Only the first iteration past the anchor can be partially done.
                 resume = self._resume_state(jpath, iteration) if iteration == anchor + 1 else {}
                 result = self._run_iteration(loop_id, spec, iteration, jpath, resume)
                 if result in (JobStatus.COMPLETED, JobStatus.STOPPED, JobStatus.FAILED):
                     status = result
                     break
+                # Reload so a max_iterations patch is seen at the end of the
+                # iteration it lands in, not one iteration late.
+                spec = self._reload_spec(loop_id, spec)
                 if iteration >= spec.max_iterations:  # backstop — the only stop code owns
                     status = JobStatus.FAILED
                     break

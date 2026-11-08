@@ -774,6 +774,52 @@ def test_mid_run_patch_adds_dimension_and_stamps_plan_version(tmp_path):
     assert iter2 and all(r.get("plan_version") == 2 for r in iter2)
 
 
+# --- 8b) mid-run max_iterations patch -> seen at the end of that iteration -----
+
+def _patch_cap_on(store, lid, at_key, cap):
+    """on_call hook: once `at_key` is dispatched, patch max_iterations to `cap`
+    and bump plan_version, as if `mini loop patch` landed mid-iteration."""
+    patched = {"done": False}
+
+    def hook(key):
+        if key == at_key and not patched["done"]:
+            patched["done"] = True
+            current = store.load_spec(lid)
+            data = current.model_dump()
+            data["max_iterations"] = cap
+            data["plan_version"] = current.plan_version + 1
+            store.patch(lid, LoopSpec.model_validate(data))
+
+    return hook
+
+
+def test_cap_raised_during_last_iteration_runs_the_next_one(tmp_path):
+    db, store, lid = _build(tmp_path)  # cap 3
+    h = StubHarness({
+        **{("plan", i, None): ['{"control":"continue"}'] for i in (1, 2, 3)},
+        ("plan", 4, None): ['{"control":"done"}'],
+    }, on_call=_patch_cap_on(store, lid, ("evaluate", 3, "a"), 5))
+
+    status = LoopEngine(factory=_fixed(h), store=store, db=db).run(lid)
+
+    assert ("plan", 4, None) in h.calls
+    assert status == JobStatus.COMPLETED
+    assert db.get_loop(lid).status == JobStatus.COMPLETED
+
+
+def test_cap_lowered_during_an_iteration_stops_at_its_end(tmp_path):
+    db, store, lid = _build(tmp_path)  # cap 3
+    h = StubHarness({
+        ("plan", i, None): ['{"control":"continue"}'] for i in (1, 2, 3)
+    }, on_call=_patch_cap_on(store, lid, ("evaluate", 1, "a"), 1))
+
+    status = LoopEngine(factory=_fixed(h), store=store, db=db).run(lid)
+
+    assert status == JobStatus.FAILED
+    assert ("plan", 2, None) not in h.calls
+    assert journal.last_committed_iteration(store.journal_path(lid)) == 1
+
+
 # --- 9) evaluate.select: failed — carried-over passes and the re-check ----------
 
 def _select_spec(dims=("a", "b", "c"), select="failed", max_iterations=4, max_concurrent=2):
