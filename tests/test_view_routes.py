@@ -42,6 +42,8 @@ def test_job_list_page_renders_job_row(client, mock_job_controller):
     assert resp.status_code == 200
     assert job.id.encode() in resp.data
     assert b"demo-plan" in resp.data
+    created = f'<time datetime="{job.created_at.isoformat()}Z" data-local-time>'
+    assert f'{created}{job.created_at.strftime("%Y-%m-%d %H:%M")} UTC</time>'.encode() in resp.data
 
 
 def _make_loop(api_server):
@@ -98,6 +100,7 @@ def test_loop_list_page_renders_loop_progress(client, api_server, db):
     assert "2/3" in html
     assert "Evaluate / clarity" in html
     assert f"/loops/{loop.loop_id}/view" in html
+    assert f'<time datetime="{loop.created_at.isoformat()}Z" data-local-time>' in html
 
 
 def test_loop_detail_page_renders_spec_steps_journal_and_logs(

@@ -20,7 +20,7 @@
             <td data-label="Iteration">{{ loop_view.iteration }}/{{ loop_view.max_iterations }}</td>
             <td data-label="Stage">{{ loop_view.stage }}</td>
             <td data-label="Tokens">{{ loop_view.tokens_total|figures(loop_view.cost_total) }}</td>
-            <td data-label="Created">{{ loop_view.created_at }}</td>
+            <td data-label="Created">{% if loop_view.created_at %}<time datetime="{{ loop_view.created_at }}Z" data-local-time>{{ loop_view.created_at[:16]|replace("T", " ") }} UTC</time>{% endif %}</td>
         </tr>
         {% endfor %}
     </tbody>

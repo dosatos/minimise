@@ -19,7 +19,7 @@
             <td data-label="Status"><span class="status status-{{ job.status.value }}">{{ job.status.value }}</span></td>
             <td data-label="Tasks">{{ job.tasks|selectattr('status.value', 'equalto', 'completed')|list|length }}/{{ job.tasks|length }}</td>
             <td data-label="Tokens">{{ tokens[job.id]|figures(costs[job.id]) }}</td>
-            <td data-label="Created">{{ job.created_at.isoformat() }}</td>
+            <td data-label="Created"><time datetime="{{ job.created_at.isoformat() }}Z" data-local-time>{{ job.created_at.strftime("%Y-%m-%d %H:%M") }} UTC</time></td>
         </tr>
         {% endfor %}
     </tbody>

@@ -6,7 +6,7 @@ function loopListRow(loop) {
         <td data-label="Iteration">${escapeHtml(`${loop.iteration}/${loop.max_iterations}`)}</td>
         <td data-label="Stage">${escapeHtml(loop.stage)}</td>
         <td data-label="Tokens">${figures(loop.tokens_total, loop.cost_total)}</td>
-        <td data-label="Created">${escapeHtml(loop.created_at || "")}</td>
+        <td data-label="Created"><time datetime="${escapeHtml(loop.created_at || "")}">${escapeHtml(localDateTime(loop.created_at))}</time></td>
     </tr>`;
 }
 
@@ -37,6 +37,7 @@ function startLoopListPolling(intervalMs) {
     document.addEventListener("visibilitychange", () => {
         if (!document.hidden) tick();
     });
+    localizeTimes();
     tick();
     intervalId = setInterval(tick, intervalMs);
 }

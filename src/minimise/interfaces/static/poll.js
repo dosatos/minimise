@@ -112,7 +112,7 @@ function startJobListPolling(intervalMs) {
                 <td data-label="Status"><span class="${statusClass(job.status)}">${job.status}</span></td>
                 <td data-label="Tasks">${done}/${total}</td>
                 <td data-label="Tokens">${figures(job.tokens_total, job.cost_total)}</td>
-                <td data-label="Created">${job.created_at || ""}</td>
+                <td data-label="Created"><time datetime="${job.created_at || ""}">${localDateTime(job.created_at)}</time></td>
             </tr>`;
         }).join("");
         if (jobs.every(job => isTerminalStatus(job.status))) {
@@ -122,6 +122,7 @@ function startJobListPolling(intervalMs) {
     document.addEventListener("visibilitychange", () => {
         if (!stopped && !document.hidden) refresh();
     });
+    localizeTimes();
     refresh();
     intervalId = setInterval(refresh, intervalMs);
 }
@@ -271,12 +272,15 @@ function clockTime(date) {
     return date ? date.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : "";
 }
 
+function localDateTime(iso) {
+    const date = parseUtc(iso);
+    return date && !isNaN(date) ? date.toLocaleString([], {dateStyle: "medium", timeStyle: "short"}) : "";
+}
+
 function localizeTimes(root = document) {
     root.querySelectorAll("time[data-local-time]").forEach(el => {
-        const date = parseUtc(el.getAttribute("datetime"));
-        if (date && !isNaN(date)) {
-            el.textContent = date.toLocaleString([], {dateStyle: "medium", timeStyle: "short"});
-        }
+        const text = localDateTime(el.getAttribute("datetime"));
+        if (text) el.textContent = text;
     });
 }
 
