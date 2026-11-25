@@ -6,11 +6,11 @@
 <div class="table-wrap">
 <table>
     <thead>
-        <tr><th>ID</th><th>Name</th><th>Status</th><th>Tasks</th><th>{{ tokens_header(prices_as_of) }}</th><th>Created</th></tr>
+        <tr><th>ID</th><th>Name</th><th>Status</th><th>Tasks</th><th>{{ tokens_header(prices_as_of) }}</th><th>Created</th><th>Duration</th></tr>
     </thead>
     <tbody id="job-rows">
         {% if not jobs %}
-        <tr><td colspan="6" class="empty">No jobs yet</td></tr>
+        <tr><td colspan="7" class="empty">No jobs yet</td></tr>
         {% endif %}
         {% for job in jobs %}
         <tr>
@@ -20,6 +20,7 @@
             <td data-label="Tasks">{{ job.tasks|selectattr('status.value', 'equalto', 'completed')|list|length }}/{{ job.tasks|length }}</td>
             <td data-label="Tokens">{{ tokens[job.id]|figures(costs[job.id]) }}</td>
             <td data-label="Created"><time datetime="{{ job.created_at.isoformat() }}Z" data-local-time>{{ job.created_at.strftime("%Y-%m-%d %H:%M") }} UTC</time></td>
+            <td data-label="Duration">{{ durations[job.id] }}</td>
         </tr>
         {% endfor %}
     </tbody>

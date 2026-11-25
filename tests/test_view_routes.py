@@ -103,6 +103,148 @@ def test_loop_list_page_renders_loop_progress(client, api_server, db):
     assert f'<time datetime="{loop.created_at.isoformat()}Z" data-local-time>' in html
 
 
+# --- Duration column on the job and loop list pages ----------------------
+
+def _new_listed_job(mock_job_controller, name="demo-plan"):
+    from minimise.models import Plan, PlanTask
+
+    plan = Plan(name=name, tasks=[
+        PlanTask(id="t1", name="T1", description="d", goal="g", estimated_duration_min=5)
+    ])
+    return mock_job_controller.store.create(plan, base_commit="abc123", plan_path="/tmp/plan.yaml")
+
+
+def _duration_cell(html, row_id):
+    """The Duration cell of the list row whose ID link is row_id."""
+    import re
+
+    row = html[html.index(f">{row_id}</a>"):]
+    row = row[:row.index("</tr>")]
+    return re.search(r'<td data-label="Duration">(.*?)</td>', row).group(1)
+
+
+def _listed_item(client, url, key, item_id):
+    resp = client.get(url)
+    assert resp.status_code == 200
+    return {item[key]: item for item in resp.get_json()}[item_id]
+
+
+def test_job_list_shows_a_completed_jobs_duration(client, mock_job_controller, db):
+    from datetime import datetime, timedelta
+    from minimise.models import JobStatus
+
+    job = _new_listed_job(mock_job_controller)
+    started = datetime(2026, 11, 25, 9, 0, 0)
+    db.update_job_status(job.id, JobStatus.COMPLETED, started_at=started,
+                         completed_at=started + timedelta(minutes=5))
+
+    html = client.get("/").get_data(as_text=True)
+
+    assert _duration_cell(html, job.id) == "5m 0s"
+    assert _listed_item(client, "/jobs", "id", job.id)["elapsed"] == "5m 0s"
+
+
+def test_job_list_running_job_with_stale_completed_at_shows_elapsed_to_now(
+    client, mock_job_controller, db
+):
+    """A resumed job keeps its earlier run's completed_at, which sits before its new
+    started_at. While it runs, Duration is started_at -> now, never negative."""
+    import os
+    import re
+    from datetime import datetime, timedelta
+    from minimise.models import JobStatus
+
+    job = _new_listed_job(mock_job_controller)
+    started = datetime.utcnow() - timedelta(minutes=2)
+    db.update_job_status(job.id, JobStatus.RUNNING, started_at=started,
+                         completed_at=started - timedelta(hours=1),
+                         pid=os.getpid())  # a live engine, so the job stays running
+
+    html = client.get("/").get_data(as_text=True)
+    item = _listed_item(client, "/jobs", "id", job.id)
+
+    assert item["status"] == "running"
+    for elapsed in (_duration_cell(html, job.id), item["elapsed"]):
+        assert not elapsed.startswith("-")
+        assert re.fullmatch(r"2m \d+s", elapsed), elapsed
+
+
+def test_job_list_never_started_job_shows_a_dash(client, mock_job_controller):
+    job = _new_listed_job(mock_job_controller)  # PENDING, no started_at
+
+    html = client.get("/").get_data(as_text=True)
+
+    assert _duration_cell(html, job.id) == "—"
+    assert _listed_item(client, "/jobs", "id", job.id)["elapsed"] == "—"
+
+
+def test_job_list_dead_running_job_with_stale_completed_at_is_not_negative(
+    client, mock_job_controller, db
+):
+    """The first load after a resumed job's engine dies reconciles it to FAILED; the
+    Duration uses the reconcile's completed_at, not the stale one from an earlier run."""
+    from datetime import datetime, timedelta
+    from minimise.models import JobStatus
+
+    job = _new_listed_job(mock_job_controller)
+    started = datetime.utcnow() - timedelta(minutes=1)
+    db.update_job_status(job.id, JobStatus.RUNNING, started_at=started,
+                         completed_at=started - timedelta(hours=1))  # no pid: dead
+
+    html = client.get("/").get_data(as_text=True)
+
+    assert '<span class="status status-failed">failed</span>' in html
+    duration = _duration_cell(html, job.id)
+    assert duration != "—"
+    assert not duration.startswith("-")
+
+
+def _header_cells(html):
+    import re
+
+    thead = html[html.index("<thead>"):html.index("</thead>")]
+    return re.findall(r"<th>(.*?)</th>", thead, re.S)
+
+
+def test_job_list_page_ends_with_created_then_duration_and_empty_row_spans_them(client):
+    html = client.get("/").get_data(as_text=True)
+
+    headers = _header_cells(html)
+    assert headers[-2:] == ["Created", "Duration"]
+    assert len(headers) == 7
+    assert '<td colspan="7" class="empty">No jobs yet</td>' in html
+    js = client.get("/static/poll.js").get_data(as_text=True)
+    assert '<td colspan="7" class="empty">No jobs yet</td>' in js
+    assert '<td data-label="Duration">${job.elapsed || "—"}</td>' in js
+
+
+def test_loop_list_page_ends_with_created_then_duration_and_empty_row_spans_them(client):
+    html = client.get("/loops").get_data(as_text=True)
+
+    headers = _header_cells(html)
+    assert headers[-2:] == ["Created", "Duration"]
+    assert len(headers) == 8
+    assert '<td colspan="8" class="empty">No loops yet</td>' in html
+    js = client.get("/static/loop.js").get_data(as_text=True)
+    assert '<td colspan="8" class="empty">No loops yet</td>' in js
+    assert '<td data-label="Duration">${escapeHtml(loop.elapsed || "—")}</td>' in js
+
+
+def test_loop_list_shows_a_finished_loops_duration(client, api_server, db):
+    from datetime import datetime, timedelta
+    from minimise.models import JobStatus
+
+    loop = _make_loop(api_server)
+    started = datetime(2026, 11, 25, 9, 0, 0)
+    db.update_loop_status(loop.loop_id, status=JobStatus.COMPLETED, started_at=started,
+                          completed_at=started + timedelta(hours=1, minutes=15))
+
+    html = client.get("/loops").get_data(as_text=True)
+
+    assert _duration_cell(html, loop.loop_id) == "1h 15m"
+    assert _listed_item(client, "/api/loops", "loop_id", loop.loop_id)["elapsed"] == "1h 15m"
+
+
 def test_loop_detail_page_renders_spec_steps_journal_and_logs(
     client, api_server, db
 ):
@@ -2346,7 +2488,7 @@ def test_loops_list_page_shows_each_loops_tokens(client, api_server, db, seed_ru
     html = client.get("/loops").get_data(as_text=True)
 
     assert re.findall(r"<th>(\w+)</th>", html) == [
-        "ID", "Name", "Status", "Iteration", "Stage", "Tokens", "Created"]
+        "ID", "Name", "Status", "Iteration", "Stage", "Tokens", "Created", "Duration"]
 
     def tokens_cell(loop):
         row = html[html.index(f">{loop.loop_id}</a>"):]
@@ -2360,13 +2502,13 @@ def test_loops_list_page_shows_each_loops_tokens(client, api_server, db, seed_ru
     assert tokens_cell(idle) == "0"
     js = client.get("/static/loop.js").get_data(as_text=True)
     assert '<td data-label="Tokens">${figures(loop.tokens_total, loop.cost_total)}</td>' in js
-    assert '<td colspan="7" class="empty">No loops yet</td>' in js
+    assert '<td colspan="8" class="empty">No loops yet</td>' in js
 
 
 def test_loops_list_page_empty_state_spans_the_tokens_column(client):
     html = client.get("/loops").get_data(as_text=True)
 
-    assert '<td colspan="7" class="empty">No loops yet</td>' in html
+    assert '<td colspan="8" class="empty">No loops yet</td>' in html
 
 
 def test_loop_detail_page_shows_tokens_next_to_elapsed_and_duration(client, api_server):

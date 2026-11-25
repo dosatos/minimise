@@ -261,6 +261,22 @@ class TestFormatDuration:
         result = format_duration(started, None, is_running=True, now=now)
         assert result == "2.5s"
 
+    def test_format_duration_running_ignores_stale_completed_at(self, base_time):
+        """A resumed item keeps its earlier run's completed_at (before started_at);
+        while running it measures started_at -> now, never a negative figure."""
+        started = base_time
+        stale_completed = base_time - timedelta(minutes=10)
+        now = base_time + timedelta(minutes=7, seconds=18)
+        result = format_duration(started, stale_completed, is_running=True, now=now)
+        assert result == "7m 18s"
+
+    def test_format_duration_not_running_uses_completed_at(self, base_time):
+        """Without is_running, completed_at bounds the duration as before."""
+        started = base_time
+        completed = base_time + timedelta(minutes=5)
+        now = base_time + timedelta(hours=3)
+        assert format_duration(started, completed, now=now) == "5m 0s"
+
 
 class TestRenderGanttBar:
     """Tests for render_gantt_bar function."""

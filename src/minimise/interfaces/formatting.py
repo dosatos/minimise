@@ -41,11 +41,17 @@ def format_duration(
     is_running: bool = False,
     now: Optional[datetime] = None,
 ) -> str:
-    """Format a completed duration or the elapsed time of a running item."""
+    """Format a completed duration or the elapsed time of a running item.
+
+    When ``is_running`` is true this always measures started_at -> now and
+    ignores completed_at: a resumed item keeps its earlier run's completed_at,
+    which would otherwise give a stale (even negative) figure. Otherwise it is
+    started_at -> completed_at, or "\u2014" if either is missing.
+    """
     if not started_at:
         return "\u2014"
 
-    if is_running and not completed_at:
+    if is_running:
         elapsed = (_now_or_default(now) - started_at).total_seconds()
         return humanize_duration(elapsed)
 

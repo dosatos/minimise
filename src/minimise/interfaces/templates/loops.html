@@ -6,11 +6,11 @@
 <div class="table-wrap">
 <table>
     <thead>
-        <tr><th>ID</th><th>Name</th><th>Status</th><th>Iteration</th><th>Stage</th><th>{{ tokens_header(prices_as_of) }}</th><th>Created</th></tr>
+        <tr><th>ID</th><th>Name</th><th>Status</th><th>Iteration</th><th>Stage</th><th>{{ tokens_header(prices_as_of) }}</th><th>Created</th><th>Duration</th></tr>
     </thead>
     <tbody id="loop-rows">
         {% if not loops %}
-        <tr><td colspan="7" class="empty">No loops yet</td></tr>
+        <tr><td colspan="8" class="empty">No loops yet</td></tr>
         {% endif %}
         {% for loop_view in loops %}
         <tr>
@@ -21,6 +21,7 @@
             <td data-label="Stage">{{ loop_view.stage }}</td>
             <td data-label="Tokens">{{ loop_view.tokens_total|figures(loop_view.cost_total) }}</td>
             <td data-label="Created">{% if loop_view.created_at %}<time datetime="{{ loop_view.created_at }}Z" data-local-time>{{ loop_view.created_at[:16]|replace("T", " ") }} UTC</time>{% endif %}</td>
+            <td data-label="Duration">{{ loop_view.elapsed }}</td>
         </tr>
         {% endfor %}
     </tbody>

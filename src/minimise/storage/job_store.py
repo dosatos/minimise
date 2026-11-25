@@ -103,8 +103,12 @@ class JobStore:
         jobs = result if isinstance(result, list) else [] if result is None else [result]
         for job in jobs:
             if job.status == JobStatus.RUNNING and not _pid_alive(job.pid):
-                self.mark_job_failed(job.id)
+                # One timestamp for the DB and the in-memory job, so a resumed job's
+                # stale completed_at never reaches the caller (mirrors LoopStore).
+                completed_at = datetime.utcnow()
+                self.db.update_job_status(job.id, JobStatus.FAILED, completed_at=completed_at)
                 job.status = JobStatus.FAILED
+                job.completed_at = completed_at
         return result
 
     def mark_job_running(self, job_id: str) -> None:

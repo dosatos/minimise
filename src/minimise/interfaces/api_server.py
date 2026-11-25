@@ -17,6 +17,7 @@ from minimise.interfaces.formatting import (
     attempt_runs,
     cost_total,
     format_cost,
+    format_duration,
     format_tokens,
     row_cost,
     row_tokens,
@@ -123,6 +124,14 @@ def _task_prompts(plan: Plan) -> dict:
 
 
 TERMINAL_JOB_STATUSES = (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.STOPPED)
+
+
+def _job_elapsed(job: Job) -> str:
+    """The job's current run length, as the list page's Duration column shows it."""
+    return format_duration(job.started_at, job.completed_at,
+                           is_running=job.status == JobStatus.RUNNING)
+
+
 PLAN_HOOK_GROUPS = {"pre_plan": "Before all tasks", "post_plan": "After all tasks"}
 _TASK_PHASE_ORDER = {"pre_task": 0, "task": 1, "post_task": 2}
 
@@ -370,8 +379,9 @@ class APIServer:
             tokens = {job.id: tokens_total(job, runs.get(job.id, [])) for job in jobs}
             costs = {} if prices is None else {
                 job.id: cost_total(job, runs.get(job.id, []), prices) for job in jobs}
+            durations = {job.id: _job_elapsed(job) for job in jobs}
             return render_template("list.html", jobs=jobs, tokens=tokens, costs=costs,
-                                   page=page, has_next=has_next,
+                                   durations=durations, page=page, has_next=has_next,
                                    prices_as_of=prices.as_of if prices else None)
 
         @self.app.route("/jobs/<job_id>/view", methods=["GET"])
@@ -458,6 +468,7 @@ class APIServer:
                 for job in jobs:
                     item = job.to_dict()  # the route adds the rollups, not Job.to_dict
                     item["tokens_total"] = tokens_total(job, runs.get(job.id, []))
+                    item["elapsed"] = _job_elapsed(job)
                     if prices is not None:
                         item["cost_total"] = cost_total(job, runs.get(job.id, []), prices)
                     items.append(item)

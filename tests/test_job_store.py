@@ -119,3 +119,30 @@ def test_load_many_downgrades_crashed_job_in_list(db, temp_db_dir):
 
     listed = {j.id: j for j in store.load_many()}
     assert listed[job.id].status == JobStatus.FAILED
+
+
+def _resumed_dead_job(store, db):
+    """A RUNNING job with no pid whose completed_at is from an earlier run, so it
+    sits before started_at (a resume preserves the old completed_at)."""
+    from datetime import datetime, timedelta
+
+    job = _new_job(store)
+    started = datetime.utcnow() - timedelta(minutes=1)
+    db.update_job_status(job.id, JobStatus.RUNNING, started_at=started,
+                         completed_at=started - timedelta(hours=1))
+    return job, started
+
+
+def test_reconcile_sets_in_memory_completed_at_to_the_value_it_writes(db, temp_db_dir):
+    store = JobStore(db, temp_db_dir / "jobs")
+
+    for load in (lambda job_id: {j.id: j for j in store.load_many()}[job_id], store.load):
+        job, started = _resumed_dead_job(store, db)
+
+        loaded = load(job.id)
+
+        assert loaded.status == JobStatus.FAILED
+        assert loaded.completed_at >= started  # the stale end is gone from memory too
+        persisted = db.get_job(job.id)
+        assert persisted.status == JobStatus.FAILED
+        assert loaded.completed_at == persisted.completed_at

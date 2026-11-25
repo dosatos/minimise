@@ -7,6 +7,7 @@ function loopListRow(loop) {
         <td data-label="Stage">${escapeHtml(loop.stage)}</td>
         <td data-label="Tokens">${figures(loop.tokens_total, loop.cost_total)}</td>
         <td data-label="Created"><time datetime="${escapeHtml(loop.created_at || "")}">${escapeHtml(localDateTime(loop.created_at))}</time></td>
+        <td data-label="Duration">${escapeHtml(loop.elapsed || "—")}</td>
     </tr>`;
 }
 
@@ -20,7 +21,7 @@ async function refreshLoopList() {
     const rows = document.getElementById("loop-rows");
     if (rows) {
         rows.innerHTML = loops.map(loopListRow).join("")
-            || '<tr><td colspan="7" class="empty">No loops yet</td></tr>';
+            || '<tr><td colspan="8" class="empty">No loops yet</td></tr>';
     }
     return loops;
 }

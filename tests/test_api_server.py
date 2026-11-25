@@ -1018,7 +1018,7 @@ def test_job_list_page_shows_each_jobs_tokens(client, mock_job_controller, db, s
     html = client.get("/").get_data(as_text=True)
 
     assert re.findall(r"<th>(\w+)</th>", html) == [
-        "ID", "Name", "Status", "Tasks", "Tokens", "Created"]
+        "ID", "Name", "Status", "Tasks", "Tokens", "Created", "Duration"]
 
     def tokens_cell(job):
         row = html[html.index(f">{job.id}</a>"):]
@@ -1032,7 +1032,7 @@ def test_job_list_page_shows_each_jobs_tokens(client, mock_job_controller, db, s
     assert tokens_cell(idle) == "0"
     js = client.get("/static/poll.js").get_data(as_text=True)
     assert '<td data-label="Tokens">${figures(job.tokens_total, job.cost_total)}</td>' in js
-    assert '<td colspan="6" class="empty">No jobs yet</td>' in js
+    assert '<td colspan="7" class="empty">No jobs yet</td>' in js
 
 
 def test_priced_job_list_rows_carry_tokens_and_cost(mock_job_controller, db, seed_run,
@@ -1060,4 +1060,4 @@ def test_priced_job_list_rows_carry_tokens_and_cost(mock_job_controller, db, see
 def test_job_list_page_empty_state_spans_the_tokens_column(client):
     html = client.get("/").get_data(as_text=True)
 
-    assert '<td colspan="6" class="empty">No jobs yet</td>' in html
+    assert '<td colspan="7" class="empty">No jobs yet</td>' in html
